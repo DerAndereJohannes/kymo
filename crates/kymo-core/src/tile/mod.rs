@@ -6,6 +6,7 @@
 
 mod cache;
 mod data;
+mod query;
 mod raw;
 
 use std::ops::Range;
@@ -13,6 +14,7 @@ use std::ops::Range;
 pub use cache::{DEFAULT_BUDGET, TileCache};
 pub(crate) use data::TileSample;
 pub use data::{Tile, TileData, TileSlice};
+pub use query::{Loading, Placed, Query, query};
 pub use raw::compute_raw;
 
 use crate::{ChannelId, Grid, GridId, Recording};

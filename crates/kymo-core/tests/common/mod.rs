@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kymo_core::testing::{MemData, opened};
-use kymo_core::tile::TileData;
-use kymo_core::{Channel, ChannelId, Grid, GridId, Opened, Recording, SampleType, Timebase};
+use kymo_core::tile::{SignalVersion, TileData, View};
+use kymo_core::{
+    BlockReader, Channel, ChannelId, Grid, GridId, Header, Opened, ReadError, Recording,
+    SampleType, SamplesMut, Timebase,
+};
 use proptest::prelude::*;
 
 /// A grid length up to `max_len` and random gap structure: sorted, disjoint, non-touching
@@ -144,4 +147,84 @@ pub fn sample_types() -> impl Strategy<Value = SampleType> {
         Just(SampleType::I32),
         Just(SampleType::F32)
     ]
+}
+
+/// Tile math needs grid shapes only, never samples.
+pub struct NoReader;
+
+impl BlockReader for NoReader {
+    fn read(
+        &self,
+        _: GridId,
+        _: &[ChannelId],
+        _: Range<u64>,
+        _: SamplesMut<'_>,
+    ) -> Result<(), ReadError> {
+        unreachable!("tile math never reads samples")
+    }
+}
+
+/// A recording of grids given as (rate, start, len, channel count), without data.
+pub fn shape_recording(grids: &[(f64, f64, u64, usize)]) -> Recording {
+    let mut channels = Vec::new();
+    let mut built = Vec::new();
+    for (g, &(rate, start, len, n)) in grids.iter().enumerate() {
+        let ids: Vec<ChannelId> = (channels.len()..channels.len() + n)
+            .map(|i| ChannelId(i as u32))
+            .collect();
+        for id in &ids {
+            channels.push(Channel::new(format!("ch{}", id.0), GridId(g as u32)));
+        }
+        let timebase = Timebase::Regular { rate, start };
+        built.push(Grid::continuous(timebase, len, SampleType::I16, ids).unwrap());
+    }
+    let opened = Opened {
+        header: Header {
+            format: "TEST",
+            start_time: None,
+            channels,
+            grids: built,
+            extra: vec![],
+        },
+        annotations: vec![],
+        warnings: vec![],
+        reader: Box::new(NoReader),
+    };
+    Recording::new(opened).unwrap().0
+}
+
+pub fn view(time: Range<f64>, width_px: u32, channels: Vec<u32>) -> View {
+    View {
+        version: SignalVersion(0),
+        time,
+        width_px,
+        channels: channels.into_iter().map(ChannelId).collect(),
+    }
+}
+
+/// 1 to 3 grids of different rates, starts, lengths up to 10^9 and up to 80 channels.
+pub fn grids() -> impl Strategy<Value = Vec<(f64, f64, u64, usize)>> {
+    let grid = (
+        proptest::sample::select(vec![100.0, 256.0, 512.0, 2048.0, 1000.0 / 3.0]),
+        proptest::sample::select(vec![0.0, 0.25]),
+        prop_oneof![0u64..10_000, 0u64..1_000_000_000],
+        1usize..80,
+    );
+    proptest::collection::vec(grid, 1..4)
+}
+
+/// A view somewhere around the recording of `grids`, at any zoom, with random channels.
+pub fn view_of(grids: &[(f64, f64, u64, usize)]) -> impl Strategy<Value = View> + use<> {
+    let duration = grids
+        .iter()
+        .map(|&(rate, start, len, _)| start + len as f64 / rate)
+        .fold(0.0, f64::max);
+    let n: u32 = grids.iter().map(|g| g.3 as u32).sum();
+    (
+        -10.0..duration + 10.0,
+        (-10.0f64..18.0).prop_map(|e| 2f64.powf(e)),
+        1u32..4000,
+        proptest::collection::vec(0..n, 0..10),
+    )
+        .prop_map(|(t0, length, width, channels)| view(t0..t0 + length, width, channels))
 }
