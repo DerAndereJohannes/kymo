@@ -9,7 +9,8 @@ mod raw;
 
 use std::ops::Range;
 
-pub use data::{Tile, TileData};
+pub(crate) use data::TileSample;
+pub use data::{Tile, TileData, TileSlice};
 pub use raw::compute_raw;
 
 use crate::{ChannelId, Grid, GridId, Recording};

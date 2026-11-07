@@ -8,6 +8,7 @@ mod channel;
 pub mod edf;
 mod error;
 mod grid;
+pub mod pyramid;
 mod recording;
 mod sample;
 pub mod tile;

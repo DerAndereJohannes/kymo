@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::ops::Range;
 
 use super::TileKey;
-use crate::SampleType;
+use crate::{Sample, SampleType};
 
 /// The values of a tile in the grid's native sample type, channel-major.
 ///
@@ -37,6 +37,71 @@ impl TileData {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn as_slice(&self) -> TileSlice<'_> {
+        match self {
+            TileData::I16(d) => TileSlice::I16(d),
+            TileData::I32(d) => TileSlice::I32(d),
+            TileData::F32(d) => TileSlice::F32(d),
+        }
+    }
+}
+
+/// Borrowed tile values, laid out as in [`TileData`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TileSlice<'a> {
+    I16(&'a [i16]),
+    I32(&'a [i32]),
+    F32(&'a [f32]),
+}
+
+impl TileSlice<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            TileSlice::I16(d) => d.len(),
+            TileSlice::I32(d) => d.len(),
+            TileSlice::F32(d) => d.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Copies `range` of the values.
+    ///
+    /// # Panics
+    /// If `range` is out of bounds.
+    pub fn to_data(&self, range: Range<usize>) -> TileData {
+        match self {
+            TileSlice::I16(d) => TileData::I16(d[range].into()),
+            TileSlice::I32(d) => TileData::I32(d[range].into()),
+            TileSlice::F32(d) => TileData::F32(d[range].into()),
+        }
+    }
+}
+
+/// Native sample types that can be stored in a [`TileData`].
+pub(crate) trait TileSample: Sample {
+    fn into_data(values: Box<[Self]>) -> TileData;
+}
+
+impl TileSample for i16 {
+    fn into_data(values: Box<[Self]>) -> TileData {
+        TileData::I16(values)
+    }
+}
+
+impl TileSample for i32 {
+    fn into_data(values: Box<[Self]>) -> TileData {
+        TileData::I32(values)
+    }
+}
+
+impl TileSample for f32 {
+    fn into_data(values: Box<[Self]>) -> TileData {
+        TileData::F32(values)
     }
 }
 

@@ -7,82 +7,17 @@ mod common;
 
 use std::ops::Range;
 
-use common::{TempFile, is_present, len_and_segments, sub_range};
-use kymo_core::testing::{MemData, brute_minmax, opened};
-use kymo_core::tile::{
-    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileData, TileKey,
-    compute_raw,
+use common::{
+    TempFile, is_present, len_and_segments, mem_recording as recording, sample_types, sub_range,
+    values,
 };
-use kymo_core::{Channel, ChannelId, Grid, GridId, Recording, SampleType, TileError, Timebase};
+use kymo_core::testing::{MemData, brute_minmax};
+use kymo_core::tile::{
+    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileKey, compute_raw,
+};
+use kymo_core::{ChannelId, GridId, Recording, SampleType, TileError};
 use kymo_testgen::Spec;
 use proptest::prelude::*;
-
-/// Deterministic sample values: hashed, with the type's extremes mixed in.
-fn value(seed: u64, c: usize, i: u64) -> i64 {
-    let mut z = seed ^ (c as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ i.wrapping_mul(0xBF58_476D);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    match z % 64 {
-        0 => i64::MIN,
-        1 => i64::MAX,
-        _ => z as i64,
-    }
-}
-
-fn mem_data(sample_type: SampleType, n: usize, len: u64, seed: u64) -> MemData {
-    fn rows<T>(n: usize, len: u64, seed: u64, f: impl Fn(i64) -> T) -> Vec<Vec<T>> {
-        (0..n)
-            .map(|c| (0..len).map(|i| f(value(seed, c, i))).collect())
-            .collect()
-    }
-    match sample_type {
-        SampleType::I16 => MemData::I16(rows(n, len, seed, clamp_i16)),
-        SampleType::I32 => MemData::I32(rows(n, len, seed, clamp_i32)),
-        _ => MemData::F32(rows(n, len, seed, |v| clamp_i32(v) as f32 * 0.37)),
-    }
-}
-
-fn clamp_i16(v: i64) -> i16 {
-    v.clamp(i16::MIN.into(), i16::MAX.into()) as i16
-}
-
-fn clamp_i32(v: i64) -> i32 {
-    v.clamp(i32::MIN.into(), i32::MAX.into()) as i32
-}
-
-/// A one-grid recording with `n` channels and the given gaps, plus its data.
-fn recording(
-    sample_type: SampleType,
-    n: usize,
-    len: u64,
-    segments: Vec<Range<u64>>,
-    seed: u64,
-) -> (Recording, MemData) {
-    let ids: Vec<ChannelId> = (0..n as u32).map(ChannelId).collect();
-    let channels = ids
-        .iter()
-        .map(|id| Channel::new(format!("ch{}", id.0), GridId(0)))
-        .collect();
-    let timebase = Timebase::Regular {
-        rate: 100.0,
-        start: 0.0,
-    };
-    let grid = Grid::new(timebase, len, segments, sample_type, ids).unwrap();
-    let data = mem_data(sample_type, n, len, seed);
-    let rec = Recording::new(opened(channels, vec![grid], vec![data.clone()]))
-        .unwrap()
-        .0;
-    (rec, data)
-}
-
-fn values(data: &TileData) -> Vec<f64> {
-    match data {
-        TileData::I16(d) => d.iter().map(|&x| f64::from(x)).collect(),
-        TileData::I32(d) => d.iter().map(|&x| f64::from(x)).collect(),
-        TileData::F32(d) => d.iter().map(|&x| f64::from(x)).collect(),
-    }
-}
 
 /// Runs of present samples in `start..start + len`, relative to `start`.
 fn expected_valid(segments: &[Range<u64>], start: u64, len: u64) -> Vec<Range<u32>> {
@@ -149,14 +84,6 @@ fn check_tile(
         }
     }
     Ok(())
-}
-
-fn sample_types() -> impl Strategy<Value = SampleType> {
-    prop_oneof![
-        Just(SampleType::I16),
-        Just(SampleType::I32),
-        Just(SampleType::F32)
-    ]
 }
 
 /// Few channels, or enough for a second, partial channel block.
