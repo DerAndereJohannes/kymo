@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use anyhow::{Context, Result, anyhow};
-use kymo_core::{AnnotationStore, Recording, SampleType};
+use kymo_core::{AnnotationStore, Recording};
 
 /// A recording opened for viewing, with the annotation store beside it.
 pub struct Document {
@@ -45,7 +45,6 @@ impl Document {
                     rate: g.rate(),
                     samples: g.len(),
                     segments: g.segments().len(),
-                    sample_type: g.sample_type(),
                     channels: g
                         .channels()
                         .iter()
@@ -92,18 +91,16 @@ pub struct GridSummary {
     pub samples: u64,
     /// Sample ranges holding data; more than one means the recording has gaps.
     pub segments: usize,
-    pub sample_type: SampleType,
     pub channels: Vec<String>,
 }
 
 impl GridSummary {
-    /// One line without the channel names, e.g. "512 Hz, 30720 samples, int32, 5 channels".
+    /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels".
     pub fn describe(&self) -> String {
         let mut s = format!(
-            "{} Hz, {} samples, {}, {} channel{}",
+            "{} Hz, {} samples, {} channel{}",
             self.rate,
             self.samples,
-            sample_type_name(self.sample_type),
             self.channels.len(),
             plural(self.channels.len()),
         );
@@ -178,15 +175,6 @@ impl fmt::Display for Summary {
             writeln!(f, "warning      {warning}")?;
         }
         Ok(())
-    }
-}
-
-pub fn sample_type_name(t: SampleType) -> &'static str {
-    match t {
-        SampleType::I16 => "int16",
-        SampleType::I32 => "int32",
-        SampleType::F32 => "float32",
-        _ => "other",
     }
 }
 
@@ -337,11 +325,11 @@ mod tests {
         assert_eq!(summary.grids.len(), 1);
         let grid = &summary.grids[0];
         assert_eq!(
-            (grid.rate, grid.samples, grid.segments, grid.sample_type),
-            (512.0, 60 * 512, 1, SampleType::I32)
+            (grid.rate, grid.samples, grid.segments),
+            (512.0, 60 * 512, 1)
         );
         assert_eq!(grid.channels[..4], ["A1", "A2", "A3", "EXG1"]);
-        assert_eq!(grid.describe(), "512 Hz, 30720 samples, int32, 5 channels");
+        assert_eq!(grid.describe(), "512 Hz, 30720 samples, 5 channels");
     }
 
     #[test]
