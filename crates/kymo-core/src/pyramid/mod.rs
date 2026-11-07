@@ -14,39 +14,59 @@
 
 mod build;
 mod mean;
+mod sidecar;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub use build::PyramidBuilder;
+pub use sidecar::{Sidecar, SidecarError};
 
 use crate::tile::{
-    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileData, TileKey,
-    TileSlice, max_level,
+    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileData, TileKey, max_level,
 };
 use crate::{ChannelId, Grid, GridId, ReadError, Recording};
 
-/// Where a pyramid is kept. The builder writes into it; [`Pyramid`] reads from it.
+/// Where a pyramid is kept. A builder writes into it while any number of [`Pyramid`]s read
+/// from it, possibly on other threads.
 ///
 /// A level tile holds all channels of the grid in grid order, channel-major, with the
 /// tile's (min, max) pairs interleaved as in [`TileData`]. The last tile of a level is cut
 /// at the grid's end.
+///
+/// Progress is a watermark in samples: once `publish(done)` returns, every tile and sum
+/// block whose span (cut at the grid's end) ends at or before `done` is stored. Readers only
+/// ask for those.
 pub trait PyramidStorage: Send + Sync {
-    /// Stores tile `time` of `level`.
-    fn put_tile(&mut self, level: Level, time: u64, data: TileData);
+    /// Stores tile `time` of `level`. Each tile is stored once, before it is published.
+    fn put_tile(&self, level: Level, time: u64, data: TileData);
     /// Stores the sums of block `block`, one per channel in grid order.
-    fn put_sums(&mut self, block: u64, sums: &[f64]);
-    /// Tile `time` of `level`, if stored.
-    fn tile(&self, level: Level, time: u64) -> Option<TileSlice<'_>>;
-    /// The sums of block `block`, if stored.
-    fn sums(&self, block: u64) -> Option<&[f64]>;
+    fn put_sums(&self, block: u64, sums: &[f64]);
+    /// Publishes everything stored for samples `..done`; called with increasing values.
+    fn publish(&self, done: u64);
+    /// The last published watermark.
+    fn done(&self) -> u64;
+    /// Rows `rows` of the published tile `time` of `level`, which holds `len` pairs per
+    /// channel; `None` if it is not available.
+    fn tile_rows(
+        &self,
+        level: Level,
+        time: u64,
+        rows: Range<usize>,
+        len: usize,
+    ) -> Option<TileData>;
+    /// The sum of row `row` in the published block `block`; `None` if not available.
+    fn sum(&self, block: u64, row: usize) -> Option<f64>;
 }
 
 /// Keeps a pyramid in memory.
 #[derive(Debug, Default)]
 pub struct MemStorage {
-    tiles: HashMap<(Level, u64), TileData>,
-    sums: Vec<Option<Box<[f64]>>>,
+    tiles: Mutex<HashMap<(Level, u64), TileData>>,
+    sums: Mutex<Vec<Option<Box<[f64]>>>>,
+    done: AtomicU64,
 }
 
 impl MemStorage {
@@ -56,24 +76,44 @@ impl MemStorage {
 }
 
 impl PyramidStorage for MemStorage {
-    fn put_tile(&mut self, level: Level, time: u64, data: TileData) {
-        self.tiles.insert((level, time), data);
+    fn put_tile(&self, level: Level, time: u64, data: TileData) {
+        let mut tiles = self.tiles.lock().unwrap_or_else(PoisonError::into_inner);
+        tiles.insert((level, time), data);
     }
 
-    fn put_sums(&mut self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[f64]) {
+        let mut all = self.sums.lock().unwrap_or_else(PoisonError::into_inner);
         let block = block as usize;
-        if self.sums.len() <= block {
-            self.sums.resize(block + 1, None);
+        if all.len() <= block {
+            all.resize(block + 1, None);
         }
-        self.sums[block] = Some(sums.into());
+        all[block] = Some(sums.into());
     }
 
-    fn tile(&self, level: Level, time: u64) -> Option<TileSlice<'_>> {
-        self.tiles.get(&(level, time)).map(TileData::as_slice)
+    fn publish(&self, done: u64) {
+        self.done.store(done, Ordering::Release);
     }
 
-    fn sums(&self, block: u64) -> Option<&[f64]> {
-        self.sums.get(block as usize)?.as_deref()
+    fn done(&self) -> u64 {
+        self.done.load(Ordering::Acquire)
+    }
+
+    fn tile_rows(
+        &self,
+        level: Level,
+        time: u64,
+        rows: Range<usize>,
+        len: usize,
+    ) -> Option<TileData> {
+        let tiles = self.tiles.lock().unwrap_or_else(PoisonError::into_inner);
+        let data = tiles.get(&(level, time))?.as_slice();
+        let range = rows.start * len * 2..rows.end * len * 2;
+        (range.end <= data.len()).then(|| data.to_data(range))
+    }
+
+    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+        let sums = self.sums.lock().unwrap_or_else(PoisonError::into_inner);
+        sums.get(block as usize)?.as_ref()?.get(row).copied()
     }
 }
 
@@ -82,7 +122,7 @@ pub struct Pyramid {
     id: GridId,
     grid: Grid,
     top: Level,
-    storage: Box<dyn PyramidStorage>,
+    storage: Arc<dyn PyramidStorage>,
 }
 
 impl std::fmt::Debug for Pyramid {
@@ -100,7 +140,7 @@ impl Pyramid {
         PyramidBuilder::new(recording, grid)?.finish()
     }
 
-    pub(crate) fn new(id: GridId, grid: Grid, storage: Box<dyn PyramidStorage>) -> Pyramid {
+    pub(crate) fn new(id: GridId, grid: Grid, storage: Arc<dyn PyramidStorage>) -> Pyramid {
         let top = max_level(grid.len());
         Pyramid {
             id,
@@ -121,7 +161,7 @@ impl Pyramid {
     }
 
     /// The tile `key` (level 1 to [`top`](Self::top), raw signal version, this grid), or
-    /// `None` if the key is outside the pyramid or the tile is not stored.
+    /// `None` if the key is outside the pyramid or the tile is not built yet.
     pub fn tile(&self, key: TileKey) -> Option<Tile> {
         let level = key.level;
         if key.version != SignalVersion::RAW
@@ -134,19 +174,33 @@ impl Pyramid {
         }
         let buckets = self.grid.len().div_ceil(level.bucket_len());
         let first = key.time.checked_mul(TILE_LEN)?;
-        if first >= buckets {
+        if first >= buckets || !self.ready(key.sample_range().end) {
             return None;
         }
         let len = (buckets - first).min(TILE_LEN) as usize;
-        let values = self.storage.tile(level, key.time)?;
-        let rows = key.block.index as usize * CHANNEL_BLOCK;
+        let start = key.block.index as usize * CHANNEL_BLOCK;
         let channels = key.block.channels(&self.grid).len();
-        if values.len() != self.grid.channels().len() * len * 2 {
+        let rows = start..start + channels;
+        let data = self.storage.tile_rows(level, key.time, rows, len)?;
+        if data.len() != channels * len * 2 || data.sample_type() != self.grid.sample_type() {
             return None;
         }
-        let data = values.to_data(rows * len * 2..(rows + channels) * len * 2);
         let valid = self.valid(level, first, len as u64);
         Some(Tile::new(key, channels as u32, len as u32, data, valid))
+    }
+
+    /// Whether everything up to sample `end` (cut at the grid's end) is built.
+    fn ready(&self, end: u64) -> bool {
+        end.min(self.grid.len()) <= self.storage.done()
+    }
+
+    /// Samples built so far; the pyramid is complete once this reaches the grid's length.
+    pub fn done(&self) -> u64 {
+        self.storage.done().min(self.grid.len())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.done() >= self.grid.len()
     }
 
     /// The buckets `first..first + len` of `level` that hold at least one present sample,
@@ -169,9 +223,17 @@ impl Pyramid {
 
     /// Sum of the native values of `channel` over the present samples of block `block`
     /// (samples `block · TILE_LEN ..`), or `None` if the channel is not in this grid or the
-    /// block is not stored.
+    /// block is not built yet.
     pub fn block_sum(&self, channel: ChannelId, block: u64) -> Option<f64> {
         let row = self.grid.channels().iter().position(|&c| c == channel)?;
-        self.storage.sums(block)?.get(row).copied()
+        self.row_sum(block, row)
+    }
+
+    fn row_sum(&self, block: u64, row: usize) -> Option<f64> {
+        let first = block.checked_mul(TILE_LEN)?;
+        if first >= self.grid.len() || !self.ready(first.saturating_add(TILE_LEN)) {
+            return None;
+        }
+        self.storage.sum(block, row)
     }
 }

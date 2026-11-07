@@ -13,6 +13,8 @@ authors = ["Clemens Brunner <clemens.brunner@gmail.com>"]
 [workspace.dependencies]
 kymo-core = { path = "crates/kymo-core" }
 kymo-testgen = { path = "crates/kymo-testgen" }
+blake3 = "1.8"
+dirs = "7"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 memmap2 = "0.9"
 proptest = "1"

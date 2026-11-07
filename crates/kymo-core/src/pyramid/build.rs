@@ -1,6 +1,7 @@
 //! Building a pyramid in one sequential pass.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::{MemStorage, Pyramid, PyramidStorage};
 use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, TileSample, max_level};
@@ -14,15 +15,15 @@ const MAX_CHUNK_VALUES: u64 = 1 << 24;
 /// Builds the pyramid of one grid in a single sequential pass over its samples, a chunk of
 /// samples across all channels per [`step`](Self::step).
 ///
-/// Each step reads one chunk (about 10 s by default) and stores every level tile it
-/// completes. Gaps are never read. After a step fails, the builder must not be used further.
+/// Each step reads one chunk (about 10 s by default), stores every level tile it completes
+/// and publishes its progress to the storage. Gaps are never read. After a step fails, the builder must not be used further.
 pub struct PyramidBuilder<'a> {
     recording: &'a Recording,
     grid: GridId,
     len: u64,
     chunk_len: u64,
     done: u64,
-    storage: Box<dyn PyramidStorage>,
+    storage: Arc<dyn PyramidStorage>,
     state: State,
 }
 
@@ -64,13 +65,13 @@ impl<'a> PyramidBuilder<'a> {
             len,
             chunk_len,
             done: 0,
-            storage: Box::new(MemStorage::new()),
+            storage: Arc::new(MemStorage::new()),
             state,
         })
     }
 
     /// Writes into `storage` instead of memory. Call before the first step.
-    pub fn with_storage(mut self, storage: Box<dyn PyramidStorage>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<dyn PyramidStorage>) -> Self {
         self.storage = storage;
         self
     }
@@ -99,22 +100,28 @@ impl<'a> PyramidBuilder<'a> {
     pub fn step(&mut self) -> Result<bool, ReadError> {
         if self.done < self.len {
             let range = self.done..self.done.saturating_add(self.chunk_len).min(self.len);
-            let (rec, grid, storage) = (self.recording, self.grid, self.storage.as_mut());
+            let (rec, grid, storage) = (self.recording, self.grid, &*self.storage);
             match &mut self.state {
                 State::I16(l) => l.step(rec, grid, range.clone(), storage)?,
                 State::I32(l) => l.step(rec, grid, range.clone(), storage)?,
                 State::F32(l) => l.step(rec, grid, range.clone(), storage)?,
             }
             self.done = range.end;
+            self.storage.publish(self.done);
         }
         Ok(self.done >= self.len)
+    }
+
+    /// The pyramid being built: readable now, its tiles appear as the build passes them.
+    pub fn pyramid(&self) -> Pyramid {
+        let grid = self.recording.grid(self.grid).clone();
+        Pyramid::new(self.grid, grid, Arc::clone(&self.storage))
     }
 
     /// Runs the remaining steps and returns the pyramid.
     pub fn finish(mut self) -> Result<Pyramid, ReadError> {
         while !self.step()? {}
-        let grid = self.recording.grid(self.grid).clone();
-        Ok(Pyramid::new(self.grid, grid, self.storage))
+        Ok(self.pyramid())
     }
 }
 
@@ -168,7 +175,7 @@ impl<T: TileSample> Levels<T> {
         recording: &Recording,
         grid: GridId,
         range: Range<u64>,
-        storage: &mut dyn PyramidStorage,
+        storage: &dyn PyramidStorage,
     ) -> Result<(), ReadError> {
         let g = recording.grid(grid);
         let n = (range.end - range.start) as usize;
@@ -242,7 +249,7 @@ impl<T: TileSample> Levels<T> {
 
     /// Stores the current level-1 tile, folds it into level 2, and so on up while each
     /// parent tile is complete.
-    fn finish_tile(&mut self, storage: &mut dyn PyramidStorage) {
+    fn finish_tile(&mut self, storage: &dyn PyramidStorage) {
         let mut l = 0;
         loop {
             let (lower, upper) = self.tiles.split_at_mut(l + 1);

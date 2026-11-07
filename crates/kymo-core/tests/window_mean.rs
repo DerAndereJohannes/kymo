@@ -6,11 +6,12 @@
 mod common;
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use common::{TempFile, is_present, len_and_segments, mem_opened, sample_types};
 use kymo_core::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage};
 use kymo_core::testing::{MemData, single_grid};
-use kymo_core::tile::{Level, TILE_LEN, TileData, TileSlice};
+use kymo_core::tile::{Level, TILE_LEN, TileData};
 use kymo_core::{ChannelId, GridId, ReadError, Recording};
 use kymo_testgen::Spec;
 use proptest::prelude::*;
@@ -19,22 +20,36 @@ use proptest::prelude::*;
 struct OddSumsLost(MemStorage);
 
 impl PyramidStorage for OddSumsLost {
-    fn put_tile(&mut self, level: Level, time: u64, data: TileData) {
+    fn put_tile(&self, level: Level, time: u64, data: TileData) {
         self.0.put_tile(level, time, data);
     }
 
-    fn put_sums(&mut self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[f64]) {
         if block % 2 == 0 {
             self.0.put_sums(block, sums);
         }
     }
 
-    fn tile(&self, level: Level, time: u64) -> Option<TileSlice<'_>> {
-        self.0.tile(level, time)
+    fn publish(&self, done: u64) {
+        self.0.publish(done);
     }
 
-    fn sums(&self, block: u64) -> Option<&[f64]> {
-        self.0.sums(block)
+    fn done(&self) -> u64 {
+        self.0.done()
+    }
+
+    fn tile_rows(
+        &self,
+        level: Level,
+        time: u64,
+        rows: Range<usize>,
+        len: usize,
+    ) -> Option<TileData> {
+        self.0.tile_rows(level, time, rows, len)
+    }
+
+    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+        self.0.sum(block, row)
     }
 }
 
@@ -117,7 +132,7 @@ proptest! {
         let rec = Recording::new(opened).unwrap().0;
         let mut builder = PyramidBuilder::new(&rec, GridId(0)).unwrap().with_chunk_len(chunk);
         if lose_sums {
-            builder = builder.with_storage(Box::new(OddSumsLost(MemStorage::new())));
+            builder = builder.with_storage(Arc::new(OddSumsLost(MemStorage::new())));
         }
         let pyramid = builder.finish().unwrap();
         for range in windows {

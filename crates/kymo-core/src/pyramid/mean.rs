@@ -55,8 +55,8 @@ impl Pyramid {
                 range.start..first * TILE_LEN,
             )?;
             for block in first..last {
-                match self.storage.sums(block).and_then(|s| s.get(row)) {
-                    Some(&s) => sum += s,
+                match self.row_sum(block, row) {
+                    Some(s) => sum += s,
                     None => {
                         let samples = block * TILE_LEN..(block + 1) * TILE_LEN;
                         sum += raw_sum(recording, self.id, grid, channel, samples)?;

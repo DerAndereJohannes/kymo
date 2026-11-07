@@ -65,6 +65,39 @@ impl Drop for TempFile {
     }
 }
 
+/// A directory in the temp directory, deleted with its contents on drop.
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn new() -> Self {
+        let file = TempFile::new("dir");
+        std::fs::create_dir_all(file.path()).unwrap();
+        let path = file.path().to_owned();
+        std::mem::forget(file);
+        TempDir(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Names of the files in the directory, sorted.
+    pub fn files(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&self.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Deterministic sample values: hashed, with the type's extremes mixed in.
 pub fn value(seed: u64, c: usize, i: u64) -> i64 {
     let mut z = seed ^ (c as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ i.wrapping_mul(0xBF58_476D);
