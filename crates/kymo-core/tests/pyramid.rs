@@ -175,16 +175,20 @@ proptest! {
 
     /// The phase-1 correctness criterion: every bucket at every level equals brute force
     /// over its samples, empty buckets are flagged, and block sums are exact, whatever the
-    /// chunk size of the build.
+    /// chunk size and thread count of the build.
     #[test]
     fn pyramid_matches_brute_force(
         sample_type in sample_types(),
         (n, (len, segments)) in shapes(),
         chunk in prop_oneof![1..=100u64, 1..=300_000u64],
+        threads in 1..=5usize,
         seed in any::<u64>(),
     ) {
         let (rec, _) = mem_recording(sample_type, n, len, segments, seed);
-        let mut builder = PyramidBuilder::new(&rec, GridId(0)).unwrap().with_chunk_len(chunk);
+        let mut builder = PyramidBuilder::new(&rec, GridId(0))
+            .unwrap()
+            .with_chunk_len(chunk)
+            .with_threads(threads);
         prop_assert_eq!(builder.len(), len);
         // Count steps on small builds only; chunk 1 over long grids is many steps.
         if len <= 5000 {

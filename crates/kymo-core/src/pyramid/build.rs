@@ -7,22 +7,30 @@ use super::{MemStorage, Pyramid, PyramidStorage};
 use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, TileSample, max_level};
 use crate::{GridId, ReadError, Recording, Sample, SampleType};
 
-/// Seconds of samples read per step by default.
+/// By default a step reads 10 s of samples or 16 MB, whichever is longer, but at most
+/// 2^24 samples (all channels).
 const CHUNK_SECONDS: f64 = 10.0;
-/// Upper bound on the samples (all channels) read per step by default.
+const CHUNK_BYTES: u64 = 16 << 20;
 const MAX_CHUNK_VALUES: u64 = 1 << 24;
+/// Upper bound on the threads a build uses by default.
+const MAX_THREADS: usize = 8;
 
 /// Builds the pyramid of one grid in a single sequential pass over its samples, a chunk of
 /// samples across all channels per [`step`](Self::step).
 ///
-/// Each step reads one chunk (about 10 s by default), stores every level tile it completes
-/// and publishes its progress to the storage. Gaps are never read. After a step fails, the builder must not be used further.
+/// Each step reads one chunk (10 s or 16 MB by default, whichever is longer), stores every
+/// level tile it completes and publishes its progress to the storage. Meanwhile a helper
+/// thread fetches the next chunk from disk, and the chunk's channels are folded on several
+/// threads. Gaps are never read. After a step fails, the builder must not be used further.
 pub struct PyramidBuilder<'a> {
     recording: &'a Recording,
     grid: GridId,
     len: u64,
     chunk_len: u64,
     done: u64,
+    /// The end of what was fetched ahead of the chunks so far.
+    prefetched: u64,
+    threads: usize,
     storage: Arc<dyn PyramidStorage>,
     state: State,
 }
@@ -58,13 +66,21 @@ impl<'a> PyramidBuilder<'a> {
             SampleType::F32 => State::F32(Levels::new(channels, len)),
         };
         let seconds = (g.rate() * CHUNK_SECONDS).ceil() as u64;
-        let chunk_len = seconds.min(MAX_CHUNK_VALUES / channels as u64).max(1);
+        let instant_bytes = (channels * g.sample_type().size()).max(1) as u64;
+        let chunk_len = seconds
+            .max(CHUNK_BYTES / instant_bytes)
+            .min(MAX_CHUNK_VALUES / channels.max(1) as u64)
+            .max(1);
         Ok(PyramidBuilder {
             recording,
             grid,
             len,
             chunk_len,
             done: 0,
+            prefetched: 0,
+            threads: std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(MAX_THREADS),
             storage: Arc::new(MemStorage::new()),
             state,
         })
@@ -79,6 +95,13 @@ impl<'a> PyramidBuilder<'a> {
     /// Reads `samples` samples (at least 1) per step.
     pub fn with_chunk_len(mut self, samples: u64) -> Self {
         self.chunk_len = samples.max(1);
+        self
+    }
+
+    /// Reads and folds the channels of a step on up to `threads` threads (at least 1).
+    /// The default is the number of CPUs, up to 8.
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = threads.max(1);
         self
     }
 
@@ -100,12 +123,23 @@ impl<'a> PyramidBuilder<'a> {
     pub fn step(&mut self) -> Result<bool, ReadError> {
         if self.done < self.len {
             let range = self.done..self.done.saturating_add(self.chunk_len).min(self.len);
+            // The next chunk, fetched from disk while this one is folded.
+            let next = range.end.max(self.prefetched)
+                ..range.end.saturating_add(self.chunk_len).min(self.len);
             let (rec, grid, storage) = (self.recording, self.grid, &*self.storage);
-            match &mut self.state {
-                State::I16(l) => l.step(rec, grid, range.clone(), storage)?,
-                State::I32(l) => l.step(rec, grid, range.clone(), storage)?,
-                State::F32(l) => l.step(rec, grid, range.clone(), storage)?,
-            }
+            let (r, threads, state) = (range.clone(), self.threads, &mut self.state);
+            std::thread::scope(|scope| {
+                if next.start < next.end {
+                    let next = next.clone();
+                    scope.spawn(move || rec.prefetch(grid, next));
+                }
+                match state {
+                    State::I16(l) => l.step(rec, grid, r, storage, threads),
+                    State::I32(l) => l.step(rec, grid, r, storage, threads),
+                    State::F32(l) => l.step(rec, grid, r, storage, threads),
+                }
+            })?;
+            self.prefetched = self.prefetched.max(next.end);
             self.done = range.end;
             self.storage.publish(self.done);
         }
@@ -130,10 +164,14 @@ struct Levels<T> {
     channels: usize,
     len: u64,
     tiles: Vec<Partial<T>>,
-    /// Sums of the current block, per channel.
-    sums: Vec<f64>,
-    /// The chunk being processed, channel-major.
+    /// Sum of the current block so far, per channel.
+    carry: Vec<f64>,
+    /// The section being processed, channel-major.
     chunk: Vec<T>,
+    /// Block sums of the section, channel-major.
+    sums: Vec<f64>,
+    /// The sums of one block across the channels, as stored.
+    column: Vec<f64>,
 }
 
 /// One level tile being filled: (min, max) pairs, channel-major, `TILE_LEN` per channel.
@@ -145,7 +183,7 @@ struct Partial<T> {
 
 const TILE: usize = TILE_LEN as usize;
 
-impl<T: TileSample> Levels<T> {
+impl<T: Fold> Levels<T> {
     fn new(channels: usize, len: u64) -> Self {
         let top = max_level(len);
         let mut tiles = Vec::new();
@@ -165,8 +203,10 @@ impl<T: TileSample> Levels<T> {
             channels,
             len,
             tiles,
-            sums: vec![0.0; channels],
+            carry: vec![0.0; channels],
             chunk: Vec::new(),
+            sums: Vec::new(),
+            column: Vec::new(),
         }
     }
 
@@ -176,33 +216,20 @@ impl<T: TileSample> Levels<T> {
         grid: GridId,
         range: Range<u64>,
         storage: &dyn PyramidStorage,
+        threads: usize,
     ) -> Result<(), ReadError> {
-        let g = recording.grid(grid);
-        let n = (range.end - range.start) as usize;
-        let present: Vec<Range<u64>> = g.present_in(range.clone()).collect();
-        if !present.is_empty() {
-            self.chunk.clear();
-            self.chunk.resize(self.channels * n, T::default());
-            let out = T::as_samples_mut(&mut self.chunk);
-            recording.read_native(grid, g.channels(), range.clone(), out)?;
-        }
-        let level1 = Level::RAW.up().map_or(u64::MAX, Level::tile_samples);
-        // Pieces end at block boundaries; level-1 tiles end at block boundaries too.
+        let present: Vec<Range<u64>> = recording.grid(grid).present_in(range.clone()).collect();
+        let level1 = self.tiles.first().map(|t| t.level.tile_samples());
         let mut start = range.start;
         while start < range.end {
-            let block = start / TILE_LEN;
-            let end = ((block + 1) * TILE_LEN).min(range.end);
-            for p in &present {
-                let run = p.start.max(start)..p.end.min(end);
-                if run.start < run.end {
-                    self.fold(range.start, n, run);
-                }
-            }
-            if end % TILE_LEN == 0 || end == self.len {
-                storage.put_sums(block, &self.sums);
-                self.sums.fill(0.0);
-            }
-            if !self.tiles.is_empty() && (end % level1 == 0 || end == self.len) {
+            // A section lies inside one level-1 tile, so its channels can be folded
+            // independently; tiles and sums are then stored in order.
+            let end = level1.map_or(range.end, |l| {
+                (start / l + 1).saturating_mul(l).min(range.end)
+            });
+            self.section(recording, grid, start..end, &present, threads)?;
+            self.store_sums(start..end, storage);
+            if level1.is_some_and(|l| end % l == 0 || end == self.len) {
                 self.finish_tile(storage);
             }
             start = end;
@@ -210,40 +237,125 @@ impl<T: TileSample> Levels<T> {
         Ok(())
     }
 
-    /// Adds the present samples `run` (inside one block) to the sums and level-1 buckets.
-    fn fold(&mut self, chunk_start: u64, n: usize, run: Range<u64>) {
-        let offset = (run.start - chunk_start) as usize..(run.end - chunk_start) as usize;
-        for c in 0..self.channels {
-            let row = &self.chunk[c * n..][..n];
-            let mut sum = self.sums[c];
-            for &x in &row[offset.clone()] {
-                sum += x.to_f64();
-            }
-            self.sums[c] = sum;
+    /// Reads `section` (inside one level-1 tile) and folds its present samples into the
+    /// level-1 buckets and the section's block sums, splitting the channels into up to
+    /// `threads` groups that are read and folded in parallel.
+    fn section(
+        &mut self,
+        recording: &Recording,
+        grid: GridId,
+        section: Range<u64>,
+        present: &[Range<u64>],
+        threads: usize,
+    ) -> Result<(), ReadError> {
+        let n = (section.end - section.start) as usize;
+        let first_block = section.start / TILE_LEN;
+        let blocks = ((section.end - 1) / TILE_LEN - first_block + 1) as usize;
+        self.sums.clear();
+        self.sums.resize(self.channels * blocks, 0.0);
+        for (row, &carry) in self.sums.chunks_exact_mut(blocks).zip(&self.carry) {
+            row[0] = carry;
+        }
+        let runs: Vec<Range<u64>> = present
+            .iter()
+            .map(|p| p.start.max(section.start)..p.end.min(section.end))
+            .filter(|r| r.start < r.end)
+            .collect();
+        if runs.is_empty() || self.channels == 0 {
+            return Ok(());
+        }
+        self.chunk.clear();
+        self.chunk.resize(self.channels * n, T::default());
 
-            let Some(tile) = self.tiles.first_mut() else {
-                continue;
-            };
-            let bucket_len = tile.level.bucket_len();
-            let first_bucket = tile.time * TILE_LEN;
-            let pairs = &mut tile.pairs[c * TILE * 2..][..TILE * 2];
-            let mut i = run.start;
-            while i < run.end {
-                let k = i / bucket_len;
-                let end = ((k + 1) * bucket_len).min(run.end);
-                let j = (k - first_bucket) as usize;
-                let slot = &mut pairs[2 * j..][..2];
-                for &x in &row[(i - chunk_start) as usize..(end - chunk_start) as usize] {
-                    // NaN compares false either way and never lands in a bucket.
-                    if x < slot[0] {
-                        slot[0] = x;
-                    }
-                    if x > slot[1] {
-                        slot[1] = x;
+        let per = self.channels.div_ceil(threads.clamp(1, self.channels));
+        let (bucket_len, first_bucket, mut pairs) = match self.tiles.first_mut() {
+            Some(t) => (
+                t.level.bucket_len(),
+                t.time * TILE_LEN,
+                t.pairs.chunks_mut(per * TILE * 2).map(Some).collect(),
+            ),
+            None => (1, 0, Vec::new()),
+        };
+        pairs.resize_with(self.channels.div_ceil(per), || None);
+
+        let at = |i: u64| (i - section.start) as usize;
+        let ids = recording.grid(grid).channels();
+        let work = |ids: &[crate::ChannelId],
+                    rows: &mut [T],
+                    sums: &mut [f64],
+                    mut pairs: Option<&mut [T]>|
+         -> Result<(), ReadError> {
+            recording.read_native(grid, ids, section.clone(), T::as_samples_mut(rows))?;
+            for (c, row) in rows.chunks_exact(n).enumerate() {
+                let sums = &mut sums[c * blocks..][..blocks];
+                for run in &runs {
+                    let mut i = run.start;
+                    while i < run.end {
+                        let block = i / TILE_LEN;
+                        let end = ((block + 1) * TILE_LEN).min(run.end);
+                        let b = (block - first_block) as usize;
+                        sums[b] = T::sum(&row[at(i)..at(end)], sums[b]);
+                        i = end;
                     }
                 }
-                i = end;
+                let Some(pairs) = pairs.as_deref_mut() else {
+                    continue;
+                };
+                let pairs = &mut pairs[c * TILE * 2..][..TILE * 2];
+                for run in &runs {
+                    let mut i = run.start;
+                    while i < run.end {
+                        let k = i / bucket_len;
+                        let end = ((k + 1) * bucket_len).min(run.end);
+                        let slot = &mut pairs[2 * (k - first_bucket) as usize..][..2];
+                        (slot[0], slot[1]) = T::min_max(&row[at(i)..at(end)], slot[0], slot[1]);
+                        i = end;
+                    }
+                }
             }
+            Ok(())
+        };
+
+        let mut jobs = ids
+            .chunks(per)
+            .zip(self.chunk.chunks_mut(per * n))
+            .zip(self.sums.chunks_mut(per * blocks))
+            .zip(pairs)
+            .map(|(((ids, rows), sums), pairs)| (ids, rows, sums, pairs));
+        let Some((ids, rows, sums, pairs)) = jobs.next() else {
+            return Ok(());
+        };
+        let work = &work;
+        std::thread::scope(|scope| {
+            let others: Vec<_> = jobs
+                .map(|(ids, rows, sums, pairs)| scope.spawn(move || work(ids, rows, sums, pairs)))
+                .collect();
+            let mut result = work(ids, rows, sums, pairs);
+            for other in others {
+                let other = other
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                result = result.and(other);
+            }
+            result
+        })
+    }
+
+    /// Stores the sums of the blocks that `section` completes and carries the last block's
+    /// sums over if it continues past the section.
+    fn store_sums(&mut self, section: Range<u64>, storage: &dyn PyramidStorage) {
+        let first_block = section.start / TILE_LEN;
+        let blocks = ((section.end - 1) / TILE_LEN - first_block + 1) as usize;
+        let last_complete = section.end % TILE_LEN == 0 || section.end == self.len;
+        let complete = if last_complete { blocks } else { blocks - 1 };
+        for b in 0..complete {
+            self.column.clear();
+            self.column
+                .extend(self.sums.chunks_exact(blocks).map(|row| row[b]));
+            storage.put_sums(first_block + b as u64, &self.column);
+        }
+        for (carry, row) in self.carry.iter_mut().zip(self.sums.chunks_exact(blocks)) {
+            *carry = if last_complete { 0.0 } else { row[blocks - 1] };
         }
     }
 
@@ -291,6 +403,56 @@ impl<T: TileSample> Levels<T> {
             }
             l += 1;
         }
+    }
+}
+
+/// The per-sample kernels of the build, one per sample type so that they vectorise.
+trait Fold: TileSample {
+    /// `acc` plus the sum of `xs`, which lie inside one block. Exact for integers; for
+    /// floats the samples are added one by one, in order.
+    fn sum(xs: &[Self], acc: f64) -> f64;
+    /// `(min, max)` extended by `xs`. NaN never becomes a min or max.
+    fn min_max(xs: &[Self], min: Self, max: Self) -> (Self, Self);
+}
+
+impl Fold for i16 {
+    fn sum(xs: &[i16], acc: f64) -> f64 {
+        debug_assert!(xs.len() <= TILE);
+        // At most 4096 · 2^15 = 2^27 in magnitude: exact in i32, then exact in f64.
+        acc + f64::from(xs.iter().map(|&x| i32::from(x)).sum::<i32>())
+    }
+
+    fn min_max(xs: &[i16], min: i16, max: i16) -> (i16, i16) {
+        let lo = xs.iter().copied().fold(min, Ord::min);
+        let hi = xs.iter().copied().fold(max, Ord::max);
+        (lo, hi)
+    }
+}
+
+impl Fold for i32 {
+    fn sum(xs: &[i32], acc: f64) -> f64 {
+        debug_assert!(xs.len() <= TILE);
+        // At most 4096 · 2^31 = 2^43 in magnitude: exact in i64 and in f64.
+        acc + xs.iter().map(|&x| i64::from(x)).sum::<i64>() as f64
+    }
+
+    fn min_max(xs: &[i32], min: i32, max: i32) -> (i32, i32) {
+        let lo = xs.iter().copied().fold(min, Ord::min);
+        let hi = xs.iter().copied().fold(max, Ord::max);
+        (lo, hi)
+    }
+}
+
+impl Fold for f32 {
+    fn sum(xs: &[f32], acc: f64) -> f64 {
+        xs.iter().fold(acc, |sum, &x| sum + f64::from(x))
+    }
+
+    fn min_max(xs: &[f32], min: f32, max: f32) -> (f32, f32) {
+        // NaN compares false either way and never replaces the bound.
+        xs.iter().fold((min, max), |(lo, hi), &x| {
+            (if x < lo { x } else { lo }, if x > hi { x } else { hi })
+        })
     }
 }
 

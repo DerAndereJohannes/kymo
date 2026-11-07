@@ -121,6 +121,7 @@ proptest! {
         gain in gains(),
         offset in offsets(),
         chunk in 1..=20_000u64,
+        threads in 1..=3usize,
         lose_sums in any::<bool>(),
         seed in any::<u64>(),
     ) {
@@ -130,7 +131,10 @@ proptest! {
             c.offset = offset;
         }
         let rec = Recording::new(opened).unwrap().0;
-        let mut builder = PyramidBuilder::new(&rec, GridId(0)).unwrap().with_chunk_len(chunk);
+        let mut builder = PyramidBuilder::new(&rec, GridId(0))
+            .unwrap()
+            .with_chunk_len(chunk)
+            .with_threads(threads);
         if lose_sums {
             builder = builder.with_storage(Arc::new(OddSumsLost(MemStorage::new())));
         }

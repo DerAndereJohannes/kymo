@@ -21,9 +21,22 @@ thiserror.workspace = true
 
 [dev-dependencies]
 anyhow = "1"
+criterion.workspace = true
 kymo-core = { workspace = true, features = ["testing"] }
 kymo-testgen.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "build"
+harness = false
+
+[[bench]]
+name = "query"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
 
 [lints]
 workspace = true

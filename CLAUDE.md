@@ -57,6 +57,9 @@ cargo test --workspace -- --ignored        # needs KYMO_TEST_DATA
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p kymo-testgen -- --help
 cargo run -p kymo --release -- file.bdf
+cargo bench -p kymo-core                   # build and decode benches on generated files
+KYMO_BENCH_BDF=big.bdf cargo bench -p kymo-core --bench query   # big.bdf from `kymo-testgen bdf-256ch-8h`
+cargo run --release -p kymo-core --example pyramid -- file.bdf [--sidecar DIR]   # build speed
 python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
 python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne

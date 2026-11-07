@@ -14,6 +14,8 @@ use crate::{BlockReader, ChannelId, GridId, OpenError, Opened, ReadError, Sample
 #[derive(Debug)]
 pub struct EdfReader {
     map: Mmap,
+    /// The mapped file, for reading ahead.
+    file: File,
     layout: RecordLayout,
     /// The grid of each data channel.
     channel_grid: Vec<GridId>,
@@ -65,6 +67,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         warnings: parsed.warnings,
         reader: Box::new(EdfReader {
             map,
+            file,
             layout: parsed.layout,
             channel_grid,
             record_starts,
@@ -122,9 +125,67 @@ impl BlockReader for EdfReader {
             }),
         }
     }
+
+    fn prefetch(&self, grid: GridId, range: Range<u64>) {
+        let Some(records) = self.records(grid, &range) else {
+            return;
+        };
+        let layout = &self.layout;
+        let start = layout.header_bytes + records.start * layout.record_bytes;
+        let end =
+            (layout.header_bytes + records.end * layout.record_bytes).min(self.map.len() as u64);
+        // Plain reads fill the page cache much faster than page faults on the mapping
+        // (on macOS about 6 against 2 GB/s, even with madvise). Errors only cost speed.
+        let mut buf = vec![0; (end.saturating_sub(start) as usize).min(PREFETCH_PIECE)];
+        let mut at = start;
+        while at < end {
+            let piece = &mut buf[..(end - at).min(PREFETCH_PIECE as u64) as usize];
+            match read_at(&self.file, piece, at) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => at += read as u64,
+            }
+        }
+    }
+}
+
+/// Bytes read per call when prefetching.
+const PREFETCH_PIECE: usize = 8 << 20;
+
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_at(_: &File, _: &mut [u8], _: u64) -> std::io::Result<usize> {
+    Ok(0)
 }
 
 impl EdfReader {
+    /// The records holding samples of `range` of `grid`, if the grid has channels.
+    fn records(&self, grid: GridId, range: &Range<u64>) -> Option<Range<u64>> {
+        let channel = self.channel_grid.iter().position(|&g| g == grid)?;
+        let spr = self.layout.channels[channel].samples;
+        let n = self.layout.n_records;
+        let records = match &self.record_starts {
+            Some(starts) => {
+                let starts = &starts[grid.0 as usize];
+                let first = starts
+                    .partition_point(|&s| s <= range.start)
+                    .saturating_sub(1);
+                first as u64..starts.partition_point(|&s| s < range.end) as u64
+            }
+            None if spr == 0 => return None,
+            None => range.start / spr..range.end.div_ceil(spr),
+        };
+        Some(records.start.min(n)..records.end.min(n))
+    }
+
     /// Copies `range` of every block into `dst` (channel-major, `n` samples per channel),
     /// record by record so the file is read in order.
     fn copy<T>(

@@ -58,6 +58,17 @@ pub trait BlockReader: Send + Sync {
         range: Range<u64>,
         out: SamplesMut<'_>,
     ) -> Result<(), ReadError>;
+
+    /// Fetches `range` of `grid` from disk into the operating system's cache, so that a
+    /// later [`read`](Self::read) of it does not wait for the disk. Blocks while it reads,
+    /// so callers run it on a helper thread. Only an optimisation: errors are ignored, and
+    /// the default does nothing.
+    ///
+    /// [`Recording`] guarantees that the grid exists and that `range` is non-empty and lies
+    /// inside the grid; it may span gaps.
+    fn prefetch(&self, grid: GridId, range: Range<u64>) {
+        let _ = (grid, range);
+    }
 }
 
 /// An open recording. Immutable, so it can be shared with tile workers as `Arc<Recording>`.
@@ -169,6 +180,18 @@ impl Recording {
             SamplesMut::I16(buf) => self.read_typed(grid, g, channels, range, len, buf),
             SamplesMut::I32(buf) => self.read_typed(grid, g, channels, range, len, buf),
             SamplesMut::F32(buf) => self.read_typed(grid, g, channels, range, len, buf),
+        }
+    }
+
+    /// Fetches `range` of `grid` from disk ahead of reading it; blocks meanwhile (see
+    /// [`BlockReader::prefetch`]). Unknown grids and the part past the grid's end are ignored.
+    pub fn prefetch(&self, grid: GridId, range: Range<u64>) {
+        let Some(g) = self.header.grids.get(grid.0 as usize) else {
+            return;
+        };
+        let range = range.start..range.end.min(g.len());
+        if range.start < range.end {
+            self.reader.prefetch(grid, range);
         }
     }
 

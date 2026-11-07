@@ -98,6 +98,40 @@ fn mixed_edf_d_preset_has_gaps_in_every_grid() {
     assert_eq!(annotations, expected_annotations(&spec));
 }
 
+/// Prefetching only warms the cache: any range of any grid, gaps and the end included, is
+/// accepted without a panic and leaves the samples unchanged.
+#[test]
+fn prefetch_accepts_any_range_and_changes_nothing() {
+    let spec = Spec::preset("edf+d-mixed").unwrap();
+    let file = TempFile::written(&spec);
+    let (rec, _) = open(file.path());
+    for g in 0..=rec.grids().len() as u32 {
+        let len = rec.grids().get(g as usize).map_or(10, |grid| grid.len());
+        for (a, b) in [
+            (0, len),
+            (0, 1),
+            (len / 3, len / 2),
+            (len - 1, len + 5),
+            (len, len + 1),
+        ] {
+            rec.prefetch(kymo_core::GridId(g), a..b);
+        }
+        #[allow(clippy::reversed_empty_ranges)]
+        rec.prefetch(kymo_core::GridId(g), 5..1);
+        rec.prefetch(kymo_core::GridId(g), u64::MAX - 1..u64::MAX);
+    }
+    check_against_spec(&rec, &spec).unwrap();
+
+    // A truncated last record. Never change a mapped file (Windows refuses).
+    drop(rec);
+    let full = std::fs::read(file.path()).unwrap();
+    std::fs::write(file.path(), &full[..full.len() - 100]).unwrap();
+    let (rec, _) = open(file.path());
+    for grid in 0..rec.grids().len() as u32 {
+        rec.prefetch(kymo_core::GridId(grid), 0..u64::MAX);
+    }
+}
+
 #[test]
 fn contiguous_plus_file_has_one_segment_and_a_sub_second_start() {
     let mut spec = Spec::preset("bdf+c-small").unwrap();
