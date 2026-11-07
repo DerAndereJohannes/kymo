@@ -16,6 +16,19 @@ pub enum Reading {
     Range { min: f64, max: f64 },
 }
 
+impl Reading {
+    /// The reading measured from `baseline`, as the trace is drawn with DC removal.
+    pub fn relative_to(self, baseline: f64) -> Reading {
+        match self {
+            Reading::Value(v) => Reading::Value(v - baseline),
+            Reading::Range { min, max } => Reading::Range {
+                min: min - baseline,
+                max: max - baseline,
+            },
+        }
+    }
+}
+
 /// What `channel` shows at `time` (seconds from the start) in `view`: the nearest sample
 /// if the view draws samples, else the envelope of the bucket holding `time`. Read from
 /// the view's tile or, as the trace area does, its nearest cached coarser tile. `None` in

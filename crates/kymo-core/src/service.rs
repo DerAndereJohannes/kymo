@@ -5,17 +5,24 @@
 //! decode level-0 tiles from the recording and read higher levels from the pyramid. A
 //! pyramid tile the build hasn't reached stays queued in its place until the build's
 //! watermark passes it.
+//!
+//! Workers also compute window means for DC removal: one at a time, newest request first,
+//! each once the block sums cover enough of its window (see
+//! [`ServiceOptions::mean_decode_limit`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 use crate::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage, Sidecar, SidecarError};
-use crate::tile::{DEFAULT_BUDGET, Level, SignalVersion, Tile, TileCache, TileKey, compute_raw};
-use crate::{GridId, Recording, TileError};
+use crate::tile::{
+    DEFAULT_BUDGET, Level, SignalVersion, TILE_LEN, Tile, TileCache, TileKey, compute_raw,
+};
+use crate::{ChannelId, GridId, Recording, TileError};
 
 /// Where the pyramid is kept.
 #[derive(Clone, Debug)]
@@ -40,11 +47,18 @@ pub struct ServiceOptions {
     pub build_threads: usize,
     /// Samples per build step; `None` for the builder's default.
     pub build_chunk_len: Option<u64>,
+    /// Most samples a window mean may decode from the file, per channel. Means that would
+    /// decode more (the build hasn't summed their blocks yet) wait for the build.
+    pub mean_decode_limit: u64,
 }
+
+/// Default [`ServiceOptions::mean_decode_limit`]: 64 blocks, about 2 min at 2 kHz.
+pub const DEFAULT_MEAN_DECODE_LIMIT: u64 = 64 * TILE_LEN;
 
 impl ServiceOptions {
     /// Defaults: one worker per CPU up to 4, the default cache budget, half the CPUs for
-    /// the build (so tile work stays responsive), and the builder's own step size.
+    /// the build (so tile work stays responsive), the builder's own step size, and
+    /// [`DEFAULT_MEAN_DECODE_LIMIT`].
     pub fn new(pyramids: PyramidStore) -> Self {
         let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
         ServiceOptions {
@@ -53,6 +67,7 @@ impl ServiceOptions {
             pyramids,
             build_threads: (cpus / 2).max(1),
             build_chunk_len: None,
+            mean_decode_limit: DEFAULT_MEAN_DECODE_LIMIT,
         }
     }
 }
@@ -91,6 +106,13 @@ impl BuildProgress {
     }
 }
 
+/// A channel's mean over a window of its grid, in physical units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mean {
+    pub range: Range<u64>,
+    pub value: f64,
+}
+
 /// Owns a recording's tile cache and pyramid, the pyramid's background build, and the
 /// workers that fill the cache.
 ///
@@ -122,6 +144,9 @@ struct Shared {
     build: Mutex<BuildEnd>,
     stop: AtomicBool,
     notify: Box<dyn Fn() + Send + Sync>,
+    mean_decode_limit: u64,
+    /// The last mean computed per channel that had a value.
+    means: Mutex<HashMap<ChannelId, Mean>>,
 }
 
 #[derive(Default)]
@@ -134,6 +159,12 @@ struct Queue {
     /// Keys a worker is computing.
     running: HashSet<TileKey>,
     failed: HashMap<TileKey, Arc<TileError>>,
+    /// Means of the newest request still to compute, in its order.
+    means: Vec<(ChannelId, Range<u64>)>,
+    /// The mean a worker is computing.
+    mean_running: Option<(ChannelId, Range<u64>)>,
+    /// The window of each channel's last computed mean, whatever came of it.
+    mean_done: HashMap<ChannelId, Range<u64>>,
     /// The pyramids won't grow any more, so a pyramid key is ready or never will be.
     build_ended: bool,
     shutdown: bool,
@@ -183,6 +214,8 @@ impl TileService {
             build: Mutex::default(),
             stop: AtomicBool::new(false),
             notify: Box::new(notify),
+            mean_decode_limit: options.mean_decode_limit,
+            means: Mutex::default(),
         });
 
         // Dropped on an error below, which stops the threads started so far.
@@ -255,6 +288,36 @@ impl TileService {
         shared.work.notify_all();
     }
 
+    /// Asks for the mean of each channel over its window (samples of the channel's grid),
+    /// in order. Replaces the previous request: its means not started yet are dropped.
+    /// Windows whose mean was already computed (or is being computed) are skipped.
+    pub fn request_means(&self, windows: impl IntoIterator<Item = (ChannelId, Range<u64>)>) {
+        let mut queue = self.shared.lock_queue();
+        let Queue {
+            means,
+            mean_running,
+            mean_done,
+            ..
+        } = &mut *queue;
+        means.clear();
+        for (channel, range) in windows {
+            let running = mean_running
+                .as_ref()
+                .is_some_and(|(c, r)| *c == channel && *r == range);
+            if !running && mean_done.get(&channel) != Some(&range) {
+                means.push((channel, range));
+            }
+        }
+        drop(queue);
+        self.shared.work.notify_all();
+    }
+
+    /// The last mean computed for `channel` that had a value: a window entirely in a gap,
+    /// or one that could not be read, leaves the one before.
+    pub fn mean(&self, channel: ChannelId) -> Option<Mean> {
+        lock(&self.shared.means).get(&channel).cloned()
+    }
+
     pub fn recording(&self) -> &Arc<Recording> {
         &self.shared.recording
     }
@@ -319,23 +382,41 @@ impl Shared {
 
     fn run_worker(&self) {
         loop {
-            let key = {
+            let job = {
                 let mut queue = self.lock_queue();
                 loop {
                     if queue.shutdown {
                         return;
                     }
                     let ended = queue.build_ended;
+                    // Means first: they are quick, and each moves a whole trace.
+                    if queue.mean_running.is_none()
+                        && let Some(i) = queue
+                            .means
+                            .iter()
+                            .position(|(c, r)| self.mean_ready(*c, r, ended))
+                    {
+                        let mean = queue.means.remove(i);
+                        queue.mean_running = Some(mean.clone());
+                        break Job::Mean(mean.0, mean.1);
+                    }
                     if let Some(i) = queue.pending.iter().position(|k| self.ready(k, ended)) {
                         let key = queue.pending.remove(i);
                         queue.queued.remove(&key);
                         queue.running.insert(key);
-                        break key;
+                        break Job::Tile(key);
                     }
                     queue = self
                         .work
                         .wait(queue)
                         .unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            let key = match job {
+                Job::Tile(key) => key,
+                Job::Mean(channel, range) => {
+                    self.compute_mean(channel, range);
+                    continue;
                 }
             };
             let failure = match self.compute(key) {
@@ -354,6 +435,43 @@ impl Shared {
             drop(queue);
             (self.notify)();
         }
+    }
+
+    /// Computes and stores one mean, then tells the viewer.
+    fn compute_mean(&self, channel: ChannelId, range: Range<u64>) {
+        let value = self
+            .recording
+            .channels()
+            .get(channel.0 as usize)
+            .and_then(|c| self.pyramids.get(c.grid.0 as usize))
+            .and_then(|p| p.window_mean(&self.recording, channel, range.clone()).ok())
+            .flatten();
+        if let Some(value) = value {
+            let mean = Mean {
+                range: range.clone(),
+                value,
+            };
+            lock(&self.means).insert(channel, mean);
+        }
+        let mut queue = self.lock_queue();
+        queue.mean_running = None;
+        queue.mean_done.insert(channel, range);
+        drop(queue);
+        (self.notify)();
+    }
+
+    /// Whether a worker can compute the mean of `channel` over `range` now: once it decodes
+    /// no more than the limit, or the build has ended. Bad requests are ready, to fail.
+    fn mean_ready(&self, channel: ChannelId, range: &Range<u64>, build_ended: bool) -> bool {
+        if build_ended {
+            return true;
+        }
+        let pyramid = self
+            .recording
+            .channels()
+            .get(channel.0 as usize)
+            .and_then(|c| self.pyramids.get(c.grid.0 as usize));
+        pyramid.is_none_or(|p| p.window_mean_decodes(range.clone()) <= self.mean_decode_limit)
     }
 
     /// Whether a worker can compute `key` now: level-0 tiles always, pyramid tiles once the
@@ -448,6 +566,11 @@ impl Shared {
         self.work.notify_all();
         (self.notify)();
     }
+}
+
+enum Job {
+    Tile(TileKey),
+    Mean(ChannelId, Range<u64>),
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

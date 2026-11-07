@@ -232,3 +232,37 @@ fn window_means_of_a_generated_edf_plus_d_file() {
         }
     }
 }
+
+#[test]
+fn decodes_counts_what_the_build_has_not_summed() {
+    let len = 10 * TILE_LEN + 500;
+    let (opened, _) = mem_opened(kymo_core::SampleType::I16, 1, len, vec![0..len], 1);
+    let rec = Recording::new(opened).unwrap().0;
+    let mut builder = PyramidBuilder::new(&rec, GridId(0))
+        .unwrap()
+        .with_chunk_len(TILE_LEN);
+    let pyramid = builder.pyramid();
+    let range = 100..8 * TILE_LEN + 7;
+    let edges = (TILE_LEN - 100) + 7;
+    // Nothing built: every sample.
+    assert_eq!(
+        pyramid.window_mean_decodes(range.clone()),
+        range.end - range.start
+    );
+    // Three blocks built: the edges and blocks 3 to 7.
+    for _ in 0..3 {
+        builder.step().unwrap();
+    }
+    assert_eq!(
+        pyramid.window_mean_decodes(range.clone()),
+        edges + 5 * TILE_LEN
+    );
+    let pyramid = builder.finish().unwrap();
+    assert_eq!(pyramid.window_mean_decodes(range.clone()), edges);
+    // Inside one block, past the end, and empty.
+    assert_eq!(pyramid.window_mean_decodes(10..20), 10);
+    assert_eq!(pyramid.window_mean_decodes(len - 5..len + 100), 5);
+    assert_eq!(pyramid.window_mean_decodes(50..50), 0);
+    // An exact block needs no decoding once built.
+    assert_eq!(pyramid.window_mean_decodes(TILE_LEN..2 * TILE_LEN), 0);
+}

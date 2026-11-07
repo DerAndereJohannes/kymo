@@ -74,6 +74,26 @@ impl Pyramid {
         let c = recording.channel(channel);
         Ok(Some(sum / count as f64 * c.gain + c.offset))
     }
+
+    /// How many samples [`window_mean`](Self::window_mean) over `range` would decode now:
+    /// the partial blocks at its edges, and every whole block the build hasn't reached.
+    /// Counts sample positions, gaps included; `range` is cut to the grid.
+    pub fn window_mean_decodes(&self, range: Range<u64>) -> u64 {
+        let len = self.grid.len();
+        let range = range.start.min(len)..range.end.min(len);
+        if range.start >= range.end {
+            return 0;
+        }
+        let first = range.start.div_ceil(TILE_LEN);
+        let last = range.end / TILE_LEN;
+        if first >= last {
+            return range.end - range.start;
+        }
+        // Whole blocks inside the range end before the grid does, so block `b` is built
+        // once the watermark reaches `(b + 1) · TILE_LEN`.
+        let built = (self.done() / TILE_LEN).clamp(first, last);
+        (first * TILE_LEN - range.start) + (range.end - last * TILE_LEN) + (last - built) * TILE_LEN
+    }
 }
 
 /// Sum of the native values of `channel` over the present samples of `range`.

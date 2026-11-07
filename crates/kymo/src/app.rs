@@ -148,6 +148,7 @@ impl KymoApp {
             ready: matches!(self.state, State::Ready(_)),
             sidebar: self.show_sidebar,
             channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
+            dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
         }
     }
 
@@ -293,8 +294,8 @@ impl KymoApp {
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
-            // Disabled until step 5 (see `AppMenuState::enabled`).
-            Action::Settings | Action::ToggleDc => {}
+            // Disabled until step 5c (see `AppMenuState::enabled`).
+            Action::Settings => {}
             _ => {
                 if let State::Ready(viewer) = &mut self.state {
                     viewer.apply(action);
@@ -384,14 +385,15 @@ struct AppMenuState {
     sidebar: bool,
     /// Whether the pointer is over a channel, which Toggle Bad acts on.
     channel: bool,
+    dc: bool,
 }
 
 impl MenuState for AppMenuState {
     fn enabled(&self, action: Action) -> bool {
-        // Settings and DC removal come in step 5; Toggle Bad needs a channel to act on.
+        // Settings come in step 5c; Toggle Bad needs a channel to act on.
         let now = match action {
             Action::ToggleBad => self.channel,
-            Action::Settings | Action::ToggleDc => false,
+            Action::Settings => false,
             _ => true,
         };
         action.enabled(self.ready) && now
@@ -400,7 +402,7 @@ impl MenuState for AppMenuState {
     fn checked(&self, action: Action) -> Option<bool> {
         match action {
             Action::ToggleSidebar => Some(self.sidebar),
-            Action::ToggleDc => Some(false),
+            Action::ToggleDc => Some(self.dc),
             _ => None,
         }
     }

@@ -7,6 +7,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -509,5 +510,164 @@ fn failures_name_the_key() {
     run.service.submit(2, [past]);
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(run.probe.worker_reads().len(), 0);
+    run.stop();
+}
+
+// Window means for DC removal.
+
+/// `two_grids` with a gain and an offset on every channel.
+fn scaled_two_grids() -> Opened {
+    let mut opened = two_grids();
+    for (c, channel) in opened.header.channels.iter_mut().enumerate() {
+        channel.gain = 1e-3 * (c as f64 + 1.0) * if c % 2 == 0 { 1.0 } else { -1.0 };
+        channel.offset = 2.5e5 * c as f64;
+    }
+    opened
+}
+
+/// The mean of `channel` of `scaled_two_grids` over the present samples of `range`.
+fn brute_mean(channel: u32, range: Range<u64>) -> Option<f64> {
+    let rec = Recording::new(scaled_two_grids()).unwrap().0;
+    let info = rec.channel(ChannelId(channel));
+    let grid = rec.grid(info.grid);
+    let row = grid
+        .channels()
+        .iter()
+        .position(|&c| c == ChannelId(channel))
+        .unwrap();
+    let data = match info.grid.0 {
+        0 => mem_data(SampleType::I32, 40, 200_000, 1),
+        _ => mem_data(SampleType::I16, 3, 50_000, 2),
+    };
+    let (mut sum, mut n) = (0.0, 0u64);
+    for part in grid.present_in(range) {
+        for i in part {
+            sum += data.get(row, i as usize) * info.gain + info.offset;
+            n += 1;
+        }
+    }
+    (n > 0).then(|| sum / n as f64)
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+}
+
+fn means_match_brute_force(slow_build: bool) {
+    let windows = [
+        (3, 0..200_000),        // the whole grid, gap included
+        (5, 65_000..95_000),    // across the gap
+        (0, 4096..8192),        // one whole block
+        (41, 1234..1300),       // inside one block
+        (42, 10..50_000),       // the other grid
+        (39, 199_990..200_000), // the end
+    ];
+    let run = start(scaled_two_grids(), |options, probe| {
+        if slow_build {
+            slow(options, probe, Duration::from_millis(2));
+        }
+    });
+    run.service
+        .request_means(windows.iter().map(|(c, r)| (ChannelId(*c), r.clone())));
+    wait_until("means", || {
+        windows.iter().all(|(c, r)| {
+            run.service
+                .mean(ChannelId(*c))
+                .is_some_and(|m| m.range == *r)
+        })
+    });
+    for (c, range) in windows {
+        let got = run.service.mean(ChannelId(c)).unwrap().value;
+        let want = brute_mean(c, range.clone()).unwrap();
+        assert!(
+            close(got, want),
+            "channel {c} {range:?}: {got} instead of {want}"
+        );
+    }
+    run.stop();
+}
+
+#[test]
+fn means_match_brute_force_after_the_build() {
+    means_match_brute_force(false);
+}
+
+#[test]
+fn means_match_brute_force_during_a_slow_build() {
+    means_match_brute_force(true);
+}
+
+#[test]
+fn a_window_in_a_gap_keeps_the_last_mean() {
+    let run = start(scaled_two_grids(), |options, _| one_worker(options));
+    wait_until("build", || run.service.progress().complete);
+    run.service.request_means([(ChannelId(7), 0..1000)]);
+    wait_until("mean", || run.service.mean(ChannelId(7)).is_some());
+    // One worker takes them in order, so once channel 8 has its mean, 7 had its turn.
+    run.service
+        .request_means([(ChannelId(7), 70_000..90_000), (ChannelId(8), 0..1000)]);
+    wait_until("later mean", || run.service.mean(ChannelId(8)).is_some());
+    let mean = run.service.mean(ChannelId(7)).unwrap();
+    assert_eq!(mean.range, 0..1000);
+    assert!(close(mean.value, brute_mean(7, 0..1000).unwrap()));
+    assert_eq!(brute_mean(7, 70_000..90_000), None);
+    run.stop();
+}
+
+#[test]
+fn a_newer_request_replaces_the_older_one() {
+    let run = start(scaled_two_grids(), |options, _| one_worker(options));
+    wait_until("build", || run.service.progress().complete);
+    run.probe.hold();
+    run.service.request_means([(ChannelId(0), 100..200)]);
+    run.probe.wait_held(1);
+    run.service
+        .request_means([(ChannelId(1), 100..200), (ChannelId(2), 100..200)]);
+    run.service.request_means([(ChannelId(3), 100..200)]);
+    run.probe.release();
+    wait_until("newest mean", || run.service.mean(ChannelId(3)).is_some());
+    // The running one finishes; the replaced ones never start.
+    assert!(run.service.mean(ChannelId(0)).is_some());
+    let read: Vec<u32> = run.probe.worker_reads().iter().map(|r| r.first.0).collect();
+    assert_eq!(read, [0, 3]);
+    assert_eq!(run.service.mean(ChannelId(1)), None);
+    assert_eq!(run.service.mean(ChannelId(2)), None);
+    // Asking again for a computed window reads nothing.
+    run.service.request_means([(ChannelId(3), 100..200)]);
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(run.probe.worker_reads().len(), 2);
+    run.stop();
+}
+
+#[test]
+fn means_beyond_the_decode_limit_wait_for_the_build() {
+    let limit = 3 * TILE_LEN;
+    let run = start(one_grid(), |options, probe| {
+        slow(options, probe, Duration::from_millis(3));
+        one_worker(options);
+        options.mean_decode_limit = limit;
+    });
+    let long = 0..60 * TILE_LEN + 100;
+    run.service.request_means([
+        (ChannelId(0), long.clone()),
+        (ChannelId(1), 10..2 * TILE_LEN),
+    ]);
+    // The short window is ready at once; the long one waits.
+    wait_until("short mean", || run.service.mean(ChannelId(1)).is_some());
+    assert_eq!(run.service.mean(ChannelId(0)), None);
+    assert!(run.service.pyramid(GridId(0)).unwrap().done() < long.end);
+    wait_until("long mean", || run.service.mean(ChannelId(0)).is_some());
+    let decoded: u64 = run
+        .probe
+        .worker_reads()
+        .iter()
+        .filter(|r| r.first == ChannelId(0))
+        .map(|r| r.range.end - r.range.start)
+        .sum();
+    assert!(decoded <= limit, "decoded {decoded} samples");
+    let data = mem_data(SampleType::I16, 4, 100 * TILE_LEN, 3);
+    let want =
+        long.clone().map(|i| data.get(0, i as usize)).sum::<f64>() / (long.end - long.start) as f64;
+    assert!(close(run.service.mean(ChannelId(0)).unwrap().value, want));
     run.stop();
 }

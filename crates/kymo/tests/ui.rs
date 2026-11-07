@@ -405,8 +405,8 @@ fn menu_items_are_enabled_as_the_state_allows() {
     assert!(enabled(&mut harness, "View", "Show Sidebar"));
     // The pointer is on the menu, not over a channel.
     assert!(!enabled(&mut harness, "View", "Toggle Bad"));
-    // Step 5 brings these.
-    assert!(!enabled(&mut harness, "View", "Remove DC"));
+    assert!(enabled(&mut harness, "View", "Remove DC"));
+    // Step 5c brings it.
     assert!(!enabled(&mut harness, "Edit", "Settings"));
 
     harness.key_press_modifiers(command(), Key::W);
@@ -427,9 +427,11 @@ fn menu_items_act_and_disabled_ones_dont() {
     assert_eq!(viewer(&harness).view().time(), 5.0..15.0);
     choose(&mut harness, "Go", "End of Recording");
     assert_eq!(viewer(&harness).view().time(), 50.0..60.0);
-    // DC removal and Settings come in step 5.
     choose(&mut harness, "View", "Remove DC");
-    assert!(!viewer(&harness).view().dc_removed());
+    assert!(viewer(&harness).view().dc_removed());
+    // Settings come in step 5c.
+    choose(&mut harness, "Edit", "Settings");
+    assert!(harness.query_by_label("Settings").is_none());
 
     choose(&mut harness, "File", "Close");
     assert!(harness.state().viewer().is_none());
@@ -437,6 +439,125 @@ fn menu_items_act_and_disabled_ones_dont() {
     choose(&mut harness, "File", "Close");
     harness.get_by_label("No recording open.");
     assert_eq!(harness.state().error(), None);
+}
+
+/// Whether the checkable `item` in the egui menu `menu` is checked; leaves the menu closed.
+fn checked(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
+    harness.get_by_label(menu).click();
+    harness.run_steps(2);
+    let checked = harness
+        .get_by_label_contains(item)
+        .accesskit_node()
+        .toggled()
+        .unwrap()
+        == egui::accesskit::Toggled::True;
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    checked
+}
+
+/// A preset with every channel's physical range moved by `offset`, as amplifiers with a
+/// DC offset record it (BioSemi files sit tens of millivolts off zero).
+fn offset_preset(name: &str, offset: f64) -> TempFile {
+    let mut spec = kymo_testgen::Spec::preset(name).unwrap();
+    for channel in spec.channels.iter_mut().filter(|c| !c.trigger) {
+        channel.physical_min += offset;
+        channel.physical_max += offset;
+    }
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    file
+}
+
+/// The mean of `channel` over the samples of `time`, brute force.
+fn window_mean(
+    rec: &kymo_core::Recording,
+    channel: kymo_core::ChannelId,
+    time: std::ops::Range<f64>,
+) -> Option<f64> {
+    let grid_id = rec.channel(channel).grid;
+    let grid = rec.grid(grid_id);
+    let range = kymo_core::tile::samples_in(grid, &time);
+    let (mut sum, mut n) = (0.0, 0usize);
+    for part in grid.present_in(range) {
+        let mut out = vec![0.0f32; (part.end - part.start) as usize];
+        rec.read_physical(grid_id, &[channel], part, &mut out)
+            .unwrap();
+        sum += out.iter().map(|&x| f64::from(x)).sum::<f64>();
+        n += out.len();
+    }
+    (n > 0).then(|| sum / n as f64)
+}
+
+/// Whether every visible channel's baseline is its brute-force mean over the view.
+fn baselines_are_window_means(app: &KymoApp) -> bool {
+    let viewer = app.viewer().unwrap();
+    let view = viewer.view();
+    let rec = &viewer.document().recording;
+    view.visible_channels().iter().all(|&c| {
+        let want = window_mean(rec, c, view.time()).unwrap();
+        // The brute force reads f32 values.
+        (viewer.baseline(c) - want).abs() <= 1e-5 * want.abs().max(1.0)
+    })
+}
+
+/// The numbers of the status line's reading ("12.5 uV" or "−3 … 4 uV").
+fn reading_numbers(status: &str) -> Vec<f64> {
+    let reading = status.rsplit_once(" A1 ").unwrap().1;
+    reading
+        .trim_end_matches(" uV")
+        .split(" … ")
+        .map(|x| x.replace('−', "-").parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn dc_removal_centres_each_trace_on_its_window_mean() {
+    let file = offset_preset("bdf+c-small", -21_000.0);
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let a1 = kymo_core::ChannelId(0);
+    assert_eq!(viewer(&harness).baseline(a1), 0.0);
+    assert!(!checked(&mut harness, "View", "Remove DC"));
+
+    // The value under the pointer, without and with DC removal.
+    let layout = viewer(&harness).layout().unwrap();
+    let rows = viewer(&harness).view().rows() as f32;
+    let a1_row = egui::pos2(
+        layout.traces.center().x,
+        layout.traces.top() + 0.5 * layout.traces.height() / rows,
+    );
+    hover(&mut harness, a1_row);
+    step_until(&mut harness, "a reading", |app| {
+        app.viewer().unwrap().status().left.ends_with(" uV")
+    });
+    let raw = reading_numbers(&viewer(&harness).status().left);
+    assert!(raw.iter().all(|&x| x < -20_000.0), "{raw:?}");
+
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    assert!(viewer(&harness).view().dc_removed());
+    step_until(&mut harness, "the means", baselines_are_window_means);
+    let mean = viewer(&harness).baseline(a1);
+    assert!((-21_100.0..-20_900.0).contains(&mean), "{mean}");
+    let centred = reading_numbers(&viewer(&harness).status().left);
+    assert_eq!(centred.len(), raw.len());
+    for (r, c) in raw.iter().zip(&centred) {
+        // Four significant digits of the raw value: within 10 uV.
+        assert!((r - mean - c).abs() <= 10.0, "{r} − {mean} ≠ {c}");
+    }
+    assert!(checked(&mut harness, "View", "Remove DC"));
+
+    // The means follow the window.
+    harness.key_press(Key::ArrowRight);
+    harness.step();
+    step_until(&mut harness, "the panned means", baselines_are_window_means);
+    assert_eq!(viewer(&harness).view().time(), 5.0..25.0);
+
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    assert_eq!(viewer(&harness).baseline(a1), 0.0);
+    assert!(!checked(&mut harness, "View", "Remove DC"));
 }
 
 #[test]
@@ -551,6 +672,39 @@ fn opening_another_recording_never_draws_the_last_ones_tiles() {
     assert!(
         traces_image(&mut switched) == want,
         "tiles of the first recording drawn"
+    );
+}
+
+#[test]
+fn dc_removal_brings_an_offset_trace_into_its_row() {
+    let Some(setup) = gpu_setup() else { return };
+    let file = offset_preset("bdf+c-small", -21_000.0);
+    let mut harness = gpu_window(&file.0, setup);
+    ready(&mut harness);
+    let trace = harness.ctx.global_style().visuals.text_color();
+    // Pixels of the first row (A1) in the trace colour.
+    let a1_pixels = |harness: &mut Harness<'_, KymoApp>| {
+        let traces = viewer(harness).layout().unwrap().traces;
+        let rows = viewer(harness).view().rows();
+        let width = traces.width() as usize;
+        let row_height = traces.height() as usize / rows;
+        traces_image(harness)[..width * row_height]
+            .iter()
+            .filter(|p| {
+                let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
+                d(p[0], trace.r()) + d(p[1], trace.g()) + d(p[2], trace.b()) < 60
+            })
+            .count()
+    };
+    // 21 mV below its row's middle, far outside it (a spike may cross it).
+    let off = a1_pixels(&mut harness);
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    step_until(&mut harness, "the means", baselines_are_window_means);
+    let on = a1_pixels(&mut harness);
+    assert!(
+        on > 500 && on > 20 * off,
+        "{off} pixels without DC removal, {on} with"
     );
 }
 

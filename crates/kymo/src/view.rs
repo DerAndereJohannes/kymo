@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use kymo_core::tile::{Direction, SignalVersion, TileKey, View, prefetch};
+use kymo_core::tile::{Direction, SignalVersion, TileKey, View, prefetch, samples_in};
 use kymo_core::{ChannelId, ChannelKind, Recording};
 
 use crate::action::{Action, Gesture};
@@ -80,6 +80,8 @@ pub struct ViewState {
     direction: Direction,
     generation: u64,
     requested: Option<View>,
+    /// The DC windows last asked for, while DC removal is on.
+    dc_requested: Option<Vec<(ChannelId, Range<u64>)>>,
 }
 
 impl ViewState {
@@ -108,6 +110,7 @@ impl ViewState {
             direction: Direction::Forward,
             generation: 0,
             requested: None,
+            dc_requested: None,
         };
         state.clamp();
         state
@@ -391,6 +394,30 @@ impl ViewState {
         self.requested = Some(view);
         self.generation += 1;
         Some((self.generation, keys))
+    }
+
+    /// The windows to ask for DC means over when they changed since the last call: each
+    /// visible channel's samples in view, top to bottom. `None` while DC removal is off or
+    /// nothing changed.
+    pub fn dc_request(&mut self, recording: &Recording) -> Option<Vec<(ChannelId, Range<u64>)>> {
+        if !self.dc {
+            self.dc_requested = None;
+            return None;
+        }
+        let time = self.time();
+        let windows: Vec<_> = self
+            .visible_channels()
+            .iter()
+            .map(|&c| {
+                let grid = recording.grid(recording.channel(c).grid);
+                (c, samples_in(grid, &time))
+            })
+            .collect();
+        if self.dc_requested.as_ref() == Some(&windows) {
+            return None;
+        }
+        self.dc_requested = Some(windows.clone());
+        Some(windows)
     }
 
     fn clamp_span(&mut self) {

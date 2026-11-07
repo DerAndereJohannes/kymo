@@ -479,3 +479,42 @@ proptest! {
         prop_assert!(close(view.span(), 20.0 / factor));
     }
 }
+
+#[test]
+fn dc_windows_follow_the_view_while_dc_removal_is_on() {
+    let (rec, mut view) = state();
+    // Off: nothing to ask for.
+    assert_eq!(view.dc_request(&rec), None);
+    act(&mut view, Action::ToggleDc);
+    // Each visible channel, top to bottom, over the samples in view of its own grid.
+    let expected = |view: &ViewState| -> Vec<(ChannelId, Range<u64>)> {
+        view.visible_channels()
+            .iter()
+            .map(|&c| {
+                let grid = rec.grid(rec.channel(c).grid);
+                let t = view.time();
+                let first = (t.start * grid.rate()).floor() as u64;
+                let end = ((t.end * grid.rate()).ceil() as u64).min(grid.len());
+                (c, first..end)
+            })
+            .collect()
+    };
+    let windows = view.dc_request(&rec).unwrap();
+    assert_eq!(windows, expected(&view));
+    assert_eq!(windows.len(), view.visible_channels().len());
+    // Unchanged: nothing new.
+    assert_eq!(view.dc_request(&rec), None);
+    // Panned: the new windows.
+    view.pan(1.25);
+    assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
+    // Scrolled to the last rows, where the 250 Hz grid's channels are.
+    act(&mut view, Action::LastChannels);
+    let windows = view.dc_request(&rec).unwrap();
+    assert_eq!(windows, expected(&view));
+    assert_eq!(rec.channel(windows.last().unwrap().0).grid, GridId(1));
+    // Off and on again: asked for afresh.
+    act(&mut view, Action::ToggleDc);
+    assert_eq!(view.dc_request(&rec), None);
+    act(&mut view, Action::ToggleDc);
+    assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
+}

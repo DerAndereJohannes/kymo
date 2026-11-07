@@ -131,6 +131,15 @@ impl Viewer {
             .expect("the tile service lives as long as the viewer")
     }
 
+    /// The physical value drawn at the middle of `channel`'s row: its mean over the window
+    /// with DC removal on (the last one computed, 0 until there is one), otherwise 0.
+    pub fn baseline(&self, channel: ChannelId) -> f64 {
+        if !self.view.dc_removed() {
+            return 0.0;
+        }
+        self.service().mean(channel).map_or(0.0, |m| m.value)
+    }
+
     /// Applies a view action; [`Action::ToggleBad`] acts on the channel under the pointer.
     pub fn apply(&mut self, action: Action) -> bool {
         self.view.apply(action, self.hover.channel)
@@ -182,8 +191,9 @@ impl Viewer {
                 let channel = self.hover.channel.map(|id| {
                     let info = rec.channel(id);
                     let view = self.view.tile_view(self.width_px.max(1));
-                    let reading = readout::read(rec, service.cache(), &view, id, time)
-                        .map(|r| status::reading_text(r, &info.unit.label));
+                    let reading = readout::read(rec, service.cache(), &view, id, time).map(|r| {
+                        status::reading_text(r.relative_to(self.baseline(id)), &info.unit.label)
+                    });
                     (info.name.as_str(), reading)
                 });
                 status::pointer_text(
@@ -285,6 +295,9 @@ impl Viewer {
         if let Some((generation, keys)) = self.view.request(rec, size_px[0], budget) {
             service.submit(generation, keys);
         }
+        if let Some(windows) = self.view.dc_request(rec) {
+            service.request_means(windows);
+        }
         let visuals = ui.visuals();
         let painter = ui.painter_at(traces.union(names).union(axis_rect));
         painter.rect_filled(traces, 0.0, visuals.extreme_bg_color);
@@ -324,6 +337,7 @@ impl Viewer {
             if self.view.is_bad(row.channel) {
                 row.color = bad_color;
             }
+            row.baseline = self.baseline(row.channel);
         }
         let query = query(rec, &self.view.tile_view(size_px[0]), service.cache());
         self.missing = query.missing.len();

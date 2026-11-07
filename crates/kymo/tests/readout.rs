@@ -186,3 +186,16 @@ fn gaps_and_nans_read_nothing() {
     assert_eq!(read(&fx.recording, &cache, &v, float, nan), None);
     assert!(read(&fx.recording, &cache, &v, float, nan + 1.0 / 250.0).is_some());
 }
+
+#[test]
+fn readings_relative_to_a_baseline() {
+    assert_eq!(
+        Reading::Value(-20_990.5).relative_to(-21_000.0),
+        Reading::Value(9.5)
+    );
+    assert_eq!(
+        Reading::Range { min: 3.0, max: 7.5 }.relative_to(2.5),
+        Reading::Range { min: 0.5, max: 5.0 }
+    );
+    assert_eq!(Reading::Value(4.0).relative_to(0.0), Reading::Value(4.0));
+}
