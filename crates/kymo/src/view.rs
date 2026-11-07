@@ -135,6 +135,11 @@ impl ViewState {
         self.top
     }
 
+    /// All channel rows, on screen or not.
+    pub fn row_count(&self) -> usize {
+        self.rows_order.len()
+    }
+
     /// Rows that fit on screen.
     pub fn rows(&self) -> usize {
         self.rows
@@ -316,7 +321,8 @@ impl ViewState {
         self.clamp();
     }
 
-    fn set_top(&mut self, top: f64) {
+    /// Scrolls so that row `top` (fractional for smooth scrolling) is first on screen.
+    pub fn set_top(&mut self, top: f64) {
         if !top.is_nan() {
             self.top = top;
             self.clamp();

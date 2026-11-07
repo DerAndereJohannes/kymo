@@ -1,45 +1,67 @@
-//! The window: a header panel beside an (as yet empty) trace area.
+//! The window: no recording, one being opened, one on screen, or why it couldn't open.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align, Color32, Label, Layout, RichText, ScrollArea, TextStyle, Ui};
-use kymo_core::ChannelKind;
+use anyhow::Result;
+use eframe::egui::{self, Align, Color32, Event, Layout, RichText, Ui};
+use kymo_core::pyramid::Sidecar;
+use kymo_core::service::{PyramidStore, ServiceOptions, TileService};
 
-use crate::document::{Document, Loading, Summary, error_text, file_name, format_duration, plural};
+use crate::action::Action;
+use crate::document::{self, Document, Loading, error_text, file_name};
+use crate::keymap::{Keymap, Platform};
+use crate::ui::gpu::Gpu;
+use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
 
-/// Narrowest the header panel can be dragged.
-const HEADER_MIN_WIDTH: f32 = 200.0;
-/// Widest the header panel can be dragged, as a fraction of the window.
-const HEADER_MAX_FRACTION: f32 = 0.5;
+/// How the window keeps recordings.
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// Where pyramid sidecars go; `None` keeps pyramids in memory.
+    pub sidecar_dir: Option<PathBuf>,
+}
+
+impl Default for Options {
+    /// Sidecars in the user's cache directory.
+    fn default() -> Self {
+        Options {
+            sidecar_dir: Sidecar::default_dir(),
+        }
+    }
+}
 
 pub struct KymoApp {
     state: State,
+    gpu: Gpu,
+    keymap: Keymap,
+    options: Options,
     /// Show the file dialog once the window is on screen.
     pick_file: bool,
     /// Whether a frame has been shown yet.
     shown: bool,
 }
 
+/// A recording ready to show, as the loading thread hands it over.
+type Opened = (Document, TileService);
+
 enum State {
     Empty,
-    Loading(Loading),
-    Ready {
-        document: Box<Document>,
-        summary: Summary,
-    },
-    Failed {
-        path: PathBuf,
-        error: String,
-    },
+    Loading(Loading<Opened>),
+    Ready(Box<Viewer>),
+    Failed { path: PathBuf, error: String },
 }
 
 impl KymoApp {
     /// A window opening `path`, or showing a file dialog without one.
-    pub fn new(ctx: &egui::Context, path: Option<PathBuf>) -> Self {
+    pub fn new(ctx: &egui::Context, gpu: Gpu, options: Options, path: Option<PathBuf>) -> Self {
+        // ⌘+ and ⌘− zoom time, not the interface.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let mut app = KymoApp {
             state: State::Empty,
+            gpu,
+            keymap: Keymap::new(Platform::current()),
+            options,
             pick_file: path.is_none(),
             shown: false,
         };
@@ -49,64 +71,57 @@ impl KymoApp {
         app
     }
 
-    fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
-        set_title(ctx, Some(&file_name(&path)));
-        let repaint = ctx.clone();
-        self.state = State::Loading(Loading::start(path, move || repaint.request_repaint()));
-    }
-
-    fn pick_and_open(&mut self, ctx: &egui::Context) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Open a recording")
-            .add_filter("EDF and BDF", &["edf", "bdf", "EDF", "BDF"])
-            .add_filter("All files", &["*"]);
-        if let Some(dir) = self.current_path().and_then(|p| p.parent()) {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(path) = dialog.pick_file() {
-            self.open(ctx, path);
-        }
-    }
-
-    fn current_path(&self) -> Option<&std::path::Path> {
+    /// The recording on screen, if there is one.
+    pub fn viewer(&self) -> Option<&Viewer> {
         match &self.state {
-            State::Empty => None,
-            State::Loading(loading) => Some(loading.path()),
-            State::Ready { document, .. } => Some(&document.path),
-            State::Failed { path, .. } => Some(path),
+            State::Ready(viewer) => Some(viewer),
+            _ => None,
         }
     }
 
-    fn poll_loading(&mut self, ctx: &egui::Context) {
-        let State::Loading(loading) = &self.state else {
-            return;
-        };
-        let Some(result) = loading.poll() else {
-            return;
-        };
-        self.state = match result {
-            Ok(document) => {
-                set_title(ctx, Some(&document.name()));
-                State::Ready {
-                    summary: document.summary(),
-                    document: Box::new(document),
-                }
-            }
-            Err(error) => State::Failed {
-                path: loading.path().to_owned(),
-                error: error_text(&error),
+    /// Whether a recording is being opened.
+    pub fn is_loading(&self) -> bool {
+        matches!(self.state, State::Loading(_))
+    }
+
+    /// Why the last recording couldn't be opened.
+    pub fn error(&self) -> Option<&str> {
+        match &self.state {
+            State::Failed { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Opens `path` on a background thread, with its tile service.
+    pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
+        set_title(ctx, Some(&file_name(&path)));
+        let store = match &self.options.sidecar_dir {
+            Some(dir) => PyramidStore::Sidecar {
+                dir: dir.clone(),
+                source: path.clone(),
             },
+            None => PyramidStore::Memory,
         };
+        let repaint = ctx.clone();
+        let tiles = ctx.clone();
+        let open = move |path: &Path| -> Result<Opened> {
+            let document = document::open(path)?;
+            let service = TileService::new(
+                document.recording.clone(),
+                ServiceOptions::new(store),
+                move || tiles.request_repaint(),
+            )?;
+            Ok((document, service))
+        };
+        self.state = State::Loading(Loading::start(path, open, move || {
+            repaint.request_repaint();
+        }));
     }
-}
 
-impl eframe::App for KymoApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_loading(ctx);
-    }
-
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    /// One frame: picks up a finished open, handles keys, and draws the window.
+    pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.poll_loading(&ctx);
         // The startup dialog is modal: show it once the window has been drawn and has focus.
         // On macOS a panel opened before the app is active is cancelled at once; gaining
         // focus repaints, which brings us back here.
@@ -121,20 +136,14 @@ impl eframe::App for KymoApp {
         }
         self.shown = true;
 
+        for action in self.key_actions(&ctx) {
+            self.perform(&ctx, action);
+        }
+
         let mut open_clicked = false;
-        match &self.state {
-            State::Ready { document, summary } => {
-                egui::Panel::left("header")
-                    .resizable(true)
-                    .default_size(300.0)
-                    .min_size(HEADER_MIN_WIDTH)
-                    .max_size((ui.available_width() * HEADER_MAX_FRACTION).max(HEADER_MIN_WIDTH))
-                    .show(ui, |ui| {
-                        open_clicked = within_width(ui, |ui| header_panel(ui, document, summary));
-                    });
-                egui::CentralPanel::default().show(ui, |_ui| {
-                    // The trace area; traces arrive with the renderer.
-                });
+        match &mut self.state {
+            State::Ready(viewer) => {
+                open_clicked = viewer.show(ui, &self.gpu, &self.keymap);
             }
             State::Empty => {
                 egui::CentralPanel::default().show(ui, |ui| {
@@ -164,6 +173,97 @@ impl eframe::App for KymoApp {
             self.pick_and_open(&ctx);
         }
     }
+
+    /// Carries out `action`.
+    pub fn perform(&mut self, ctx: &egui::Context, action: Action) {
+        if !action.enabled(matches!(self.state, State::Ready(_))) {
+            return;
+        }
+        match action {
+            Action::Open => self.pick_and_open(ctx),
+            Action::Close => {
+                self.state = State::Empty;
+                set_title(ctx, None);
+            }
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // The settings window, the shortcut overview and About come with the menus;
+            // DC removal with the window means (steps 4b and 5).
+            Action::Settings | Action::Shortcuts | Action::About | Action::ToggleDc => {}
+            _ => {
+                if let State::Ready(viewer) = &mut self.state {
+                    viewer.apply(action);
+                }
+            }
+        }
+    }
+
+    /// The actions of this frame's key presses, unless a text field has the keyboard.
+    fn key_actions(&self, ctx: &egui::Context) -> Vec<Action> {
+        if ctx.egui_wants_keyboard_input() {
+            return Vec::new();
+        }
+        ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match *event {
+                    Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => self.keymap.action(key, modifiers),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    fn pick_and_open(&mut self, ctx: &egui::Context) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Open a recording")
+            .add_filter("EDF and BDF", &["edf", "bdf", "EDF", "BDF"])
+            .add_filter("All files", &["*"]);
+        if let Some(dir) = self.current_path().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.open(ctx, path);
+        }
+    }
+
+    fn current_path(&self) -> Option<&Path> {
+        match &self.state {
+            State::Empty => None,
+            State::Loading(loading) => Some(loading.path()),
+            State::Ready(viewer) => Some(&viewer.document().path),
+            State::Failed { path, .. } => Some(path),
+        }
+    }
+
+    fn poll_loading(&mut self, ctx: &egui::Context) {
+        let State::Loading(loading) = &self.state else {
+            return;
+        };
+        let Some(result) = loading.poll() else {
+            return;
+        };
+        self.state = match result {
+            Ok((document, service)) => {
+                set_title(ctx, Some(&document.name()));
+                State::Ready(Box::new(Viewer::new(document, service)))
+            }
+            Err(error) => State::Failed {
+                path: loading.path().to_owned(),
+                error: error_text(&error),
+            },
+        };
+    }
+}
+
+impl eframe::App for KymoApp {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
 }
 
 fn set_title(ctx: &egui::Context, file: Option<&str>) {
@@ -191,141 +291,10 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     clicked
 }
 
-/// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
-/// grows to fit wider contents, and while its edge is dragged the difference stays unpainted
-/// (black), so panel contents must never be wider than the panel. Text that should shorten
-/// with "…" instead opts in with `Label::truncate`.
-fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    let rect = ui.max_rect();
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    child.shrink_clip_rect(rect);
-    let inner = add_contents(&mut child);
-    ui.advance_cursor_after_rect(rect);
-    inner
-}
-
-/// File header and channel list. Returns whether Open was clicked.
-fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool {
-    let mut open_clicked = false;
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        // The button first, so a long file name truncates instead of pushing it out.
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            open_clicked = ui.button("Open…").clicked();
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(Label::new(RichText::new(document.name()).heading()).truncate());
-            });
-        });
-    });
-    ui.add(
-        Label::new(
-            RichText::new(document.path.display().to_string())
-                .small()
-                .weak(),
-        )
-        .truncate(),
-    );
-    ui.add_space(6.0);
-
-    egui::Grid::new("summary")
-        .num_columns(2)
-        .spacing([12.0, 4.0])
-        .show(ui, |ui| {
-            // Keys at their full width; values, in the last column, shorten to what is left.
-            let row = |ui: &mut Ui, key: &str, value: String| {
-                ui.add(Label::new(RichText::new(key).weak()).extend());
-                ui.add(Label::new(value).truncate());
-                ui.end_row();
-            };
-            row(ui, "Format", summary.format.to_owned());
-            row(
-                ui,
-                "Start",
-                summary.start.clone().unwrap_or_else(|| "unknown".into()),
-            );
-            row(ui, "Duration", format_duration(summary.duration));
-            row(ui, "Channels", summary.channels.to_string());
-            row(ui, "Annotations", summary.annotations.to_string());
-            for (i, grid) in summary.grids.iter().enumerate() {
-                let key = if summary.grids.len() == 1 {
-                    "Sampling".to_owned()
-                } else {
-                    format!("Grid {}", i + 1)
-                };
-                row(ui, &key, grid.describe());
-            }
-        });
-
-    if !summary.warnings.is_empty() {
-        ui.add_space(6.0);
-        let color = ui.visuals().warn_fg_color;
-        ui.label(
-            RichText::new(format!(
-                "{} warning{}",
-                summary.warnings.len(),
-                plural(summary.warnings.len())
-            ))
-            .color(color)
-            .strong(),
-        );
-        for warning in &summary.warnings {
-            ui.add(Label::new(RichText::new(warning).color(color)).wrap());
-        }
-    }
-
-    ui.add_space(6.0);
-    ui.separator();
-    channel_list(ui, document);
-    open_clicked
-}
-
-/// All channels, drawing only the rows in view.
-fn channel_list(ui: &mut Ui, document: &Document) {
-    let rec = &document.recording;
-    let row_height = ui.text_style_height(&TextStyle::Body);
-    ScrollArea::vertical().auto_shrink(false).show_rows(
-        ui,
-        row_height,
-        rec.channels().len(),
-        |ui, rows| {
-            egui::Grid::new("channels")
-                .num_columns(4)
-                .striped(true)
-                .spacing([12.0, ui.spacing().item_spacing.y])
-                .show(ui, |ui| {
-                    // Every column at its full width; a narrow panel clips the right ones.
-                    let cell = |ui: &mut Ui, text: RichText| {
-                        ui.add(Label::new(text).extend());
-                    };
-                    for channel in &rec.channels()[rows] {
-                        let rate = rec.grid(channel.grid).rate();
-                        cell(ui, RichText::new(&channel.name));
-                        cell(ui, RichText::new(kind_name(channel.kind)).weak());
-                        cell(ui, RichText::new(&channel.unit.label).weak());
-                        cell(ui, RichText::new(format!("{rate} Hz")).weak());
-                        ui.end_row();
-                    }
-                });
-        },
-    );
-}
-
-fn kind_name(kind: ChannelKind) -> &'static str {
-    match kind {
-        ChannelKind::Eeg => "EEG",
-        ChannelKind::Eog => "EOG",
-        ChannelKind::Ecg => "ECG",
-        ChannelKind::Emg => "EMG",
-        ChannelKind::Stim => "stim",
-        ChannelKind::Misc => "misc",
-        _ => "other",
-    }
-}
-
 /// Starts the window and runs until it closes.
-pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
+pub fn run(path: Option<PathBuf>) -> Result<()> {
     // winit's default app menu reads "About kymo", "Quit kymo" from the process name, which
-    // outside an app bundle is the executable's. Step 4 replaces that menu.
+    // outside an app bundle is the executable's. Step 4b replaces that menu.
     #[cfg(target_os = "macos")]
     objc2_foundation::NSProcessInfo::processInfo()
         .setProcessName(objc2_foundation::ns_string!(APP_NAME));
@@ -340,7 +309,15 @@ pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
     eframe::run_native(
         APP_NAME,
         options,
-        Box::new(|cc| Ok(Box::new(KymoApp::new(&cc.egui_ctx, path)))),
+        Box::new(|cc| {
+            let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
+            Ok(Box::new(KymoApp::new(
+                &cc.egui_ctx,
+                gpu,
+                Options::default(),
+                path,
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))
 }

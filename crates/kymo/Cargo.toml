@@ -20,6 +20,7 @@ thiserror.workspace = true
 objc2-foundation.workspace = true
 
 [dev-dependencies]
+egui_kittest.workspace = true
 kymo-core = { workspace = true, features = ["testing"] }
 kymo-testgen.workspace = true
 pollster.workspace = true

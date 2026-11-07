@@ -1,0 +1,96 @@
+//! The texts of the status line: build progress, memory, and the reading under the pointer.
+
+use kymo_core::service::BuildProgress;
+
+use super::axis::{Clock, format_time};
+use super::readout::Reading;
+
+/// Significant digits of values under the pointer.
+const DIGITS: i32 = 4;
+
+/// The pyramid build's state, or `None` once it is complete.
+pub fn build_text(progress: &BuildProgress) -> Option<String> {
+    if let Some(error) = &progress.error {
+        return Some(format!("Overview stopped: {error}"));
+    }
+    if progress.complete {
+        return None;
+    }
+    // Floored, so 100% only shows when complete.
+    let percent = (progress.fraction() * 100.0).floor().clamp(0.0, 99.0);
+    Some(format!("Building overview {percent:.0}%"))
+}
+
+/// Memory of the tile cache and, if there is a GPU, of its tile copies.
+pub fn memory_text(cache_bytes: usize, gpu_bytes: Option<usize>) -> String {
+    let mb = |bytes: usize| format!("{} MB", (bytes as f64 / f64::from(1 << 20)).round());
+    match gpu_bytes {
+        Some(gpu) => format!("Tiles {} · GPU {}", mb(cache_bytes), mb(gpu)),
+        None => format!("Tiles {}", mb(cache_bytes)),
+    }
+}
+
+/// `value` with [`DIGITS`] significant digits (whole numbers in full), and its unit.
+pub fn format_value(value: f64, unit: &str) -> String {
+    let number = format_number(value);
+    if unit.is_empty() {
+        number
+    } else {
+        format!("{number} {unit}")
+    }
+}
+
+fn format_number(value: f64) -> String {
+    if !value.is_finite() {
+        return format!("{value}");
+    }
+    let decimals = if value == 0.0 {
+        0
+    } else {
+        (DIGITS - 1 - value.abs().log10().floor() as i32).clamp(0, 12) as usize
+    };
+    let text = format!("{:.decimals$}", value.abs());
+    // A rounded zero has no sign.
+    if value < 0.0 && text.bytes().any(|b| (b'1'..=b'9').contains(&b)) {
+        format!("−{text}")
+    } else {
+        text
+    }
+}
+
+/// A reading as text: "−12.34 µV", or "−20.1 … 15.27 µV" for an envelope.
+pub fn reading_text(reading: Reading, unit: &str) -> String {
+    match reading {
+        Reading::Value(v) => format_value(v, unit),
+        Reading::Range { min, max } => format_value(min, "") + " … " + &format_value(max, unit),
+    }
+}
+
+/// Decimals of a time readout at sampling rate `rate`: enough to tell samples apart.
+pub fn time_decimals(rate: f64) -> usize {
+    if rate > 1.0 && rate.is_finite() {
+        (rate.log10().ceil() as usize).min(6)
+    } else {
+        0
+    }
+}
+
+/// "12.345 s · Fp1 −12.34 µV": the time under the pointer, and the channel's reading
+/// there if there is one.
+pub fn pointer_text(
+    time: f64,
+    decimals: usize,
+    clock: Clock,
+    channel: Option<(&str, Option<String>)>,
+) -> String {
+    let mut text = format_time(time, decimals, clock);
+    if let Some((name, reading)) = channel {
+        text += " · ";
+        text += name;
+        if let Some(reading) = reading {
+            text += " ";
+            text += &reading;
+        }
+    }
+    text
+}

@@ -179,15 +179,19 @@ pub fn error_text(error: &anyhow::Error) -> String {
 }
 
 /// A recording being opened on a background thread, so the window never waits for the disk.
-pub struct Loading {
+pub struct Loading<T = Document> {
     path: PathBuf,
-    result: Receiver<Result<Document>>,
+    result: Receiver<Result<T>>,
 }
 
-impl Loading {
-    /// Starts opening `path`. `notify` runs once the result is ready (or the thread died), so
-    /// the window can repaint and pick it up with [`poll`](Self::poll).
-    pub fn start(path: PathBuf, notify: impl FnOnce() + Send + 'static) -> Self {
+impl<T: Send + 'static> Loading<T> {
+    /// Starts `open(path)` on a thread. `notify` runs once the result is ready (or the
+    /// thread died), so the window can repaint and pick it up with [`poll`](Self::poll).
+    pub fn start(
+        path: PathBuf,
+        open: impl FnOnce(&Path) -> Result<T> + Send + 'static,
+        notify: impl FnOnce() + Send + 'static,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let thread_path = path.clone();
         // If spawning fails, `tx` is dropped with the closure and `poll` reports it.
@@ -208,7 +212,7 @@ impl Loading {
 
     /// The result, once it is there. Call again after it returned `Some` and it reports an
     /// error.
-    pub fn poll(&self) -> Option<Result<Document>> {
+    pub fn poll(&self) -> Option<Result<T>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -267,7 +271,7 @@ mod tests {
     /// Opens through the window's path: a background thread, then a notification.
     fn load(path: &Path) -> Result<Document> {
         let (tx, rx) = mpsc::channel();
-        let loading = Loading::start(path.to_owned(), move || tx.send(()).unwrap());
+        let loading = Loading::start(path.to_owned(), open, move || tx.send(()).unwrap());
         assert_eq!(loading.path(), path);
         rx.recv_timeout(Duration::from_secs(30))
             .expect("no notification");

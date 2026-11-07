@@ -1,12 +1,11 @@
 //! Kymo viewer: `kymo file.bdf` opens a window, `kymo` alone a file dialog.
 
-mod app;
 mod cli;
-mod document;
 
 use std::process::ExitCode;
 
 use anyhow::Result;
+use kymo::{app, document};
 
 use crate::cli::{Command, USAGE};
 
