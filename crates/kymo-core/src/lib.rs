@@ -1,5 +1,5 @@
 //! Core library of the Kymo viewer: recording model, readers, min/max pyramid,
-//! tile cache and fixed-grid tile query. No GUI dependencies.
+//! tile cache, fixed-grid tile query and the tile service. No GUI dependencies.
 //!
 //! See `docs/design.md` for the architecture.
 
@@ -11,6 +11,7 @@ mod grid;
 pub mod pyramid;
 mod recording;
 mod sample;
+pub mod service;
 pub mod stim;
 pub mod tile;
 

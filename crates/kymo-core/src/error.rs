@@ -94,6 +94,8 @@ pub enum TileError {
     UnknownBlock(TileKey),
     #[error("tile {key:?} starts past the end of its grid (length {len})")]
     PastEnd { key: TileKey, len: u64 },
+    #[error("tile {0:?} is not in the pyramid")]
+    NotInPyramid(TileKey),
     #[error(transparent)]
     Read(#[from] ReadError),
 }

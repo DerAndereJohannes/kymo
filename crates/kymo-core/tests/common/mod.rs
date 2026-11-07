@@ -261,3 +261,154 @@ pub fn view_of(grids: &[(f64, f64, u64, usize)]) -> impl Strategy<Value = View> 
     )
         .prop_map(|(t0, length, width, channels)| view(t0..t0 + length, width, channels))
 }
+
+/// What a [`ProbeReader`] logged about one read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadLog {
+    /// Name of the reading thread.
+    pub thread: String,
+    pub grid: GridId,
+    pub first: ChannelId,
+    pub range: Range<u64>,
+}
+
+/// Shared state of a [`ProbeReader`]: its log, and its hold on tile workers' reads.
+#[derive(Default)]
+pub struct Probe {
+    log: std::sync::Mutex<Vec<ReadLog>>,
+    hold: std::sync::Mutex<Hold>,
+    changed: std::sync::Condvar,
+    /// Microseconds every build read sleeps.
+    build_delay_us: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Default)]
+struct Hold {
+    on: bool,
+    waiting: usize,
+}
+
+/// Tile workers' threads are named `kymo-tile-N`; the build runs on `kymo-build` and on
+/// unnamed helpers. Test threads have names, so their reads count as neither.
+fn is_worker(name: Option<&str>) -> bool {
+    name.is_some_and(|n| n.starts_with("kymo-tile"))
+}
+
+fn is_build(name: Option<&str>) -> bool {
+    name.is_none_or(|n| n == "kymo-build")
+}
+
+impl Probe {
+    /// Reads by tile workers wait from now on, until [`release`](Self::release).
+    pub fn hold(&self) {
+        self.hold.lock().unwrap().on = true;
+    }
+
+    pub fn release(&self) {
+        self.hold.lock().unwrap().on = false;
+        self.changed.notify_all();
+    }
+
+    /// Waits until `n` worker reads are held.
+    pub fn wait_held(&self, n: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut hold = self.hold.lock().unwrap();
+        while hold.waiting < n {
+            assert!(std::time::Instant::now() < deadline, "{n} reads never held");
+            hold = self
+                .changed
+                .wait_timeout(hold, std::time::Duration::from_millis(10))
+                .unwrap()
+                .0;
+        }
+    }
+
+    /// Slows every read of the pyramid build down by `delay`.
+    pub fn slow_build(&self, delay: std::time::Duration) {
+        self.build_delay_us
+            .store(delay.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// The reads tile workers made, in the order they made them (after any hold).
+    pub fn worker_reads(&self) -> Vec<ReadLog> {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| is_worker(Some(&r.thread)))
+            .cloned()
+            .collect()
+    }
+
+    /// Number of reads the pyramid build made.
+    pub fn build_reads(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.thread.is_empty() || r.thread == "kymo-build")
+            .count()
+    }
+}
+
+/// A reader that passes everything to another one and lets a [`Probe`] watch and steer.
+pub struct ProbeReader {
+    inner: Box<dyn BlockReader>,
+    probe: std::sync::Arc<Probe>,
+}
+
+impl BlockReader for ProbeReader {
+    fn read(
+        &self,
+        grid: GridId,
+        channels: &[ChannelId],
+        range: Range<u64>,
+        out: SamplesMut<'_>,
+    ) -> Result<(), ReadError> {
+        let thread = std::thread::current();
+        let name = thread.name();
+        if is_worker(name) {
+            let mut hold = self.probe.hold.lock().unwrap();
+            hold.waiting += 1;
+            self.probe.changed.notify_all();
+            while hold.on {
+                hold = self.probe.changed.wait(hold).unwrap();
+            }
+            hold.waiting -= 1;
+        } else if is_build(name) {
+            let us = self.probe.build_delay_us.load(Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_micros(us));
+        }
+        self.probe.log.lock().unwrap().push(ReadLog {
+            thread: name.unwrap_or_default().to_owned(),
+            grid,
+            first: channels[0],
+            range: range.clone(),
+        });
+        self.inner.read(grid, channels, range, out)
+    }
+
+    fn prefetch(&self, grid: GridId, range: Range<u64>) {
+        self.inner.prefetch(grid, range);
+    }
+}
+
+/// `opened` with its reader wrapped in a [`ProbeReader`].
+pub fn probed(mut opened: Opened) -> (Opened, std::sync::Arc<Probe>) {
+    let probe = std::sync::Arc::new(Probe::default());
+    let inner = std::mem::replace(&mut opened.reader, Box::new(NoReader));
+    opened.reader = Box::new(ProbeReader {
+        inner,
+        probe: std::sync::Arc::clone(&probe),
+    });
+    (opened, probe)
+}
+
+/// Waits until `done` holds, polling; panics after 20 s.
+pub fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

@@ -6,6 +6,7 @@
 
 mod cache;
 mod data;
+mod prefetch;
 mod query;
 mod raw;
 
@@ -14,6 +15,7 @@ use std::ops::Range;
 pub use cache::{DEFAULT_BUDGET, TileCache};
 pub(crate) use data::TileSample;
 pub use data::{Tile, TileData, TileSlice};
+pub use prefetch::{Direction, prefetch, tile_bytes};
 pub use query::{Loading, Placed, Query, query};
 pub use raw::compute_raw;
 
@@ -224,8 +226,18 @@ pub fn tiles_for_view(recording: &Recording, view: &View) -> Vec<TileKey> {
     if view.time.is_empty() || view.width_px == 0 {
         return tiles;
     }
-    let mut blocks: Vec<ChannelBlock> = view
-        .channels
+    for block in view_blocks(recording, &view.channels) {
+        let grid = recording.grid(block.grid);
+        let level = level_for(grid, view);
+        tiles.extend(tiles_over(grid, block, level, view.version, &view.time));
+    }
+    tiles
+}
+
+/// The channel blocks holding `channels`, sorted and without duplicates; unknown channels
+/// are ignored.
+fn view_blocks(recording: &Recording, channels: &[ChannelId]) -> Vec<ChannelBlock> {
+    let mut blocks: Vec<ChannelBlock> = channels
         .iter()
         .filter_map(|&id| {
             let channel = recording.channels().get(id.0 as usize)?;
@@ -239,22 +251,25 @@ pub fn tiles_for_view(recording: &Recording, view: &View) -> Vec<TileKey> {
         .collect();
     blocks.sort_unstable();
     blocks.dedup();
+    blocks
+}
 
-    for block in blocks {
-        let grid = recording.grid(block.grid);
-        let samples = samples_in(grid, &view.time);
-        if samples.is_empty() {
-            continue;
-        }
-        let level = level_for(grid, view);
-        let first = level.tile_of(samples.start);
-        let last = level.tile_of(samples.end - 1);
-        tiles.extend((first..=last).map(|time| TileKey {
-            version: view.version,
-            level,
-            block,
-            time,
-        }));
-    }
-    tiles
+/// The tiles of `block` at `level` that intersect `time`, in time order; none outside the
+/// grid.
+fn tiles_over(
+    grid: &Grid,
+    block: ChannelBlock,
+    level: Level,
+    version: SignalVersion,
+    time: &Range<f64>,
+) -> impl Iterator<Item = TileKey> + use<> {
+    let samples = samples_in(grid, time);
+    let times = (!samples.is_empty())
+        .then(|| level.tile_of(samples.start)..=level.tile_of(samples.end - 1));
+    times.into_iter().flatten().map(move |time| TileKey {
+        version,
+        level,
+        block,
+        time,
+    })
 }
