@@ -51,8 +51,8 @@ pub enum Item {
         label: &'static str,
         /// The shortcut shown next to the label.
         shortcut: Option<Chord>,
-        /// Whether the native menu takes the shortcut as its key equivalent (macOS only).
-        /// Bare keys (D, +) stay with the window, so text fields still get them.
+        /// Whether the native menu takes the shortcut as its key equivalent: on macOS, for
+        /// shortcuts with ⌘ (all menu shortcuts; bare navigation keys have no menu item).
         attached: bool,
         /// Shown with a checkmark when on ([`Action::ToggleDc`], [`Action::ToggleSidebar`]).
         checkable: bool,
@@ -163,6 +163,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             a(Action::ScaleDown),
             Item::Separator,
             a(Action::ToggleDc),
+            a(Action::ToggleBad),
         ],
     });
     menus.push(Menu {

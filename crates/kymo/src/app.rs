@@ -147,6 +147,7 @@ impl KymoApp {
         AppMenuState {
             ready: matches!(self.state, State::Ready(_)),
             sidebar: self.show_sidebar,
+            channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
         }
     }
 
@@ -236,12 +237,11 @@ impl KymoApp {
         shortcuts_window(&ctx, &mut self.shortcuts_open, self.keymap.platform());
         about_window(&ctx, &mut self.about_open);
         #[cfg(any(target_os = "macos", windows))]
-        if let Some(menu) = &mut self.native_menu {
-            let state = AppMenuState {
-                ready: matches!(self.state, State::Ready(_)),
-                sidebar: self.show_sidebar,
-            };
-            menu.update(&state);
+        {
+            let state = self.menu_state();
+            if let Some(menu) = &mut self.native_menu {
+                menu.update(&state);
+            }
         }
 
         let mut open_clicked = false;
@@ -382,12 +382,19 @@ impl eframe::App for KymoApp {
 struct AppMenuState {
     ready: bool,
     sidebar: bool,
+    /// Whether the pointer is over a channel, which Toggle Bad acts on.
+    channel: bool,
 }
 
 impl MenuState for AppMenuState {
     fn enabled(&self, action: Action) -> bool {
-        // Settings and DC removal come in step 5.
-        action.enabled(self.ready) && !matches!(action, Action::Settings | Action::ToggleDc)
+        // Settings and DC removal come in step 5; Toggle Bad needs a channel to act on.
+        let now = match action {
+            Action::ToggleBad => self.channel,
+            Action::Settings | Action::ToggleDc => false,
+            _ => true,
+        };
+        action.enabled(self.ready) && now
     }
 
     fn checked(&self, action: Action) -> Option<bool> {

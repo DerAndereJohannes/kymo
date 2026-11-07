@@ -61,7 +61,17 @@ fn key_equivalents_keep_keys_and_modifiers() {
             Modifiers::ALT,
             Key::Named(NamedKey::ArrowDown),
         ),
-        (Chord::key(EguiKey::D), Modifiers::empty(), character("d")),
+        (Chord::cmd(EguiKey::D), Modifiers::META, character("d")),
+        (
+            Chord::alt_cmd(EguiKey::Minus),
+            Modifiers::META | Modifiers::ALT,
+            character("-"),
+        ),
+        (
+            Chord::key(EguiKey::Home),
+            Modifiers::empty(),
+            Key::Named(NamedKey::Home),
+        ),
     ];
     for (chord, modifiers, key) in cases {
         assert_eq!(

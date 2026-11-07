@@ -186,11 +186,11 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::MoreChannels, Chord::shift_cmd(Key::Plus)),
     (Action::MoreChannels, Chord::shift_cmd(Key::Equals)),
     (Action::FewerChannels, Chord::shift_cmd(Key::Minus)),
-    (Action::ScaleUp, Chord::key(Key::Plus)),
-    (Action::ScaleUp, Chord::key(Key::Equals)),
-    (Action::ScaleDown, Chord::key(Key::Minus)),
-    (Action::ToggleDc, Chord::key(Key::D)),
-    (Action::ToggleBad, Chord::key(Key::B)),
+    (Action::ScaleUp, Chord::alt_cmd(Key::Plus)),
+    (Action::ScaleUp, Chord::alt_cmd(Key::Equals)),
+    (Action::ScaleDown, Chord::alt_cmd(Key::Minus)),
+    (Action::ToggleDc, Chord::cmd(Key::D)),
+    (Action::ToggleBad, Chord::cmd(Key::B)),
 ];
 
 /// Points per line of a mouse wheel.

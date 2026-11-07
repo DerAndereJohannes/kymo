@@ -295,7 +295,7 @@ fn names_and_b_toggle_bad_channels() {
         egui::pos2(layout.traces.center().x, row_y(1.0)),
     );
     assert_eq!(viewer(&harness).hover().channel, Some(a2));
-    harness.key_press(Key::B);
+    harness.key_press_modifiers(command(), Key::B);
     harness.step();
     assert!(!viewer(&harness).view().is_bad(a2));
 }
@@ -403,6 +403,8 @@ fn menu_items_are_enabled_as_the_state_allows() {
     assert!(enabled(&mut harness, "View", "Zoom In"));
     assert!(enabled(&mut harness, "File", "Close"));
     assert!(enabled(&mut harness, "View", "Show Sidebar"));
+    // The pointer is on the menu, not over a channel.
+    assert!(!enabled(&mut harness, "View", "Toggle Bad"));
     // Step 5 brings these.
     assert!(!enabled(&mut harness, "View", "Remove DC"));
     assert!(!enabled(&mut harness, "Edit", "Settings"));

@@ -70,8 +70,9 @@ fn sections_follow_the_menus_then_the_rest() {
     let other = overview(Platform::Linux).pop().unwrap();
     let actions: Vec<_> = other.rows.iter().map(|r| r.action).collect();
     assert!(actions.contains(&Action::PanLeft.label()));
-    assert!(actions.contains(&Action::ToggleBad.label()));
+    assert!(actions.contains(&Action::ChannelUp.label()));
     assert!(!actions.contains(&Action::ZoomIn.label()));
+    assert!(!actions.contains(&Action::ToggleBad.label()));
 }
 
 #[test]

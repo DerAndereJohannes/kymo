@@ -66,10 +66,11 @@ fn looks_up_the_tables_bindings() {
             (Key::Num9, true, false, false, Action::Fit),
             (Key::Plus, true, false, true, Action::MoreChannels),
             (Key::Minus, true, false, true, Action::FewerChannels),
-            (Key::Plus, false, false, false, Action::ScaleUp),
-            (Key::Minus, false, false, false, Action::ScaleDown),
-            (Key::D, false, false, false, Action::ToggleDc),
-            (Key::B, false, false, false, Action::ToggleBad),
+            (Key::Plus, true, true, false, Action::ScaleUp),
+            (Key::Equals, true, true, false, Action::ScaleUp),
+            (Key::Minus, true, true, false, Action::ScaleDown),
+            (Key::D, true, false, false, Action::ToggleDc),
+            (Key::B, true, false, false, Action::ToggleBad),
             (Key::W, true, false, false, Action::Close),
             (Key::Q, true, false, false, Action::Quit),
             (Key::Comma, true, false, false, Action::Settings),
@@ -83,13 +84,17 @@ fn looks_up_the_tables_bindings() {
             );
         }
         // Keys that need Shift on some layouts: + on a US keyboard, / on a German one.
-        assert_eq!(lookup(Key::Plus, false, false, true), Some(Action::ScaleUp));
+        assert_eq!(lookup(Key::Plus, true, true, true), Some(Action::ScaleUp));
         assert_eq!(
             lookup(Key::Slash, true, false, true),
             Some(Action::Shortcuts)
         );
         // Shift isn't ignored elsewhere.
-        assert_eq!(lookup(Key::D, false, false, true), None);
+        assert_eq!(lookup(Key::D, true, false, true), None);
+        // Only navigation keys work without a modifier.
+        for key in [Key::Plus, Key::Minus, Key::Equals, Key::D, Key::B] {
+            assert_eq!(lookup(key, false, false, false), None, "{key:?}");
+        }
         assert_eq!(lookup(Key::ArrowLeft, false, false, true), None);
         assert_eq!(lookup(Key::X, false, false, false), None);
     }
@@ -100,13 +105,13 @@ fn leaves_keys_a_native_menu_takes_to_the_menu() {
     let mac = Keymap::new(Platform::Mac);
     assert_eq!(mac.egui_action(Key::O, cmd(Platform::Mac)), None);
     assert_eq!(mac.egui_action(Key::Plus, cmd(Platform::Mac)), None);
-    // Alternatives and bare keys aren't menu shortcuts.
+    assert_eq!(mac.egui_action(Key::D, cmd(Platform::Mac)), None);
+    // Alternatives and navigation keys aren't menu shortcuts.
     assert_eq!(
         mac.egui_action(Key::Equals, cmd(Platform::Mac)),
         Some(Action::ZoomIn)
     );
     assert_eq!(mac.egui_action(Key::Home, NONE), Some(Action::ToStart));
-    assert_eq!(mac.egui_action(Key::D, NONE), Some(Action::ToggleDc));
     assert_eq!(mac.egui_action(Key::ArrowLeft, NONE), Some(Action::PanLeft));
 
     // Windows menus show their shortcuts but leave them to egui, as Linux does.

@@ -1,3 +1,8 @@
 /target
 .DS_Store
 __pycache__/
+# Recordings: generated ones are rebuilt by kymo-testgen, real ones live outside the repo.
+*.bdf
+*.edf
+*.BDF
+*.EDF

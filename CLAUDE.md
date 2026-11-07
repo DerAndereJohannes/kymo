@@ -43,7 +43,7 @@ docs/phase2-plan.md  agreed plan for phase 2 (the viewer)
 
 - Stable Rust, edition 2024. `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must be clean.
 - Error handling: `thiserror` in `kymo-core`, `anyhow` only in binaries. No `unwrap()` on file input.
-- `unsafe` only where unavoidable (memory mapping), with a `// SAFETY:` comment.
+- `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires), with a `// SAFETY:` comment.
 - Tests are behavioral: they check outputs (decoded samples, tile values, annotations), not internal structure.
   Use `proptest` to compare tiles against a brute-force min/max pass.
 - Test data comes from `crates/kymo-testgen`; never commit large binary files. Real recordings live outside the repo,
