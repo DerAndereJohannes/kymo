@@ -4,7 +4,13 @@
 //! the same samples of a grid, whatever the view. Panning is a pure translation, and a tile
 //! computed once stays valid.
 
+mod data;
+mod raw;
+
 use std::ops::Range;
+
+pub use data::{Tile, TileData};
+pub use raw::compute_raw;
 
 use crate::{ChannelId, Grid, GridId, Recording};
 
@@ -98,6 +104,11 @@ pub fn max_level(len: u64) -> Level {
 /// Tiles of different versions never mix.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SignalVersion(pub u32);
+
+impl SignalVersion {
+    /// The recording as stored.
+    pub const RAW: SignalVersion = SignalVersion(0);
+}
 
 /// Up to [`CHANNEL_BLOCK`] channels of one grid: `grid.channels()[32·index ..][..32]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use crate::edf::EdfError;
+use crate::tile::TileKey;
 use crate::{AnnotationId, ChannelId, GridId, SampleType};
 
 /// A header, grid or annotation violates the recording model's invariants.
@@ -79,6 +80,22 @@ pub enum ReadError {
     Corrupt(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// A tile could not be computed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TileError {
+    #[error("tile {0:?}: only level-0 tiles are decoded from the recording")]
+    NotRaw(TileKey),
+    #[error("tile {0:?}: unknown signal version")]
+    UnknownVersion(TileKey),
+    #[error("tile {0:?}: the channel block is not in the recording")]
+    UnknownBlock(TileKey),
+    #[error("tile {key:?} starts past the end of its grid (length {len})")]
+    PastEnd { key: TileKey, len: u64 },
+    #[error(transparent)]
+    Read(#[from] ReadError),
 }
 
 /// An annotation operation could not be applied; the store is unchanged.

@@ -19,7 +19,7 @@ pub use annotation::{
     Annotation, AnnotationData, AnnotationId, AnnotationOp, AnnotationStore, Origin,
 };
 pub use channel::{Channel, ChannelId, ChannelKind, Unit};
-pub use error::{AnnotationError, ModelError, OpenError, ReadError};
+pub use error::{AnnotationError, ModelError, OpenError, ReadError, TileError};
 pub use grid::{Grid, GridId, Timebase};
 pub use recording::{BlockReader, Header, Opened, Recording};
 pub use sample::{Sample, SampleType, SamplesMut};

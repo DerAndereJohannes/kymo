@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::{
-    BlockReader, Channel, ChannelId, Grid, GridId, Header, Opened, ReadError, SampleType,
-    SamplesMut, Timebase,
+    BlockReader, Channel, ChannelId, Grid, GridId, Header, Opened, ReadError, Recording, Sample,
+    SampleType, SamplesMut, Timebase,
 };
 
 /// Samples of one grid, one row per channel in [`Grid::channels`] order.
@@ -151,6 +151,56 @@ fn copy_rows<T: Copy>(data: &[Vec<T>], rows: &[usize], samples: Range<usize>, ou
     for (dst, &row) in out.chunks_exact_mut(n).zip(rows) {
         dst.copy_from_slice(&data[row][samples.clone()]);
     }
+}
+
+/// The smallest and largest native value of `channel` over the present samples in `range`,
+/// by brute force: the reference that tiles and the pyramid are checked against.
+///
+/// NaN samples are skipped. `None` if no sample in `range` is present (or all are NaN).
+///
+/// # Panics
+/// If `channel` is not in the recording.
+pub fn brute_minmax(
+    recording: &Recording,
+    channel: ChannelId,
+    range: Range<u64>,
+) -> Result<Option<(f64, f64)>, ReadError> {
+    let grid_id = recording.channel(channel).grid;
+    let grid = recording.grid(grid_id);
+    let values = match grid.sample_type() {
+        SampleType::I16 => native::<i16>(recording, grid_id, channel, range.clone())?,
+        SampleType::I32 => native::<i32>(recording, grid_id, channel, range.clone())?,
+        SampleType::F32 => native::<f32>(recording, grid_id, channel, range.clone())?,
+    };
+    let mut minmax: Option<(f64, f64)> = None;
+    for (i, x) in range.zip(values) {
+        // Checked per sample against the segments, independent of `Grid::present_in`.
+        if x.is_nan() || !grid.segments().iter().any(|s| s.contains(&i)) {
+            continue;
+        }
+        minmax = Some(match minmax {
+            None => (x, x),
+            Some((lo, hi)) => (lo.min(x), hi.max(x)),
+        });
+    }
+    Ok(minmax)
+}
+
+fn native<T: Sample>(
+    recording: &Recording,
+    grid: GridId,
+    channel: ChannelId,
+    range: Range<u64>,
+) -> Result<Vec<f64>, ReadError> {
+    let len = usize::try_from(range.end.saturating_sub(range.start)).map_err(|_| {
+        ReadError::OutOfRange {
+            range: range.clone(),
+            len: recording.grid(grid).len(),
+        }
+    })?;
+    let mut buf = vec![T::default(); len];
+    recording.read_native(grid, &[channel], range, T::as_samples_mut(&mut buf))?;
+    Ok(buf.into_iter().map(Sample::to_f64).collect())
 }
 
 /// Wraps channels, grids and their data as a reader's [`Opened`] (format `"MEM"`).
