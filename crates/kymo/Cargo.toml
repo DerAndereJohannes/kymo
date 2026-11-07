@@ -14,6 +14,9 @@ eframe.workspace = true
 kymo-core.workspace = true
 rfd.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation.workspace = true
+
 [dev-dependencies]
 kymo-testgen.workspace = true
 

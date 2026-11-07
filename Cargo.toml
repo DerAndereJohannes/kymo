@@ -19,6 +19,8 @@ dirs = "7"
 eframe = "0.37"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 memmap2 = "0.9"
+# macOS only, already pulled in by eframe; names the process for the app menu.
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
 proptest = "1"
 rfd = "0.17.2"
 thiserror = "2"

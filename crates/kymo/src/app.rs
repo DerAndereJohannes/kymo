@@ -324,6 +324,11 @@ fn kind_name(kind: ChannelKind) -> &'static str {
 
 /// Starts the window and runs until it closes.
 pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
+    // winit's default app menu reads "About kymo", "Quit kymo" from the process name, which
+    // outside an app bundle is the executable's. Step 4 replaces that menu.
+    #[cfg(target_os = "macos")]
+    objc2_foundation::NSProcessInfo::processInfo()
+        .setProcessName(objc2_foundation::ns_string!(APP_NAME));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)

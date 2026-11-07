@@ -1965,6 +1965,7 @@ dependencies = [
  "eframe",
  "kymo-core",
  "kymo-testgen",
+ "objc2-foundation 0.3.2",
  "rfd",
 ]
 
