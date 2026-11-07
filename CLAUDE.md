@@ -57,7 +57,9 @@ cargo test --workspace -- --ignored        # needs KYMO_TEST_DATA
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p kymo-testgen -- --help
 cargo run -p kymo --release -- file.bdf
-python scripts/compare_mne.py file.bdf      # needs mne installed
+python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
+python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
+uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne
 ```
 
 ## Working style

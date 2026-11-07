@@ -172,6 +172,7 @@ dependencies = [
 name = "kymo-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "jiff",
  "kymo-core",
  "kymo-testgen",

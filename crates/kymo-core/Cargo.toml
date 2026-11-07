@@ -18,6 +18,7 @@ memmap2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+anyhow = "1"
 kymo-core = { workspace = true, features = ["testing"] }
 kymo-testgen.workspace = true
 proptest.workspace = true
