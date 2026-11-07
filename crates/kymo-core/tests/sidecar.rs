@@ -127,8 +127,8 @@ fn changed_source_invalidates_the_sidecar() {
     let rec = open(&file);
     let dir = TempDir::new();
     built(&dir, file.path(), &rec);
-    let reopen = || Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
-    assert!(reopen().is_complete());
+    let reopen = |rec: &Recording| Sidecar::open_or_create(dir.path(), file.path(), rec).unwrap();
+    assert!(reopen(&rec).is_complete());
 
     // A new modification time alone.
     let f = std::fs::File::options()
@@ -137,10 +137,13 @@ fn changed_source_invalidates_the_sidecar() {
         .unwrap();
     let mtime = f.metadata().unwrap().modified().unwrap();
     f.set_modified(mtime + Duration::from_secs(1)).unwrap();
-    assert!(!reopen().is_complete());
+    assert!(!reopen(&rec).is_complete());
+    drop(f);
 
-    // Same size and modification time, different samples at the start.
+    // Same size and modification time, different samples at the start. The source is only
+    // changed while no recording maps it, which Windows enforces.
     built(&dir, file.path(), &rec);
+    drop(rec);
     let mtime = std::fs::metadata(file.path()).unwrap().modified().unwrap();
     let mut other = spec.clone();
     other.seed += 1;
@@ -150,13 +153,16 @@ fn changed_source_invalidates_the_sidecar() {
         .open(file.path())
         .unwrap();
     f.set_modified(mtime).unwrap();
-    assert!(!reopen().is_complete());
+    let rec = open(&file);
+    assert!(!reopen(&rec).is_complete());
 
     // A different size.
     built(&dir, file.path(), &rec);
+    drop(rec);
     let len = f.metadata().unwrap().len();
     f.set_len(len + 1).unwrap();
-    assert!(!reopen().is_complete());
+    let rec = open(&file);
+    assert!(!reopen(&rec).is_complete());
 }
 
 #[test]
