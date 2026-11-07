@@ -100,7 +100,7 @@ impl Grid {
         sample_type: SampleType,
         channels: Vec<ChannelId>,
     ) -> Result<Self, ModelError> {
-        let segments = (len > 0).then_some(0..len).into_iter().collect();
+        let segments = if len > 0 { vec![0..len] } else { vec![] };
         Grid::new(timebase, len, segments, sample_type, channels)
     }
 

@@ -1,5 +1,5 @@
-// Test code: panicking on unexpected results is the point, and one-segment grids are cases.
-#![allow(clippy::unwrap_used, clippy::single_range_in_vec_init)]
+// Test code: panicking on unexpected results is the point.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

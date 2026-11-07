@@ -18,6 +18,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 kymo-core = { workspace = true, features = ["testing"] }
+kymo-testgen.workspace = true
 proptest.workspace = true
 
 [lints]

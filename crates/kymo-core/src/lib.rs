@@ -5,6 +5,7 @@
 
 mod annotation;
 mod channel;
+pub mod edf;
 mod error;
 mod grid;
 mod recording;

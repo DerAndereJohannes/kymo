@@ -12,6 +12,7 @@ authors = ["Clemens Brunner <clemens.brunner@gmail.com>"]
 
 [workspace.dependencies]
 kymo-core = { path = "crates/kymo-core" }
+kymo-testgen = { path = "crates/kymo-testgen" }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 proptest = "1"
 thiserror = "2"
@@ -22,6 +23,8 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"
+# Lists of sample ranges (segments) are a core type here; `vec![0..n]` is meant as one range.
+single_range_in_vec_init = "allow"
 
 [profile.release]
 debug = "line-tables-only"

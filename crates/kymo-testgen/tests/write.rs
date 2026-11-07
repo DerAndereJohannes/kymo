@@ -1,5 +1,5 @@
-// Test code: panicking on unexpected results is the point, and one-segment lists are cases.
-#![allow(clippy::unwrap_used, clippy::single_range_in_vec_init)]
+// Test code: panicking on unexpected results is the point.
+#![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
 use std::process::Command;
