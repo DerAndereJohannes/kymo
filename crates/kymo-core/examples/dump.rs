@@ -13,6 +13,8 @@
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
 //! - `grid{g}.i32`: the same samples as raw digital values (little-endian i32, 0 in gaps)
+//! - `events.json`: per stim channel, its events (sample and code) under the default rule
+//!   (every change to a non-zero code, none at the first sample), from a pyramid build
 //!
 //! A grid with at most N values (channels × samples, default 20 million) is dumped whole;
 //! otherwise 16 windows, the first at the start, the last at the end, the others spread
@@ -24,6 +26,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use kymo_core::pyramid::Pyramid;
+use kymo_core::stim::{self, EventOptions};
 use kymo_core::{GridId, Recording, SampleType, SamplesMut};
 
 const WINDOWS: u64 = 16;
@@ -105,7 +109,39 @@ fn main() -> Result<()> {
     }
     windows_json.push_str("\n]\n");
     fs::write(out.join("windows.json"), windows_json)?;
+    fs::write(out.join("events.json"), events_json(&rec)?)?;
     Ok(())
+}
+
+/// The events of every stim channel, from a pyramid build of each grid that has one.
+fn events_json(rec: &Recording) -> Result<String> {
+    let mut json = String::from("[");
+    for g in 0..rec.grids().len() as u32 {
+        let has_stim = rec
+            .grid(GridId(g))
+            .channels()
+            .iter()
+            .any(|&c| rec.channel(c).kind == kymo_core::ChannelKind::Stim);
+        if !has_stim {
+            continue;
+        }
+        let pyramid = Pyramid::build(rec, GridId(g))?;
+        for s in pyramid.stim_changes(rec) {
+            let events: Vec<String> = stim::events(&s.changes, EventOptions::default())
+                .iter()
+                .map(|e| format!("[{}, {}]", e.sample, e.value))
+                .collect();
+            let sep = if json.len() > 1 { "," } else { "" };
+            let _ = write!(
+                json,
+                "{sep}\n  {{\"channel\": {}, \"events\": [{}]}}",
+                s.channel.0,
+                events.join(", ")
+            );
+        }
+    }
+    json.push_str("\n]\n");
+    Ok(json)
 }
 
 /// The whole grid if it fits `max_values`, else `WINDOWS` windows that do.

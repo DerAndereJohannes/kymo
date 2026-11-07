@@ -217,23 +217,31 @@ fn corrupt_or_truncated_sidecars_are_rebuilt() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    /// Any change to the header is caught; a change to the data is not (no checksums) but
-    /// never makes reading panic.
+    /// Any change to the header is caught; a change to the pyramid data is not (no
+    /// checksums); a change to the stim trailer is caught if it breaks its structure. None
+    /// makes reading panic.
     #[test]
     fn flipped_bytes_never_panic(at in any::<proptest::sample::Index>(), mask in 1u8..=255) {
         let (file, rec) = generated("bdf+c-small");
         let dir = TempDir::new();
         let path = built(&dir, file.path(), &rec).path();
         let mut bytes = std::fs::read(&path).unwrap();
+        let trailer = bytes
+            .windows(8)
+            .rposition(|w| w == b"KYMOSTIM")
+            .unwrap();
         let i = at.index(bytes.len());
         bytes[i] ^= mask;
         std::fs::write(&path, &bytes).unwrap();
         let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
-        prop_assert_eq!(sidecar.is_complete(), i >= 4096, "byte {}", i);
+        if i < trailer {
+            prop_assert_eq!(sidecar.is_complete(), i >= 4096, "byte {}", i);
+        }
         let pyramid = sidecar.pyramid(GridId(0)).unwrap();
         for key in keys(&rec, GridId(0)) {
             let _ = pyramid.tile(key);
         }
+        let _ = pyramid.stim_changes(&rec);
     }
 
     /// While a build is throttled step by step, the sidecar and the in-memory storage serve

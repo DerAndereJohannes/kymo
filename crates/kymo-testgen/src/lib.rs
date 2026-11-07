@@ -109,6 +109,9 @@ pub struct ChannelSpec {
     pub prefilter: String,
     /// Samples per data record; the rate is this over the record duration.
     pub samples_per_record: u32,
+    /// A trigger channel: pulses of codes 1 to 255 instead of the EEG-like signal (see
+    /// [`ChannelSpec::trigger`]).
+    pub trigger: bool,
 }
 
 impl ChannelSpec {
@@ -131,6 +134,31 @@ impl ChannelSpec {
             digital_max,
             prefilter: "HP:0.1Hz LP:100Hz".into(),
             samples_per_record,
+            trigger: false,
+        }
+    }
+
+    /// A trigger channel with unit scaling (physical = digital), named as readers expect:
+    /// "Status" for BDF, "TRIGGER" for EDF.
+    ///
+    /// Every half second holds, depending on a hash: nothing, a pulse of one code (1 to 255,
+    /// one sample to an eighth of a second long), or two codes back to back without a 0
+    /// between them. The first pulse may start at sample 0. In BDF, bits 16 to 23 carry
+    /// status bits as BioSemi's do: bit 20 always set, bit 16 toggling every 1.5 s, so the
+    /// raw value is never 0 and only its low 16 bits hold the codes.
+    pub fn trigger(samples_per_record: u32, format: Format) -> Self {
+        let (digital_min, digital_max) = format.digital_limits();
+        ChannelSpec {
+            label: if format.is_bdf() { "Status" } else { "TRIGGER" }.into(),
+            transducer: "Triggers and Status".into(),
+            dimension: "Boolean".into(),
+            physical_min: f64::from(digital_min),
+            physical_max: f64::from(digital_max),
+            digital_min,
+            digital_max,
+            prefilter: "No filtering".into(),
+            samples_per_record,
+            trigger: true,
         }
     }
 
@@ -305,6 +333,12 @@ impl Spec {
         signal.value(i, signal.sine(i % signal.sine_period))
     }
 
+    /// The trigger code (the low 16 bits) of a trigger channel at `i`; `None` for other
+    /// channels.
+    pub fn trigger_code(&self, channel: usize, i: u64) -> Option<i32> {
+        signal::ChannelSignal::new(self, channel).code(i)
+    }
+
     /// Whether the truth function has a spike at `i` (a value at the digital min or max).
     pub fn is_spike(&self, channel: usize, i: u64) -> bool {
         signal::ChannelSignal::new(self, channel).spike(i).is_some()
@@ -373,12 +407,13 @@ mod presets {
         ),
         (
             "edf+d-mixed",
-            "EDF+D, 6 channels at 256/512/64 Hz, 10 min with 3 gaps, annotations, \
-             huge offset and negative gain",
+            "EDF+D, 7 channels at 256/512/64 Hz, 10 min with 3 gaps, annotations, \
+             huge offset, negative gain and a trigger channel",
         ),
         (
             "bdf+c-small",
-            "BDF+C, 4 channels at 512 Hz, 1 min, annotations, negative gain",
+            "BDF+C, 5 channels at 512 Hz, 1 min, annotations, negative gain and a Status \
+             channel",
         ),
     ];
 
@@ -421,6 +456,7 @@ mod presets {
             physical_max: -50.0,
             ..ChannelSpec::eeg("", 32, f)
         });
+        channels.push(ChannelSpec::trigger(256, f));
         let mut spec = Spec::new(f, channels, 0.5, 1200);
         spec.first_onset = 0.25;
         spec.gaps = vec![
@@ -480,6 +516,7 @@ mod presets {
             physical_max: -262_144.0,
             ..ChannelSpec::eeg("", 512, f)
         });
+        channels.push(ChannelSpec::trigger(512, f));
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = (0..12)
             .map(|k| Tal {

@@ -46,6 +46,10 @@ pub struct Channel {
     pub physical_range: Option<(f64, f64)>,
     /// Digital (min, max) as stored; `None` for float formats.
     pub digital_range: Option<(f64, f64)>,
+    /// For stim channels: the bits of the raw value that carry event codes, e.g. the low 16
+    /// of a BDF status channel, whose upper bits are the amplifier's own status. `None`
+    /// means all bits.
+    pub trigger_mask: Option<u32>,
 }
 
 impl Channel {
@@ -62,6 +66,7 @@ impl Channel {
             transducer: String::new(),
             physical_range: None,
             digital_range: None,
+            trigger_mask: None,
         }
     }
 }

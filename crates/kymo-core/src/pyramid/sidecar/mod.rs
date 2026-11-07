@@ -4,22 +4,26 @@
 //! time and first and last MiB, plus this format's version. It holds a header (magic,
 //! version, that key, the layout of every grid and a completion flag), then per grid each
 //! level's tiles in time order (all channels, channel-major, little-endian (min, max)
-//! pairs) and the block sums (one little-endian f64 per channel and block).
+//! pairs) and the block sums (one little-endian f64 per channel and block). A trailer after
+//! them, written when the build finishes, holds the value changes of the stim channels
+//! (see [`crate::stim`]), which have no size known in advance.
 //!
 //! A sidecar is built in a temporary file with a unique name, so no other process ever maps
 //! a file that is being written. Builders publish a watermark after every step; readers on
 //! other threads only read tiles below it, which are never written again. Once every grid is
-//! built, the completion flag is set and the file is renamed into place. Opening accepts a
-//! file only if its size and its whole header match what the recording expects; anything
-//! else (another version, a changed source, truncation, corruption) is rebuilt.
+//! built, the trailer is appended, the completion flag is set and the file is renamed into
+//! place. Opening accepts a file only if its whole header matches what the recording
+//! expects and its trailer is well-formed and ends the file; anything else (another
+//! version, a changed source, truncation, corruption) is rebuilt.
 
 // Writes and reads of the shared mapping go through `SharedMap`'s unsafe methods.
 #![allow(unsafe_code)]
 
 mod map;
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,11 +33,15 @@ use std::time::UNIX_EPOCH;
 use map::SharedMap;
 
 use super::{Pyramid, PyramidBuilder, PyramidStorage};
+use crate::stim::Change;
 use crate::tile::{Level, TILE_LEN, TileData, max_level};
 use crate::{Grid, GridId, ReadError, Recording, SampleType};
 
 const MAGIC: &[u8; 8] = b"KYMOPYR\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const TRAILER_MAGIC: &[u8; 8] = b"KYMOSTIM";
+/// Bytes per stored change: sample (u64), value (i32), padding.
+const CHANGE: usize = 16;
 /// Bytes before the grid entries.
 const FIXED: usize = 64;
 /// Bytes per grid entry.
@@ -197,6 +205,10 @@ struct Inner {
     done: Vec<AtomicU64>,
     /// Whether a builder was handed out per grid.
     claimed: Vec<AtomicBool>,
+    /// Bytes of header and grids, before the trailer.
+    total: u64,
+    /// Per grid, the stim changes found so far, by row.
+    changes: Vec<Mutex<Changes>>,
     final_path: PathBuf,
     state: Mutex<State>,
 }
@@ -205,6 +217,9 @@ struct State {
     path: PathBuf,
     complete: bool,
 }
+
+/// The stim changes of one grid, by row.
+type Changes = BTreeMap<usize, Vec<Change>>;
 
 impl std::fmt::Debug for Sidecar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -235,13 +250,15 @@ impl Sidecar {
         let expected = header(&key, &layouts, header_len, total);
         let final_path = dir.join(format!("{}.{EXTENSION}", key.to_hex()));
 
-        let (map, path, complete) = match open_complete(&final_path, &expected, size) {
-            Some(map) => (map, final_path.clone(), true),
-            None => {
-                let (map, path) = create(dir, &key, &expected, total)?;
-                (map, path, false)
-            }
-        };
+        let (map, path, complete, changes) =
+            match open_complete(&final_path, &expected, size, &layouts) {
+                Some((map, changes)) => (map, final_path.clone(), true, changes),
+                None => {
+                    let (map, path) = create(dir, &key, &expected, total)?;
+                    let changes = layouts.iter().map(|_| Changes::new()).collect();
+                    (map, path, false, changes)
+                }
+            };
         let done = layouts
             .iter()
             .map(|l| AtomicU64::new(if complete { l.len } else { 0 }))
@@ -254,6 +271,8 @@ impl Sidecar {
                 grids,
                 done,
                 claimed,
+                total,
+                changes: changes.into_iter().map(Mutex::new).collect(),
                 final_path,
                 state: Mutex::new(State { path, complete }),
             }),
@@ -332,6 +351,15 @@ impl Sidecar {
         if !built {
             return Ok(false);
         }
+        let changes: Vec<Changes> = inner.changes.iter().map(|c| lock(c).clone()).collect();
+        let trailer = encode_trailer(&changes);
+        let append = || -> io::Result<()> {
+            let mut file = OpenOptions::new().write(true).open(&state.path)?;
+            file.seek(SeekFrom::Start(trailer_at(inner.total)))?;
+            file.write_all(&trailer)?;
+            file.sync_data()
+        };
+        append().map_err(io_error(&state.path))?;
         let flush = |map: &SharedMap| map.flush().map_err(io_error(&state.path));
         flush(&inner.map)?;
         // SAFETY: the flag lies in the header, which readers never touch after opening and
@@ -347,8 +375,80 @@ impl Sidecar {
 
 impl Inner {
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.state)
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where the trailer starts: after the `total` bytes of header and grids, 64-aligned.
+fn trailer_at(total: u64) -> u64 {
+    align(total)
+}
+
+/// The trailer: magic, body length, then per grid and stim row: grid (u32), row (u32),
+/// count (u64) and the changes.
+fn encode_trailer(changes: &[Changes]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (grid, rows) in changes.iter().enumerate() {
+        for (&row, list) in rows {
+            body.extend_from_slice(&(grid as u32).to_le_bytes());
+            body.extend_from_slice(&(row as u32).to_le_bytes());
+            body.extend_from_slice(&(list.len() as u64).to_le_bytes());
+            for change in list {
+                body.extend_from_slice(&change.sample.to_le_bytes());
+                body.extend_from_slice(&change.value.to_le_bytes());
+                body.extend_from_slice(&[0; 4]);
+            }
+        }
+    }
+    let mut trailer = TRAILER_MAGIC.to_vec();
+    trailer.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    trailer.extend_from_slice(&body);
+    trailer
+}
+
+/// Parses a trailer that must fill `bytes` exactly; `None` unless every entry fits the
+/// layouts (known grid and row, once each, samples increasing inside the grid).
+fn parse_trailer(bytes: &[u8], layouts: &[GridLayout]) -> Option<Vec<Changes>> {
+    let u64_at = |b: &[u8], at: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
+    };
+    let u32_at = |b: &[u8], at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    };
+    if bytes.get(..8)? != TRAILER_MAGIC || u64_at(bytes, 8)? != (bytes.len() - 16) as u64 {
+        return None;
+    }
+    let mut changes: Vec<Changes> = layouts.iter().map(|_| Changes::new()).collect();
+    let mut at = 16;
+    while at < bytes.len() {
+        let grid = u32_at(bytes, at)? as usize;
+        let row = u32_at(bytes, at + 4)? as usize;
+        let count = usize::try_from(u64_at(bytes, at + 8)?).ok()?;
+        at += 16;
+        let layout = layouts.get(grid)?;
+        let end = count.checked_mul(CHANGE)?.checked_add(at)?;
+        if row >= layout.channels || end > bytes.len() || changes[grid].contains_key(&row) {
+            return None;
+        }
+        let mut list = Vec::with_capacity(count);
+        let mut previous: Option<u64> = None;
+        for entry in bytes[at..end].chunks_exact(CHANGE) {
+            let sample = u64_at(entry, 0)?;
+            let value = u32_at(entry, 8)? as i32;
+            if sample >= layout.len || previous.is_some_and(|p| p >= sample) {
+                return None;
+            }
+            previous = Some(sample);
+            list.push(Change { sample, value });
+        }
+        changes[grid].insert(row, list);
+        at = end;
+    }
+    Some(changes)
 }
 
 impl Drop for Inner {
@@ -361,19 +461,32 @@ impl Drop for Inner {
     }
 }
 
-/// Maps `path` if it is a complete sidecar with exactly the `expected` header and size.
-fn open_complete(path: &Path, expected: &[u8], size: usize) -> Option<SharedMap> {
+/// Maps `path` if it is a complete sidecar with exactly the `expected` header, whose
+/// pyramids end at `size`, and a valid trailer; returns the trailer's stim changes too.
+fn open_complete(
+    path: &Path,
+    expected: &[u8],
+    size: usize,
+    layouts: &[GridLayout],
+) -> Option<(SharedMap, Vec<Changes>)> {
     let file = File::open(path).ok()?;
-    if file.metadata().ok()?.len() != size as u64 {
+    let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    let trailer = usize::try_from(trailer_at(size as u64)).ok()?;
+    if len < trailer + 16 {
         return None;
     }
     let map = SharedMap::read_only(&file).ok()?;
-    if map.len() != size {
+    if map.len() != len {
         return None;
     }
     // SAFETY: the mapping is read-only and nothing in this process writes the file.
     let header = unsafe { map.read(0, expected.len()) };
-    (header == expected).then_some(map)
+    if header != expected {
+        return None;
+    }
+    // SAFETY: as above.
+    let changes = parse_trailer(unsafe { map.read(trailer, len - trailer) }, layouts)?;
+    Some((map, changes))
 }
 
 /// Creates a sidecar file of `total` bytes under a unique temporary name, with the
@@ -558,6 +671,18 @@ impl PyramidStorage for GridStorage {
         let mut b = [0u8; 8];
         b.copy_from_slice(bytes);
         Some(f64::from_le_bytes(b))
+    }
+
+    fn put_changes(&self, row: usize, changes: &[Change]) {
+        if self.writer && row < self.layout().channels {
+            let mut all = lock(&self.inner.changes[self.grid]);
+            all.entry(row).or_default().extend_from_slice(changes);
+        }
+    }
+
+    fn changes(&self, row: usize) -> Vec<Change> {
+        let all = lock(&self.inner.changes[self.grid]);
+        all.get(&row).cloned().unwrap_or_default()
     }
 }
 

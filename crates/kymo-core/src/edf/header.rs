@@ -189,8 +189,9 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
         let gain = (physical_max - physical_min) / (dmax - dmin);
         let offset = physical_min - gain * dmin;
         let dimension = text(column(2, i));
+        let kind = kind(&label);
         channels.push(Channel {
-            kind: kind(&label),
+            kind,
             unit: unit(dimension),
             gain,
             offset,
@@ -199,6 +200,9 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             transducer: text(column(1, i)),
             physical_range: Some((physical_min, physical_max)),
             digital_range: Some((dmin, dmax)),
+            // BioSemi keeps the trigger codes in the low 16 bits of the status channel; the
+            // upper 8 are the amplifier's own (CMS in range, battery, ...).
+            trigger_mask: (bdf && kind == ChannelKind::Stim).then_some(0xffff),
             // TODO(later): duplicate labels stay as stored ("POL", "POL", ...). MNE renames
             // them "POL-0", "POL-1", ...; the Python round trip (bads by name) may need the
             // same names.

@@ -17,6 +17,8 @@ pub(crate) struct ChannelSignal {
     /// Whole samples, so the writer can use a lookup table.
     pub(crate) sine_period: u64,
     ramp_period: u64,
+    /// For trigger channels: samples per half-second slot, and whether status bits are set.
+    trigger: Option<(u64, bool)>,
 }
 
 impl ChannelSignal {
@@ -34,7 +36,28 @@ impl ChannelSignal {
             max,
             sine_period: ((rate / frequency).round() as u64).max(4),
             ramp_period: ((rate * 20.0).round() as u64).max(2),
+            trigger: c
+                .trigger
+                .then(|| (((rate / 2.0).round() as u64).max(8), spec.format.is_bdf())),
         }
+    }
+
+    /// The trigger code at `i` (see [`ChannelSpec::trigger`](crate::ChannelSpec::trigger)),
+    /// if this is a trigger channel.
+    pub(crate) fn code(&self, i: u64) -> Option<i32> {
+        let (slot, _) = self.trigger?;
+        let (k, j) = (i / slot, i % slot);
+        let h = splitmix64(self.key ^ k.wrapping_mul(0x9E37_79B9));
+        let first = 1 + (h >> 8) % 255;
+        let second = 1 + (first + (h >> 16) % 254) % 255;
+        let len = 1 + (h >> 24) % (slot / 4);
+        let code = match h % 8 {
+            0..=3 if j < len => first,
+            4 | 5 if j < len => first,
+            4 | 5 if j < 2 * len => second,
+            _ => 0,
+        };
+        Some(code as i32)
     }
 
     /// The sine at phase `k` of `sine_period` (what the writer tabulates).
@@ -42,8 +65,11 @@ impl ChannelSignal {
         (TAU * k as f64 / self.sine_period as f64).sin()
     }
 
-    /// The spike value at `i`, if any.
+    /// The spike value at `i`, if any. Trigger channels have none.
     pub(crate) fn spike(&self, i: u64) -> Option<i32> {
+        if self.trigger.is_some() {
+            return None;
+        }
         self.spike_from(splitmix64(self.key ^ i))
     }
 
@@ -58,6 +84,14 @@ impl ChannelSignal {
 
     /// The value at `i`, given `sine = self.sine(i % self.sine_period)`.
     pub(crate) fn value(&self, i: u64, sine: f64) -> i32 {
+        if let (Some((slot, status)), Some(code)) = (self.trigger, self.code(i)) {
+            let bits = if status {
+                (1 << 20) | (((i / (3 * slot)) % 2) << 16) as i32
+            } else {
+                0
+            };
+            return code | bits;
+        }
         let h = splitmix64(self.key ^ i);
         if let Some(spike) = self.spike_from(h) {
             return spike;

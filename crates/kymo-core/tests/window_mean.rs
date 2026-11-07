@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use common::{TempFile, is_present, len_and_segments, mem_opened, sample_types};
 use kymo_core::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage};
+use kymo_core::stim::Change;
 use kymo_core::testing::{MemData, single_grid};
 use kymo_core::tile::{Level, TILE_LEN, TileData};
 use kymo_core::{ChannelId, GridId, ReadError, Recording};
@@ -50,6 +51,14 @@ impl PyramidStorage for OddSumsLost {
 
     fn sum(&self, block: u64, row: usize) -> Option<f64> {
         self.0.sum(block, row)
+    }
+
+    fn put_changes(&self, row: usize, changes: &[Change]) {
+        self.0.put_changes(row, changes);
+    }
+
+    fn changes(&self, row: usize) -> Vec<Change> {
+        self.0.changes(row)
     }
 }
 

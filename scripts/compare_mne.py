@@ -26,6 +26,10 @@ Known differences between the readers, which the comparison accounts for:
 - MNE treats channels named Status or Trigger as stim channels: in BDF it ignores their
   scaling and keeps only the lower 17 bits of the raw value. kymo scales them like any
   channel. For BDF stim channels, MNE's value is compared with kymo's digital value & 0x1FFFF.
+- Stim events: kymo's (every change to a non-zero code, the low 16 bits in BDF) are compared
+  with mne.find_events(consecutive=True, shortest_event=1, mask=0xFFFF for BDF), at their
+  position in MNE's joined data. MNE counts only positive codes there, so kymo's events with
+  negative codes (possible in EDF only) are left out.
 """
 
 import argparse
@@ -134,12 +138,15 @@ def compare(path, max_values=None):
             compared += n
 
         problems += compare_annotations(raw, annotations, header["grids"][0]["start"])
+        events = json.loads((tmp / "events.json").read_text())
+        p, n = compare_events(raw, header, events, fmax, notes)
+        problems += p
 
     status = "OK" if not problems else "DIFFERS"
     print(f"{status}: {path}")
     print(
         f"  {header['format']}, {len(names)} channels, {compared} samples compared, "
-        f"max relative error {worst:.1e}, {len(annotations)} annotations"
+        f"max relative error {worst:.1e}, {len(annotations)} annotations, {n} stim events"
     )
     for w in header["warnings"]:
         print(f"  kymo warning: {w}")
@@ -196,6 +203,49 @@ def compare_grid(raw, tmp, g, grid, windows, ids, scale, stim, names):
             worst = max(worst, float((error[nonzero] / np.abs(theirs[nonzero])).max()))
         compared += ours.size
     return problems, worst, compared
+
+
+def compare_events(raw, header, events, fmax, notes):
+    """Compares kymo's stim events with mne.find_events; returns problems and the count."""
+    problems, count = [], 0
+    bdf = header["format"].startswith("BDF")
+    for entry in events:
+        c = entry["channel"]
+        channel = header["channels"][c]
+        grid = header["grids"][channel["grid"]]
+        if grid["rate"] != fmax:
+            notes.append(f"skipped events of {channel['name']} (MNE resamples its channel)")
+            continue
+        ours = np.array(entry["events"], dtype=np.int64).reshape(-1, 2)
+        ours = ours[ours[:, 1] > 0]
+        # Each sample's position in MNE's joined data (gaps dropped).
+        segments = np.array(grid["segments"], dtype=np.int64).reshape(-1, 2)
+        joined_start = np.concatenate([[0], np.cumsum(segments[:, 1] - segments[:, 0])[:-1]])
+        seg = np.searchsorted(segments[:, 0], ours[:, 0], side="right") - 1
+        ours[:, 0] = joined_start[seg] + ours[:, 0] - segments[seg, 0]
+        theirs = mne.find_events(
+            raw,
+            stim_channel=raw.ch_names[c],
+            consecutive=True,
+            shortest_event=1,
+            initial_event=False,
+            mask=0xFFFF if bdf else None,
+            mask_type="and",
+            verbose="error",
+        )
+        theirs = theirs[:, [0, 2]] - [raw.first_samp, 0]
+        count += len(ours)
+        if ours.shape != theirs.shape or (ours != theirs).any():
+            k = next(
+                (k for k in range(min(len(ours), len(theirs))) if (ours[k] != theirs[k]).any()),
+                min(len(ours), len(theirs)),
+            )
+            first = lambda e: tuple(e[k]) if k < len(e) else None  # noqa: E731
+            problems.append(
+                f"events of {channel['name']}: kymo {len(ours)}, MNE {len(theirs)}; "
+                f"first difference at event {k}: kymo {first(ours)}, MNE {first(theirs)}"
+            )
+    return problems, count
 
 
 def compare_annotations(raw, annotations, first_onset):

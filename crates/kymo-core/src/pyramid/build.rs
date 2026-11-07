@@ -4,8 +4,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::{MemStorage, Pyramid, PyramidStorage};
+use crate::stim::Scanner;
 use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, TileSample, max_level};
-use crate::{GridId, ReadError, Recording, Sample, SampleType};
+use crate::{ChannelKind, GridId, ReadError, Recording, Sample, SampleType};
 
 /// By default a step reads 10 s of samples or 16 MB, whichever is longer, but at most
 /// 2^24 samples (all channels).
@@ -60,10 +61,20 @@ impl<'a> PyramidBuilder<'a> {
             .get(grid.0 as usize)
             .ok_or(ReadError::UnknownGrid(grid))?;
         let (channels, len) = (g.channels().len(), g.len());
+        let stim: Vec<(usize, Scanner)> = g
+            .channels()
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &id)| {
+                let channel = recording.channels().get(id.0 as usize)?;
+                (channel.kind == ChannelKind::Stim)
+                    .then(|| (row, Scanner::new(channel.trigger_mask)))
+            })
+            .collect();
         let state = match g.sample_type() {
-            SampleType::I16 => State::I16(Levels::new(channels, len)),
-            SampleType::I32 => State::I32(Levels::new(channels, len)),
-            SampleType::F32 => State::F32(Levels::new(channels, len)),
+            SampleType::I16 => State::I16(Levels::new(channels, len, stim)),
+            SampleType::I32 => State::I32(Levels::new(channels, len, stim)),
+            SampleType::F32 => State::F32(Levels::new(channels, len, stim)),
         };
         let seconds = (g.rate() * CHUNK_SECONDS).ceil() as u64;
         let instant_bytes = (channels * g.sample_type().size()).max(1) as u64;
@@ -172,6 +183,8 @@ struct Levels<T> {
     sums: Vec<f64>,
     /// The sums of one block across the channels, as stored.
     column: Vec<f64>,
+    /// The stim channels' rows and their change scanners.
+    stim: Vec<(usize, Scanner)>,
 }
 
 /// One level tile being filled: (min, max) pairs, channel-major, `TILE_LEN` per channel.
@@ -184,7 +197,7 @@ struct Partial<T> {
 const TILE: usize = TILE_LEN as usize;
 
 impl<T: Fold> Levels<T> {
-    fn new(channels: usize, len: u64) -> Self {
+    fn new(channels: usize, len: u64, stim: Vec<(usize, Scanner)>) -> Self {
         let top = max_level(len);
         let mut tiles = Vec::new();
         let mut level = Level::RAW;
@@ -207,6 +220,7 @@ impl<T: Fold> Levels<T> {
             chunk: Vec::new(),
             sums: Vec::new(),
             column: Vec::new(),
+            stim,
         }
     }
 
@@ -233,6 +247,12 @@ impl<T: Fold> Levels<T> {
                 self.finish_tile(storage);
             }
             start = end;
+        }
+        for (row, scanner) in &mut self.stim {
+            let changes = scanner.take();
+            if !changes.is_empty() {
+                storage.put_changes(*row, &changes);
+            }
         }
         Ok(())
     }
@@ -326,7 +346,7 @@ impl<T: Fold> Levels<T> {
             return Ok(());
         };
         let work = &work;
-        std::thread::scope(|scope| {
+        std::thread::scope(|scope| -> Result<(), ReadError> {
             let others: Vec<_> = jobs
                 .map(|(ids, rows, sums, pairs)| scope.spawn(move || work(ids, rows, sums, pairs)))
                 .collect();
@@ -338,7 +358,16 @@ impl<T: Fold> Levels<T> {
                 result = result.and(other);
             }
             result
-        })
+        })?;
+
+        for (row, scanner) in &mut self.stim {
+            let row = &self.chunk[*row * n..][..n];
+            for run in &runs {
+                let codes = row[at(run.start)..at(run.end)].iter().map(|&x| x.code());
+                scanner.scan(run.start, codes);
+            }
+        }
+        Ok(())
     }
 
     /// Stores the sums of the blocks that `section` completes and carries the last block's
@@ -413,9 +442,15 @@ trait Fold: TileSample {
     fn sum(xs: &[Self], acc: f64) -> f64;
     /// `(min, max)` extended by `xs`. NaN never becomes a min or max.
     fn min_max(xs: &[Self], min: Self, max: Self) -> (Self, Self);
+    /// The value as a stim code.
+    fn code(self) -> i32;
 }
 
 impl Fold for i16 {
+    fn code(self) -> i32 {
+        i32::from(self)
+    }
+
     fn sum(xs: &[i16], acc: f64) -> f64 {
         debug_assert!(xs.len() <= TILE);
         // At most 4096 · 2^15 = 2^27 in magnitude: exact in i32, then exact in f64.
@@ -430,6 +465,10 @@ impl Fold for i16 {
 }
 
 impl Fold for i32 {
+    fn code(self) -> i32 {
+        self
+    }
+
     fn sum(xs: &[i32], acc: f64) -> f64 {
         debug_assert!(xs.len() <= TILE);
         // At most 4096 · 2^31 = 2^43 in magnitude: exact in i64 and in f64.
@@ -444,6 +483,11 @@ impl Fold for i32 {
 }
 
 impl Fold for f32 {
+    /// Truncated toward zero and saturated; NaN is 0.
+    fn code(self) -> i32 {
+        self as i32
+    }
+
     fn sum(xs: &[f32], acc: f64) -> f64 {
         xs.iter().fold(acc, |sum, &x| sum + f64::from(x))
     }

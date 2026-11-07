@@ -18,6 +18,8 @@ pub enum Origin {
     File,
     /// Added in the viewer.
     Viewer,
+    /// An event of a stim channel (see [`stim`](crate::stim)).
+    Stim,
 }
 
 /// The content of an annotation.

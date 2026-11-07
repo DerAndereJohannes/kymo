@@ -10,6 +10,8 @@
 //! [`TILE_LEN`] samples (a level-0 tile span), over the block's present samples. A NaN
 //! sample makes its block's sum NaN; NaN samples never change a minimum or maximum.
 //!
+//! The same pass records the value changes of the grid's stim channels ([`crate::stim`]).
+//!
 //! [`Sample::EMPTY_MIN`]: crate::Sample::EMPTY_MIN
 
 mod build;
@@ -24,10 +26,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub use build::PyramidBuilder;
 pub use sidecar::{Sidecar, SidecarError};
 
+use crate::stim::{Change, StimChanges};
 use crate::tile::{
     CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileData, TileKey, max_level,
 };
-use crate::{ChannelId, Grid, GridId, ReadError, Recording};
+use crate::{ChannelId, ChannelKind, Grid, GridId, ReadError, Recording};
 
 /// Where a pyramid is kept. A builder writes into it while any number of [`Pyramid`]s read
 /// from it, possibly on other threads.
@@ -59,6 +62,11 @@ pub trait PyramidStorage: Send + Sync {
     ) -> Option<TileData>;
     /// The sum of row `row` in the published block `block`; `None` if not available.
     fn sum(&self, block: u64, row: usize) -> Option<f64>;
+    /// Appends changes of the stim channel in row `row`: in sample order across calls, and
+    /// before the samples they lie in are published.
+    fn put_changes(&self, row: usize, changes: &[Change]);
+    /// The changes of row `row` stored so far, possibly also past the watermark.
+    fn changes(&self, row: usize) -> Vec<Change>;
 }
 
 /// Keeps a pyramid in memory.
@@ -66,6 +74,7 @@ pub trait PyramidStorage: Send + Sync {
 pub struct MemStorage {
     tiles: Mutex<HashMap<(Level, u64), TileData>>,
     sums: Mutex<Vec<Option<Box<[f64]>>>>,
+    changes: Mutex<HashMap<usize, Vec<Change>>>,
     done: AtomicU64,
 }
 
@@ -114,6 +123,16 @@ impl PyramidStorage for MemStorage {
     fn sum(&self, block: u64, row: usize) -> Option<f64> {
         let sums = self.sums.lock().unwrap_or_else(PoisonError::into_inner);
         sums.get(block as usize)?.as_ref()?.get(row).copied()
+    }
+
+    fn put_changes(&self, row: usize, changes: &[Change]) {
+        let mut all = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+        all.entry(row).or_default().extend_from_slice(changes);
+    }
+
+    fn changes(&self, row: usize) -> Vec<Change> {
+        let all = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+        all.get(&row).cloned().unwrap_or_default()
     }
 }
 
@@ -201,6 +220,30 @@ impl Pyramid {
 
     pub fn is_complete(&self) -> bool {
         self.done() >= self.grid.len()
+    }
+
+    /// The value changes of the grid's stim channels (per `recording`'s channel kinds) that
+    /// the build has passed, in grid order; see [`crate::stim`] for the events.
+    pub fn stim_changes(&self, recording: &Recording) -> Vec<StimChanges> {
+        // The watermark first: everything stored before it was published is visible then.
+        let done = self.storage.done();
+        let is_stim = |c: ChannelId| {
+            recording
+                .channels()
+                .get(c.0 as usize)
+                .is_some_and(|ch| ch.kind == ChannelKind::Stim)
+        };
+        self.grid
+            .channels()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| is_stim(c))
+            .map(|(row, &channel)| {
+                let mut changes = self.storage.changes(row);
+                changes.truncate(changes.partition_point(|c| c.sample < done));
+                StimChanges { channel, changes }
+            })
+            .collect()
     }
 
     /// The buckets `first..first + len` of `level` that hold at least one present sample,

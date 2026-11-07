@@ -11,6 +11,7 @@ mod grid;
 pub mod pyramid;
 mod recording;
 mod sample;
+pub mod stim;
 pub mod tile;
 
 #[cfg(feature = "testing")]
