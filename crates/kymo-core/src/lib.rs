@@ -3,6 +3,23 @@
 //!
 //! See `docs/design.md` for the architecture.
 
+mod annotation;
+mod channel;
+mod error;
+mod grid;
+mod recording;
+mod sample;
+
+#[cfg(feature = "testing")]
+pub mod testing;
+
+pub use annotation::{Annotation, AnnotationData, AnnotationId, Origin};
+pub use channel::{Channel, ChannelId, ChannelKind, Unit};
+pub use error::{ModelError, ReadError};
+pub use grid::{Grid, GridId, Timebase};
+pub use recording::{BlockReader, Header, Opened, Recording};
+pub use sample::{Sample, SampleType, SamplesMut};
+
 /// Version of this crate, as set in `Cargo.toml`.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

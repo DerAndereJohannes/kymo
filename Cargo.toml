@@ -12,6 +12,9 @@ authors = ["Clemens Brunner <clemens.brunner@gmail.com>"]
 
 [workspace.dependencies]
 kymo-core = { path = "crates/kymo-core" }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+proptest = "1"
+thiserror = "2"
 
 [workspace.lints.rust]
 # `unsafe` is only allowed where unavoidable (memory mapping), opted in locally with a SAFETY comment.
