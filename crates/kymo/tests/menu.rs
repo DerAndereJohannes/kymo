@@ -154,7 +154,7 @@ fn menu_and_egui_split_the_keys_exactly() {
                 assert_eq!(owner, Some(*action), "{platform:?}: {chord:?}");
             }
         }
-        if !platform.native_menu() {
+        if !platform.menu_takes_shortcuts() {
             assert!(taken.is_empty());
         }
     }
@@ -176,10 +176,13 @@ fn only_command_shortcuts_are_attached() {
                 let command = shortcut.is_some_and(|c| c.command);
                 assert_eq!(
                     attached,
-                    command && platform.native_menu(),
+                    command && platform == Platform::Mac,
                     "{platform:?} {action:?}"
                 );
-                assert_eq!(checkable, action == Action::ToggleDc);
+                assert_eq!(
+                    checkable,
+                    matches!(action, Action::ToggleDc | Action::ToggleSidebar)
+                );
             }
         }
     }

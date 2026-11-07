@@ -136,8 +136,9 @@ impl Viewer {
         self.view.apply(action, self.hover.channel)
     }
 
-    /// Shows the recording in `ui`. Returns whether the sidebar's Open button was clicked.
-    pub fn show(&mut self, ui: &mut Ui, gpu: &Gpu, keymap: &Keymap) -> bool {
+    /// Shows the recording in `ui`, with the sidebar if `sidebar`. Returns whether the
+    /// sidebar's Open button was clicked.
+    pub fn show(&mut self, ui: &mut Ui, gpu: &Gpu, keymap: &Keymap, sidebar: bool) -> bool {
         let mut open_clicked = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -147,15 +148,17 @@ impl Viewer {
                 });
             });
         });
-        egui::Panel::left("header")
-            .resizable(true)
-            .default_size(300.0)
-            .min_size(SIDEBAR_MIN_WIDTH)
-            .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
-            .show(ui, |ui| {
-                open_clicked =
-                    within_width(ui, |ui| header_panel(ui, &self.document, &self.summary));
-            });
+        if sidebar {
+            egui::Panel::left("header")
+                .resizable(true)
+                .default_size(300.0)
+                .min_size(SIDEBAR_MIN_WIDTH)
+                .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
+                .show(ui, |ui| {
+                    open_clicked =
+                        within_width(ui, |ui| header_panel(ui, &self.document, &self.summary));
+                });
+        }
         egui::CentralPanel::default().show(ui, |ui| self.trace_region(ui, gpu, keymap));
 
         // The status line was laid out before the traces moved; show the new texts in the

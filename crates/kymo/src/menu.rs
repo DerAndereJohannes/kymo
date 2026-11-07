@@ -51,10 +51,10 @@ pub enum Item {
         label: &'static str,
         /// The shortcut shown next to the label.
         shortcut: Option<Chord>,
-        /// Whether a native menu takes the shortcut as its key equivalent. Bare keys (D,
-        /// +) stay with the window, so text fields still get them.
+        /// Whether the native menu takes the shortcut as its key equivalent (macOS only).
+        /// Bare keys (D, +) stay with the window, so text fields still get them.
         attached: bool,
-        /// Shown with a checkmark when on ([`Action::ToggleDc`]).
+        /// Shown with a checkmark when on ([`Action::ToggleDc`], [`Action::ToggleSidebar`]).
         checkable: bool,
     },
     System(SystemItem),
@@ -100,8 +100,8 @@ fn action(platform: Platform, action: Action) -> Item {
         action,
         label,
         shortcut,
-        attached: platform.native_menu() && shortcut.is_some_and(|c| c.command),
-        checkable: action == Action::ToggleDc,
+        attached: platform.menu_takes_shortcuts() && shortcut.is_some_and(|c| c.command),
+        checkable: matches!(action, Action::ToggleDc | Action::ToggleSidebar),
     }
 }
 
@@ -149,6 +149,8 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         title: "View",
         role: Role::Plain,
         items: vec![
+            a(Action::ToggleSidebar),
+            Item::Separator,
             a(Action::ZoomIn),
             a(Action::ZoomOut),
             a(Action::DefaultWindow),
@@ -199,9 +201,9 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
 }
 
 /// The chords a native menu bar takes on `platform`: attached item shortcuts and the
-/// system items' own. None on Linux, whose menu is drawn by egui.
+/// system items' own. None on Windows and Linux, where egui handles every shortcut.
 pub fn taken_chords(platform: Platform) -> Vec<Chord> {
-    if !platform.native_menu() {
+    if !platform.menu_takes_shortcuts() {
         return Vec::new();
     }
     menu_bar(platform)

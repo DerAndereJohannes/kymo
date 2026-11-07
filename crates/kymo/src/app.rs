@@ -10,23 +10,42 @@ use kymo_core::service::{PyramidStore, ServiceOptions, TileService};
 use crate::action::Action;
 use crate::document::{self, Document, Loading, error_text, file_name};
 use crate::keymap::{Keymap, Platform};
+#[cfg(any(target_os = "macos", windows))]
+use crate::native_menu::NativeMenu;
 use crate::ui::gpu::Gpu;
+use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
 use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
 
-/// How the window keeps recordings.
+/// How the window keeps recordings and shows its menus.
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Where pyramid sidecars go; `None` keeps pyramids in memory.
     pub sidecar_dir: Option<PathBuf>,
+    pub menus: Menus,
+}
+
+/// Where the menu bar comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Menus {
+    /// The system's, handed over with [`KymoApp::set_native_menu`] (macOS, Windows).
+    Native,
+    /// Drawn by egui in the window, as on `Platform` (Linux).
+    Egui(Platform),
 }
 
 impl Default for Options {
-    /// Sidecars in the user's cache directory.
+    /// Sidecars in the user's cache directory; native menus where the platform has them.
     fn default() -> Self {
+        let platform = Platform::current();
         Options {
             sidecar_dir: Sidecar::default_dir(),
+            menus: if platform.native_menu() {
+                Menus::Native
+            } else {
+                Menus::Egui(platform)
+            },
         }
     }
 }
@@ -36,6 +55,11 @@ pub struct KymoApp {
     gpu: Gpu,
     keymap: Keymap,
     options: Options,
+    #[cfg(any(target_os = "macos", windows))]
+    native_menu: Option<NativeMenu>,
+    show_sidebar: bool,
+    shortcuts_open: bool,
+    about_open: bool,
     /// Show the file dialog once the window is on screen.
     pick_file: bool,
     /// Whether a frame has been shown yet.
@@ -57,11 +81,17 @@ impl KymoApp {
     pub fn new(ctx: &egui::Context, gpu: Gpu, options: Options, path: Option<PathBuf>) -> Self {
         // ⌘+ and ⌘− zoom time, not the interface.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        add_symbol_font(ctx);
         let mut app = KymoApp {
             state: State::Empty,
             gpu,
             keymap: Keymap::new(Platform::current()),
             options,
+            #[cfg(any(target_os = "macos", windows))]
+            native_menu: None,
+            show_sidebar: true,
+            shortcuts_open: false,
+            about_open: false,
             pick_file: path.is_none(),
             shown: false,
         };
@@ -69,6 +99,55 @@ impl KymoApp {
             app.open(ctx, path);
         }
         app
+    }
+
+    /// Takes over the native menu bar, already installed: its items act from now on, and
+    /// its shortcuts no longer reach egui. Without one, [`Menus::Native`] draws the menu bar
+    /// with egui.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn set_native_menu(&mut self, menu: NativeMenu) {
+        self.native_menu = Some(menu);
+    }
+
+    /// Whether the native menu bar takes its shortcuts before egui sees them.
+    fn menu_takes_keys(&self) -> bool {
+        #[cfg(any(target_os = "macos", windows))]
+        if self.native_menu.is_some() {
+            return self.keymap.platform().menu_takes_shortcuts();
+        }
+        false
+    }
+
+    /// The platform whose menu bar egui draws, if egui draws one.
+    fn egui_menus(&self) -> Option<Platform> {
+        match self.options.menus {
+            Menus::Egui(platform) => Some(platform),
+            #[cfg(any(target_os = "macos", windows))]
+            Menus::Native if self.native_menu.is_some() => None,
+            Menus::Native => Some(self.keymap.platform()),
+        }
+    }
+
+    /// Whether the sidebar is shown.
+    pub fn sidebar_shown(&self) -> bool {
+        self.show_sidebar
+    }
+
+    /// Whether the shortcut overview is open.
+    pub fn shortcuts_open(&self) -> bool {
+        self.shortcuts_open
+    }
+
+    /// Whether the About window is open.
+    pub fn about_open(&self) -> bool {
+        self.about_open
+    }
+
+    fn menu_state(&self) -> AppMenuState {
+        AppMenuState {
+            ready: matches!(self.state, State::Ready(_)),
+            sidebar: self.show_sidebar,
+        }
     }
 
     /// The recording on screen, if there is one.
@@ -136,14 +215,39 @@ impl KymoApp {
         }
         self.shown = true;
 
-        for action in self.key_actions(&ctx) {
+        #[cfg(any(target_os = "macos", windows))]
+        let mut actions = self
+            .native_menu
+            .as_ref()
+            .map(NativeMenu::poll)
+            .unwrap_or_default();
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let mut actions = Vec::new();
+        actions.extend(self.key_actions(&ctx));
+        if let Some(platform) = self.egui_menus() {
+            let state = self.menu_state();
+            egui::Panel::top("menu bar").show(ui, |ui| {
+                actions.extend(egui_menu_bar(ui, platform, &state));
+            });
+        }
+        for action in actions {
             self.perform(&ctx, action);
+        }
+        shortcuts_window(&ctx, &mut self.shortcuts_open, self.keymap.platform());
+        about_window(&ctx, &mut self.about_open);
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(menu) = &mut self.native_menu {
+            let state = AppMenuState {
+                ready: matches!(self.state, State::Ready(_)),
+                sidebar: self.show_sidebar,
+            };
+            menu.update(&state);
         }
 
         let mut open_clicked = false;
         match &mut self.state {
             State::Ready(viewer) => {
-                open_clicked = viewer.show(ui, &self.gpu, &self.keymap);
+                open_clicked = viewer.show(ui, &self.gpu, &self.keymap, self.show_sidebar);
             }
             State::Empty => {
                 egui::CentralPanel::default().show(ui, |ui| {
@@ -174,9 +278,9 @@ impl KymoApp {
         }
     }
 
-    /// Carries out `action`.
+    /// Carries out `action`, unless it is disabled now.
     pub fn perform(&mut self, ctx: &egui::Context, action: Action) {
-        if !action.enabled(matches!(self.state, State::Ready(_))) {
+        if !self.menu_state().enabled(action) {
             return;
         }
         match action {
@@ -186,9 +290,11 @@ impl KymoApp {
                 set_title(ctx, None);
             }
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            // The settings window, the shortcut overview and About come with the menus;
-            // DC removal with the window means (steps 4b and 5).
-            Action::Settings | Action::Shortcuts | Action::About | Action::ToggleDc => {}
+            Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
+            Action::About => self.about_open = true,
+            Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            // Disabled until step 5 (see `AppMenuState::enabled`).
+            Action::Settings | Action::ToggleDc => {}
             _ => {
                 if let State::Ready(viewer) = &mut self.state {
                     viewer.apply(action);
@@ -206,6 +312,12 @@ impl KymoApp {
             i.events
                 .iter()
                 .filter_map(|event| match *event {
+                    Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if self.menu_takes_keys() => self.keymap.egui_action(key, modifiers),
                     Event::Key {
                         key,
                         pressed: true,
@@ -266,6 +378,27 @@ impl eframe::App for KymoApp {
     }
 }
 
+/// What the menus show: whether a recording is open, and the sidebar's state.
+struct AppMenuState {
+    ready: bool,
+    sidebar: bool,
+}
+
+impl MenuState for AppMenuState {
+    fn enabled(&self, action: Action) -> bool {
+        // Settings and DC removal come in step 5.
+        action.enabled(self.ready) && !matches!(action, Action::Settings | Action::ToggleDc)
+    }
+
+    fn checked(&self, action: Action) -> Option<bool> {
+        match action {
+            Action::ToggleSidebar => Some(self.sidebar),
+            Action::ToggleDc => Some(false),
+            _ => None,
+        }
+    }
+}
+
 fn set_title(ctx: &egui::Context, file: Option<&str>) {
     let title = match file {
         Some(file) => format!("{file} – {APP_NAME}"),
@@ -291,10 +424,21 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     clicked
 }
 
+/// Builds the native menu bar and puts it in place, once the window exists.
+#[cfg(any(target_os = "macos", windows))]
+fn install_native_menu(cc: &eframe::CreationContext<'_>) -> Result<NativeMenu> {
+    let menu = NativeMenu::new(Platform::current(), &cc.egui_ctx)?;
+    #[cfg(target_os = "macos")]
+    menu.install();
+    #[cfg(windows)]
+    menu.install(cc)?;
+    Ok(menu)
+}
+
 /// Starts the window and runs until it closes.
 pub fn run(path: Option<PathBuf>) -> Result<()> {
-    // winit's default app menu reads "About kymo", "Quit kymo" from the process name, which
-    // outside an app bundle is the executable's. Step 4b replaces that menu.
+    // macOS titles the app menu with the process name, which outside an app bundle is the
+    // executable's ("kymo").
     #[cfg(target_os = "macos")]
     objc2_foundation::NSProcessInfo::processInfo()
         .setProcessName(objc2_foundation::ns_string!(APP_NAME));
@@ -311,12 +455,21 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
         options,
         Box::new(|cc| {
             let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
-            Ok(Box::new(KymoApp::new(
-                &cc.egui_ctx,
-                gpu,
-                Options::default(),
-                path,
-            )))
+            let options = Options::default();
+            let native = options.menus == Menus::Native;
+            #[allow(unused_mut)]
+            let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
+            #[cfg(any(target_os = "macos", windows))]
+            if native {
+                // Without a native menu bar, egui draws one.
+                match install_native_menu(cc) {
+                    Ok(menu) => app.set_native_menu(menu),
+                    Err(error) => eprintln!("kymo: no native menu bar: {error}"),
+                }
+            }
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let _ = native;
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))

@@ -1,0 +1,137 @@
+//! The menu bar drawn by egui (Linux, where there is no native one), the shortcut overview
+//! and the About window. Native menus are in `native_menu`.
+
+use eframe::egui::{self, Button, RichText, ScrollArea, Ui};
+
+use crate::action::Action;
+use crate::keymap::Platform;
+use crate::menu::{Item, SystemItem, menu_bar};
+use crate::shortcuts::overview;
+
+/// What a menu shows for an action: whether it can run now, and its checkmark if it has
+/// one.
+pub trait MenuState {
+    fn enabled(&self, action: Action) -> bool;
+    /// `Some(on)` for checkable items.
+    fn checked(&self, action: Action) -> Option<bool>;
+}
+
+/// The menu bar of `platform` drawn by egui. Returns the action of a clicked item.
+pub fn egui_menu_bar(ui: &mut Ui, platform: Platform, state: &dyn MenuState) -> Option<Action> {
+    let mut clicked = None;
+    egui::MenuBar::new().ui(ui, |ui| {
+        for menu in menu_bar(platform) {
+            ui.menu_button(menu.title, |ui| {
+                for item in &menu.items {
+                    match item {
+                        Item::Action {
+                            action,
+                            label,
+                            shortcut,
+                            ..
+                        } => {
+                            let mut button = match state.checked(*action) {
+                                Some(on) => Button::selectable(on, *label),
+                                None => Button::new(*label),
+                            };
+                            if let Some(chord) = shortcut {
+                                button = button.shortcut_text(chord.display(platform));
+                            }
+                            if ui.add_enabled(state.enabled(*action), button).clicked() {
+                                clicked = Some(*action);
+                                ui.close();
+                            }
+                        }
+                        // Only macOS has system items, and its menus are native.
+                        Item::System(SystemItem::About) => {
+                            if ui.button(SystemItem::About.label()).clicked() {
+                                clicked = Some(Action::About);
+                                ui.close();
+                            }
+                        }
+                        Item::System(_) => {}
+                        Item::Separator => {
+                            ui.separator();
+                        }
+                    }
+                }
+            });
+        }
+    });
+    clicked
+}
+
+/// The shortcut overview, while `open`.
+pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform) {
+    egui::Window::new(Action::Shortcuts.label())
+        .open(open)
+        .collapsible(false)
+        .default_height(480.0)
+        .show(ctx, |ui| {
+            ScrollArea::vertical().show(ui, |ui| {
+                for (i, section) in overview(platform).iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(8.0);
+                    }
+                    ui.label(RichText::new(section.title).strong());
+                    egui::Grid::new(("shortcuts", i))
+                        .num_columns(2)
+                        .spacing([24.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for row in &section.rows {
+                                ui.label(RichText::new(&row.keys).monospace());
+                                ui.label(row.action);
+                                ui.end_row();
+                            }
+                        });
+                }
+            });
+        });
+}
+
+/// The About window (Windows and Linux; macOS uses the system's About panel).
+pub fn about_window(ctx: &egui::Context, open: &mut bool) {
+    egui::Window::new(Action::About.label())
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Kymo");
+                ui.label(format!("Version {}", kymo_core::version()));
+                ui.add_space(6.0);
+                ui.label(ABOUT);
+                ui.add_space(6.0);
+                ui.label(RichText::new(LICENSE).weak());
+            });
+        });
+}
+
+/// Adds macOS's font for its shortcut symbols (⌘ ⌥ ⇧ and arrows) as egui's last fallback.
+/// egui's own fonts lack them, and the system font fallback eframe installs only searches
+/// generic families, which lack them too; Lucida Grande is what macOS itself falls back to.
+/// Elsewhere shortcuts are written as words ("Ctrl+O"), so nothing is needed.
+pub fn add_symbol_font(ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/LucidaGrande.ttc") {
+        use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+        let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
+            .map(|family| InsertFontFamily {
+                family,
+                priority: FontPriority::Lowest,
+            })
+            .to_vec();
+        ctx.add_font(FontInsert {
+            name: "Lucida Grande".into(),
+            data: egui::FontData::from_owned(bytes),
+            families,
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = ctx;
+}
+
+/// What Kymo is, for About windows and panels.
+pub const ABOUT: &str = "A viewer for large EEG and MEG recordings.";
+pub const LICENSE: &str = "BSD 3-Clause License";

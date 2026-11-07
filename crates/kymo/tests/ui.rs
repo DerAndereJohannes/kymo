@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Key, Modifiers};
 use eframe::egui_wgpu;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
-use kymo::app::{KymoApp, Options};
+use egui_kittest::kittest::{NodeT, Queryable};
+use kymo::app::{KymoApp, Menus, Options};
+use kymo::keymap::Platform;
 use kymo::ui::gpu::Gpu;
 use kymo::viewer::Viewer;
 
@@ -48,6 +49,21 @@ impl Drop for TempFile {
     }
 }
 
+/// Pyramids in memory, and the menu bar drawn by egui as on Linux, on every platform.
+fn options() -> Options {
+    Options {
+        sidecar_dir: None,
+        menus: Menus::Egui(Platform::Linux),
+    }
+}
+
+/// The system font fallback eframe adds (for ⌘ and friends), as the app has it.
+fn system_fonts(ctx: &egui::Context) {
+    ctx.add_font_provider(std::sync::Arc::new(
+        egui_system_font_provider::SystemFontProvider::new(),
+    ));
+}
+
 const SIZE: egui::Vec2 = egui::vec2(1200.0, 700.0);
 
 /// The window opening `path`, without a GPU: egui skips the trace renderer's callback.
@@ -56,7 +72,7 @@ fn window(path: &Path) -> Harness<'static, KymoApp> {
         KymoApp::new(
             &cc.egui_ctx,
             Gpu::none("no GPU in this test"),
-            Options { sidecar_dir: None },
+            options(),
             Some(path.to_owned()),
         )
     })
@@ -353,6 +369,112 @@ fn an_idle_window_stops_repainting() {
     assert!(harness.try_run().is_ok(), "the window keeps repainting");
 }
 
+/// Clicks `item` in the egui menu `menu`.
+fn choose(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) {
+    harness.get_by_label(menu).click();
+    harness.run_steps(2);
+    // Items with a shortcut carry it in their label.
+    harness.get_by_label_contains(item).click();
+    harness.run_steps(2);
+}
+
+/// Whether `item` in the egui menu `menu` is enabled; leaves the menu closed.
+fn enabled(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
+    harness.get_by_label(menu).click();
+    harness.run_steps(2);
+    let enabled = !harness
+        .get_by_label_contains(item)
+        .accesskit_node()
+        .is_disabled();
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label_contains(item).is_none(),
+        "{menu} stayed open"
+    );
+    enabled
+}
+
+#[test]
+fn menu_items_are_enabled_as_the_state_allows() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    assert!(enabled(&mut harness, "View", "Zoom In"));
+    assert!(enabled(&mut harness, "File", "Close"));
+    assert!(enabled(&mut harness, "View", "Show Sidebar"));
+    // Step 5 brings these.
+    assert!(!enabled(&mut harness, "View", "Remove DC"));
+    assert!(!enabled(&mut harness, "Edit", "Settings"));
+
+    harness.key_press_modifiers(command(), Key::W);
+    harness.step();
+    assert!(!enabled(&mut harness, "File", "Close"));
+    assert!(!enabled(&mut harness, "View", "Zoom In"));
+    assert!(!enabled(&mut harness, "View", "Show Sidebar"));
+    assert!(enabled(&mut harness, "File", "Quit"));
+    assert!(enabled(&mut harness, "Help", "Keyboard Shortcuts"));
+}
+
+#[test]
+fn menu_items_act_and_disabled_ones_dont() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    choose(&mut harness, "View", "Zoom In");
+    assert_eq!(viewer(&harness).view().time(), 5.0..15.0);
+    choose(&mut harness, "Go", "End of Recording");
+    assert_eq!(viewer(&harness).view().time(), 50.0..60.0);
+    // DC removal and Settings come in step 5.
+    choose(&mut harness, "View", "Remove DC");
+    assert!(!viewer(&harness).view().dc_removed());
+
+    choose(&mut harness, "File", "Close");
+    assert!(harness.state().viewer().is_none());
+    // Nothing to close now.
+    choose(&mut harness, "File", "Close");
+    harness.get_by_label("No recording open.");
+    assert_eq!(harness.state().error(), None);
+}
+
+#[test]
+fn the_sidebar_hides_and_shows() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let width = |h: &Harness<'_, KymoApp>| viewer(h).layout().unwrap().traces.width();
+    let with_sidebar = width(&harness);
+    harness.get_by_label("Format");
+    choose(&mut harness, "View", "Show Sidebar");
+    assert!(!harness.state().sidebar_shown());
+    assert!(harness.query_by_label("Format").is_none());
+    assert!(width(&harness) > with_sidebar + 100.0);
+    choose(&mut harness, "View", "Show Sidebar");
+    harness.get_by_label("Format");
+    assert_eq!(width(&harness), with_sidebar);
+}
+
+#[test]
+fn the_shortcut_overview_and_about_open() {
+    let file = TempFile::new("bdf");
+    // A missing file: both work without a recording.
+    let mut harness = window(&file.0);
+    step_until(&mut harness, "the error", |app| app.error().is_some());
+    harness.key_press_modifiers(command(), Key::Slash);
+    harness.step();
+    assert!(harness.state().shortcuts_open());
+    harness.get_by_label("Trackpad and Mouse");
+    harness.get_by_label("Pinch");
+    harness.key_press_modifiers(command(), Key::Slash);
+    harness.step();
+    assert!(!harness.state().shortcuts_open());
+    assert!(harness.query_by_label("Pinch").is_none());
+
+    choose(&mut harness, "Help", "About Kymo");
+    assert!(harness.state().about_open());
+    harness.get_by_label(kymo::ui::menus::ABOUT);
+}
+
 /// kittest's wgpu setup on Metal, Vulkan or DX12 (traces need storage buffers in vertex
 /// shaders, which OpenGL lacks), or `None` without such an adapter: the test then passes
 /// with a message, unless `KYMO_REQUIRE_GPU` is set.
@@ -385,11 +507,12 @@ fn gpu_window(path: &Path, setup: egui_wgpu::WgpuSetup) -> Harness<'static, Kymo
     let path = path.to_owned();
     Harness::builder()
         .with_size(SIZE)
+        .with_context_setup(system_fonts)
         .wgpu_setup(setup)
         .build_eframe(move |cc| {
             let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
             assert_eq!(gpu.error(), None);
-            KymoApp::new(&cc.egui_ctx, gpu, Options { sidecar_dir: None }, Some(path))
+            KymoApp::new(&cc.egui_ctx, gpu, options(), Some(path))
         })
 }
 
@@ -441,12 +564,13 @@ fn renders_the_window() {
     let mut harness = Harness::builder()
         .with_size(SIZE)
         .with_pixels_per_point(2.0)
+        .with_context_setup(system_fonts)
         .wgpu()
         .build_eframe(|cc| {
             KymoApp::new(
                 &cc.egui_ctx,
                 Gpu::new(cc.wgpu_render_state.as_ref()),
-                Options { sidecar_dir: None },
+                options(),
                 Some(path.clone()),
             )
         });

@@ -1,9 +1,9 @@
 //! The one table of key bindings, and the translation of scrolling and pinching.
 //!
 //! Bindings are written platform-neutrally: ⌘ is Cmd on macOS and Ctrl elsewhere, ⌥ is
-//! Alt. With a native menu bar (macOS, Windows) the system hands a menu item's shortcut to
-//! the menu before the window sees it; [`Keymap::egui_action`] leaves those keys alone, so
-//! no key acts twice.
+//! Alt. With the native menu bar on macOS the system hands a menu item's shortcut to the
+//! menu before the window sees it; [`Keymap::egui_action`] leaves those keys alone, so no
+//! key acts twice.
 
 use eframe::egui::{Key, Modifiers, MouseWheelUnit, Vec2};
 
@@ -31,9 +31,16 @@ impl Platform {
         }
     }
 
-    /// Whether menus are native (and take their shortcuts) or drawn by egui (Linux).
+    /// Whether menus are native (macOS, Windows) or drawn by egui (Linux).
     pub fn native_menu(self) -> bool {
         self != Platform::Linux
+    }
+
+    /// Whether the native menu takes its items' shortcuts before the window sees them: on
+    /// macOS only. On Windows that needs a Win32 message hook in the event loop, so the menu
+    /// shows the shortcuts and egui handles them, as on Linux.
+    pub fn menu_takes_shortcuts(self) -> bool {
+        self == Platform::Mac
     }
 }
 

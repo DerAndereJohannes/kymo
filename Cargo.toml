@@ -21,8 +21,12 @@ dirs = "7"
 eframe = "0.37"
 # Headless UI tests.
 egui_kittest = { version = "0.37", features = ["eframe", "wgpu"] }
+# The system font fallback eframe installs, for the same glyphs in headless UI tests.
+egui_system_font_provider = "0.37"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 memmap2 = "0.9"
+# Native menu bars on macOS and Windows; default features (GTK) are Linux-only and unused.
+muda = { version = "0.21", default-features = false }
 # macOS only, already pulled in by eframe; names the process for the app menu.
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
 pollster = "1.0"

@@ -234,7 +234,8 @@ impl ViewState {
             | Action::Quit
             | Action::Settings
             | Action::Shortcuts
-            | Action::About => return false,
+            | Action::About
+            | Action::ToggleSidebar => return false,
         }
         true
     }

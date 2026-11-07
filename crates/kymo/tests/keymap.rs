@@ -109,13 +109,14 @@ fn leaves_keys_a_native_menu_takes_to_the_menu() {
     assert_eq!(mac.egui_action(Key::D, NONE), Some(Action::ToggleDc));
     assert_eq!(mac.egui_action(Key::ArrowLeft, NONE), Some(Action::PanLeft));
 
-    let windows = Keymap::new(Platform::Windows);
-    assert_eq!(windows.egui_action(Key::O, cmd(Platform::Windows)), None);
-    let linux = Keymap::new(Platform::Linux);
-    assert_eq!(
-        linux.egui_action(Key::O, cmd(Platform::Linux)),
-        Some(Action::Open)
-    );
+    // Windows menus show their shortcuts but leave them to egui, as Linux does.
+    for platform in [Platform::Windows, Platform::Linux] {
+        let keymap = Keymap::new(platform);
+        assert_eq!(
+            keymap.egui_action(Key::O, cmd(platform)),
+            Some(Action::Open)
+        );
+    }
 }
 
 #[test]

@@ -39,10 +39,12 @@ pub enum Action {
     ToggleDc,
     /// Toggles bad for the channel under the pointer.
     ToggleBad,
+    /// Shows or hides the sidebar (file header and channel list).
+    ToggleSidebar,
 }
 
 impl Action {
-    pub const ALL: [Action; 28] = [
+    pub const ALL: [Action; 29] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -71,6 +73,7 @@ impl Action {
         Action::ScaleDown,
         Action::ToggleDc,
         Action::ToggleBad,
+        Action::ToggleSidebar,
     ];
 
     /// The name in menus and the shortcut overview.
@@ -104,6 +107,7 @@ impl Action {
             Action::ScaleDown => "Scale Down",
             Action::ToggleDc => "Remove DC",
             Action::ToggleBad => "Toggle Bad Channel",
+            Action::ToggleSidebar => "Show Sidebar",
         }
     }
 

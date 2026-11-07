@@ -7,7 +7,10 @@ pub mod app;
 pub mod document;
 pub mod keymap;
 pub mod menu;
+#[cfg(any(target_os = "macos", windows))]
+pub mod native_menu;
 pub mod render;
+pub mod shortcuts;
 pub mod ui;
 pub mod view;
 pub mod viewer;
