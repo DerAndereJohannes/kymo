@@ -199,6 +199,9 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             transducer: text(column(1, i)),
             physical_range: Some((physical_min, physical_max)),
             digital_range: Some((dmin, dmax)),
+            // TODO(later): duplicate labels stay as stored ("POL", "POL", ...). MNE renames
+            // them "POL-0", "POL-1", ...; the Python round trip (bads by name) may need the
+            // same names.
             name: label,
         });
         blocks.push(block);
