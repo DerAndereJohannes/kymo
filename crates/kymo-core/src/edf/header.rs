@@ -27,6 +27,8 @@ pub enum EdfError {
     },
     #[error("the file has no data signals, only annotations")]
     NoDataSignals,
+    #[error("data record {record} {reason}")]
+    InvalidRecord { record: u64, reason: String },
     #[error(transparent)]
     Model(#[from] ModelError),
 }

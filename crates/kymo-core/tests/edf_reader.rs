@@ -1,43 +1,17 @@
 // Test code: panicking on unexpected results is the point.
 #![allow(clippy::unwrap_used)]
 
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod common;
 
+use std::ops::Range;
+use std::path::Path;
+use std::sync::Arc;
+
+use common::TempFile;
 use kymo_core::edf::EdfError;
 use kymo_core::{ChannelId, GridId, OpenError, ReadError, Recording, SamplesMut};
 use kymo_testgen::{ChannelSpec, Format, Spec};
 use proptest::prelude::*;
-
-/// A file in the temp directory, deleted on drop.
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn new(extension: &str) -> Self {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!("kymo-reader-{}-{n}.{extension}", std::process::id());
-        TempFile(std::env::temp_dir().join(name))
-    }
-
-    fn written(spec: &Spec) -> Self {
-        let file = TempFile::new(spec.format.extension());
-        kymo_testgen::write(spec, &file.0).unwrap();
-        file
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 
 fn open(path: &Path) -> Recording {
     Recording::new(kymo_core::open(path).unwrap()).unwrap().0
@@ -244,12 +218,6 @@ fn open_reports_unreadable_and_unsupported_files() {
             ..
         })
     ));
-
-    // Until gaps are read from the TALs, discontinuous files are refused rather than misread.
-    let d = TempFile::written(&Spec::preset("edf+d-mixed").unwrap());
-    let err = kymo_core::open(d.path()).unwrap_err();
-    assert!(matches!(err, OpenError::Unsupported { .. }));
-    assert!(err.to_string().contains("EDF+D"), "{err}");
 }
 
 /// A random continuous file and random reads from it.

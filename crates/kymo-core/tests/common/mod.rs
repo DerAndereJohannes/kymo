@@ -1,6 +1,11 @@
-//! Shared proptest strategies.
+//! Shared test helpers and proptest strategies.
+
+// Each test crate uses only some of these.
+#![allow(dead_code)]
 
 use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 
@@ -24,4 +29,32 @@ pub fn sub_range(len: u64) -> impl Strategy<Value = Range<u64>> {
 /// Whether sample `i` lies in one of `segments`.
 pub fn is_present(segments: &[Range<u64>], i: u64) -> bool {
     segments.iter().any(|s| s.contains(&i))
+}
+
+/// A file in the temp directory, deleted on drop.
+pub struct TempFile(PathBuf);
+
+impl TempFile {
+    pub fn new(extension: &str) -> Self {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!("kymo-test-{}-{n}.{extension}", std::process::id());
+        TempFile(std::env::temp_dir().join(name))
+    }
+
+    pub fn written(spec: &kymo_testgen::Spec) -> Self {
+        let file = TempFile::new(spec.format.extension());
+        kymo_testgen::write(spec, &file.0).unwrap();
+        file
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
