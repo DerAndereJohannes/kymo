@@ -110,6 +110,14 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
                 c.digital_min, c.digital_max
             )));
         }
+        let half_range = (f64::from(c.digital_max) - f64::from(c.digital_min)) / 2.0;
+        let reach = c.amplitude / c.gain().abs();
+        if !c.trigger && !(c.amplitude > 0.0 && reach <= 0.6 * half_range) {
+            return Err(invalid(format!(
+                "channel {i}: amplitude {} must be > 0 and at most 60% of the half-range",
+                c.amplitude
+            )));
+        }
         if c.samples_per_record == 0 {
             return Err(invalid(format!("channel {i}: no samples per record")));
         }

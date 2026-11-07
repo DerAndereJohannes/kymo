@@ -5,10 +5,12 @@
 //! disk. The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
-//! The truth function is a sine plus a sawtooth ramp plus seeded hash noise, together at most
-//! 60% of the digital half-range, plus sparse **single-sample spikes** at the digital minimum or
-//! maximum. Spikes are the only samples that reach the digital limits, so a min/max pyramid
-//! that drops a peak is caught at once.
+//! The truth function is a sine plus a sawtooth ramp plus seeded hash noise, together within
+//! each channel's [`amplitude`](ChannelSpec::amplitude) of the middle of its digital range (15 uV
+//! for EEG, so traces fit MNE's default scale), plus sparse **single-sample spikes** at the
+//! digital minimum or maximum. Spikes are the only samples that reach the digital limits, so a
+//! min/max pyramid that drops a peak is caught at once. Spikes are rare by default
+//! ([`Spec::spike_every`]), so they don't cover the traces in a viewer.
 
 mod header;
 mod signal;
@@ -93,6 +95,13 @@ impl Format {
     }
 }
 
+/// Default [`Spec::spike_every`]: about one spike per channel every 50 s at 2048 Hz.
+pub const SPIKE_EVERY: u64 = 100_000;
+
+/// How far EEG channels reach from zero, in uV: within MNE's default EEG scale (20 uV per
+/// half channel spacing), so traces show at Kymo's default zoom.
+pub const EEG_AMPLITUDE: f64 = 15.0;
+
 /// One data signal. Numbers are written with Rust's shortest round-trip formatting, so they
 /// must fit their 8-character header field exactly as given.
 #[derive(Clone, Debug, PartialEq)]
@@ -112,11 +121,16 @@ pub struct ChannelSpec {
     /// A trigger channel: pulses of codes 1 to 255 instead of the EEG-like signal (see
     /// [`ChannelSpec::trigger`]).
     pub trigger: bool,
+    /// How far the signal (sine, ramp and noise) reaches from the middle of the digital
+    /// range, in physical units; at most 60% of the half-range. Spikes still reach the
+    /// digital limits. Unused for trigger channels.
+    pub amplitude: f64,
 }
 
 impl ChannelSpec {
     /// An EEG channel with the usual full-range scaling of the format:
-    /// 0.1 uV per bit for EDF, about 0.03125 uV per bit for BDF (as BioSemi).
+    /// 0.1 uV per bit for EDF, about 0.03125 uV per bit for BDF (as BioSemi). Its signal
+    /// stays within [`EEG_AMPLITUDE`] of zero, as real EEG does.
     pub fn eeg(label: impl Into<String>, samples_per_record: u32, format: Format) -> Self {
         let (digital_min, digital_max) = format.digital_limits();
         let (physical_min, physical_max) = if format.is_bdf() {
@@ -135,6 +149,7 @@ impl ChannelSpec {
             prefilter: "HP:0.1Hz LP:100Hz".into(),
             samples_per_record,
             trigger: false,
+            amplitude: EEG_AMPLITUDE,
         }
     }
 
@@ -159,6 +174,7 @@ impl ChannelSpec {
             prefilter: "No filtering".into(),
             samples_per_record,
             trigger: true,
+            amplitude: 0.0,
         }
     }
 
@@ -227,6 +243,9 @@ pub struct Spec {
     pub annotations: Vec<Tal>,
     /// Seeds the noise and spike positions.
     pub seed: u64,
+    /// One sample in this many is a spike, on average; 0 for none. The default,
+    /// [`SPIKE_EVERY`], keeps them rare on screen; tests that hunt peaks set it lower.
+    pub spike_every: u64,
 }
 
 impl Spec {
@@ -253,6 +272,7 @@ impl Spec {
             gaps: Vec::new(),
             annotations: Vec::new(),
             seed: 0,
+            spike_every: SPIKE_EVERY,
         }
     }
 
@@ -394,7 +414,7 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 }
 
 mod presets {
-    use super::{ChannelSpec, Format, GapSpec, Spec, Tal};
+    use super::{ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Spec, Tal};
 
     pub const LIST: &[(&str, &str)] = &[
         (
@@ -452,8 +472,10 @@ mod presets {
             label: "Resp".into(),
             transducer: "thermistor".into(),
             dimension: "mV".into(),
-            physical_min: 50.0,
-            physical_max: -50.0,
+            physical_min: 5.0,
+            physical_max: -5.0,
+            // In mV: as large as EEG on screen, as both count as EEG there.
+            amplitude: EEG_AMPLITUDE / 1000.0,
             ..ChannelSpec::eeg("", 32, f)
         });
         channels.push(ChannelSpec::trigger(256, f));

@@ -397,6 +397,7 @@ fn truth_function_spikes_are_the_only_extremes() {
     for format in [Format::Edf, Format::Bdf] {
         let mut spec = small(format);
         spec.annotations.clear();
+        spec.spike_every = 997;
         let (lo, hi) = format.digital_limits();
         let (mut low_spikes, mut high_spikes) = (0, 0);
         for i in 0..200_000 {
@@ -404,16 +405,50 @@ fn truth_function_spikes_are_the_only_extremes() {
             assert_eq!(v == lo || v == hi, spec.is_spike(0, i), "sample {i}: {v}");
             low_spikes += usize::from(v == lo);
             high_spikes += usize::from(v == hi);
-            // Background stays within 60% of the half-range.
-            if !spec.is_spike(0, i) {
-                let half = (f64::from(hi) - f64::from(lo)) / 2.0;
-                let mid = (f64::from(hi) + f64::from(lo)) / 2.0;
-                assert!((f64::from(v) - mid).abs() <= 0.6 * half + 1.0);
-            }
         }
         // About one in 997 samples, half of each sign.
         assert!((50..150).contains(&low_spikes), "{low_spikes}");
         assert!((50..150).contains(&high_spikes), "{high_spikes}");
+        spec.spike_every = 0;
+        assert!((0..200_000).all(|i| !spec.is_spike(0, i)));
+    }
+}
+
+/// Every preset's signal stays within its channel's amplitude of the middle of the digital
+/// range (15 uV of zero for EEG, so traces fit MNE's default scale), and spikes are rare.
+#[test]
+fn presets_stay_within_their_amplitude() {
+    for &(name, _) in kymo_testgen::PRESETS {
+        let spec = Spec::preset(name).unwrap();
+        // The first 8 channels and the last of each preset (its channels are built alike).
+        for (c, channel) in spec.channels.iter().enumerate() {
+            if channel.trigger || (c >= 8 && c + 1 < spec.channels.len()) {
+                continue;
+            }
+            if channel.dimension == "uV" {
+                assert_eq!(channel.amplitude, kymo_testgen::EEG_AMPLITUDE, "{name} {c}");
+            }
+            let mid = (f64::from(channel.digital_min) + f64::from(channel.digital_max)) / 2.0;
+            let physical = |d: f64| d * channel.gain() + channel.offset();
+            let center = physical(mid);
+            let n = spec.len(c).min(100_000);
+            let mut spikes = 0;
+            for i in 0..n {
+                if spec.is_spike(c, i) {
+                    spikes += 1;
+                    continue;
+                }
+                let v = physical(f64::from(spec.digital(c, i)));
+                assert!(
+                    (v - center).abs() <= channel.amplitude + channel.gain().abs(),
+                    "{name} channel {c} sample {i}: {v}"
+                );
+            }
+            assert!(
+                spikes <= n / 20_000 + 3,
+                "{name} channel {c}: {spikes} spikes in {n}"
+            );
+        }
     }
 }
 

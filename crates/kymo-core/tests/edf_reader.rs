@@ -78,7 +78,8 @@ fn reads_whole_channels_of_each_format() {
 #[test]
 fn int24_spikes_reach_both_limits() {
     // Spikes sit at the digital limits, so this checks the int24 sign extension at both ends.
-    let spec = Spec::preset("bdf+c-small").unwrap();
+    let mut spec = Spec::preset("bdf+c-small").unwrap();
+    spec.spike_every = 997;
     let file = TempFile::written(&spec);
     let rec = open(file.path());
     let len = rec.grid(GridId(0)).len();

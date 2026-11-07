@@ -4,12 +4,11 @@ use std::f64::consts::TAU;
 
 use crate::Spec;
 
-/// One in this many samples is a spike (on average).
-const SPIKE_EVERY: u64 = 997;
-
 /// Parameters of one channel's synthetic signal.
 pub(crate) struct ChannelSignal {
     key: u64,
+    /// One sample in this many is a spike, on average; 0 for none.
+    spike_every: u64,
     mid: f64,
     half: f64,
     min: i32,
@@ -30,8 +29,10 @@ impl ChannelSignal {
         let (min, max) = (c.digital_min, c.digital_max);
         ChannelSignal {
             key: splitmix64(spec.seed ^ splitmix64(channel as u64)),
+            spike_every: spec.spike_every,
             mid: (f64::from(min) + f64::from(max)) / 2.0,
-            half: (f64::from(max) - f64::from(min)) / 2.0,
+            // The sum below peaks at 0.6 of `half`: that is the amplitude in digital units.
+            half: c.amplitude / c.gain().abs() / 0.6,
             min,
             max,
             sine_period: ((rate / frequency).round() as u64).max(4),
@@ -75,12 +76,13 @@ impl ChannelSignal {
 
     fn spike_from(&self, h: u64) -> Option<i32> {
         let s = splitmix64(h);
-        s.is_multiple_of(SPIKE_EVERY)
-            .then_some(if s & (1 << 40) != 0 {
+        (self.spike_every != 0 && s.is_multiple_of(self.spike_every)).then_some(
+            if s & (1 << 40) != 0 {
                 self.max
             } else {
                 self.min
-            })
+            },
+        )
     }
 
     /// The value at `i`, given `sine = self.sine(i % self.sine_period)`.
@@ -99,7 +101,8 @@ impl ChannelSignal {
         }
         let noise = (h >> 11) as f64 * (2.0 / (1u64 << 53) as f64) - 1.0;
         let ramp = 2.0 * (i % self.ramp_period) as f64 / self.ramp_period as f64 - 1.0;
-        // At most 0.6 of the half-range, so only spikes reach the limits.
+        // Within the amplitude, at most 60% of the half-range (see `validate`), so only
+        // spikes reach the limits.
         let x = self.mid + self.half * (0.35 * sine + 0.15 * ramp + 0.1 * noise);
         (x.round() as i32).clamp(self.min + 1, self.max - 1)
     }
