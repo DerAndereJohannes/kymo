@@ -13,6 +13,7 @@
 //! [`Sample::EMPTY_MIN`]: crate::Sample::EMPTY_MIN
 
 mod build;
+mod mean;
 
 use std::collections::HashMap;
 use std::ops::Range;

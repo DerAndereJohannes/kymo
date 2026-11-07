@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kymo_core::testing::{MemData, opened};
 use kymo_core::tile::TileData;
-use kymo_core::{Channel, ChannelId, Grid, GridId, Recording, SampleType, Timebase};
+use kymo_core::{Channel, ChannelId, Grid, GridId, Opened, Recording, SampleType, Timebase};
 use proptest::prelude::*;
 
 /// A grid length up to `max_len` and random gap structure: sorted, disjoint, non-touching
@@ -104,6 +104,18 @@ pub fn mem_recording(
     segments: Vec<Range<u64>>,
     seed: u64,
 ) -> (Recording, MemData) {
+    let (opened, data) = mem_opened(sample_type, n, len, segments, seed);
+    (Recording::new(opened).unwrap().0, data)
+}
+
+/// As [`mem_recording`], before validation, so tests can change the header.
+pub fn mem_opened(
+    sample_type: SampleType,
+    n: usize,
+    len: u64,
+    segments: Vec<Range<u64>>,
+    seed: u64,
+) -> (Opened, MemData) {
     let ids: Vec<ChannelId> = (0..n as u32).map(ChannelId).collect();
     let channels = ids
         .iter()
@@ -115,10 +127,7 @@ pub fn mem_recording(
     };
     let grid = Grid::new(timebase, len, segments, sample_type, ids).unwrap();
     let data = mem_data(sample_type, n, len, seed);
-    let rec = Recording::new(opened(channels, vec![grid], vec![data.clone()]))
-        .unwrap()
-        .0;
-    (rec, data)
+    (opened(channels, vec![grid], vec![data.clone()]), data)
 }
 
 pub fn values(data: &TileData) -> Vec<f64> {
