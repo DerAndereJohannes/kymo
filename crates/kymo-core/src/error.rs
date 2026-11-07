@@ -1,7 +1,9 @@
 //! Error types of the recording model.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
+use crate::edf::EdfError;
 use crate::{AnnotationId, ChannelId, GridId, SampleType};
 
 /// A header, grid or annotation violates the recording model's invariants.
@@ -89,4 +91,19 @@ pub enum AnnotationError {
     DuplicateId(AnnotationId),
     #[error("annotation {id:?}: {reason}")]
     Invalid { id: AnnotationId, reason: String },
+}
+
+/// A file could not be opened.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum OpenError {
+    #[error("cannot read {}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{}: {source}", path.display())]
+    Edf { path: PathBuf, source: EdfError },
+    #[error("{}: {reason}", path.display())]
+    Unsupported { path: PathBuf, reason: String },
 }
