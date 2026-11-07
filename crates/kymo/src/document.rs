@@ -115,28 +115,17 @@ impl GridSummary {
 }
 
 impl Summary {
-    /// The sidebar's rows, key and value. The sample type goes with the format, and with one
-    /// grid its sample count goes with the duration, leaving the rate (and gaps) for
-    /// "Sampling"; several grids each keep their samples and channels.
+    /// The sidebar's rows, key and value. With one grid its sample count goes with the
+    /// duration, leaving the rate (and gaps) for "Sampling"; several grids each keep their
+    /// samples and channels. No sample type: for EDF and BDF the format implies it, and
+    /// ours is the type in memory (BDF's int24 is widened to int32), not the file's.
     pub fn sidebar_rows(&self) -> Vec<(String, String)> {
-        let mut types: Vec<&str> = Vec::new();
-        for grid in &self.grids {
-            let name = sample_type_name(grid.sample_type);
-            if !types.contains(&name) {
-                types.push(name);
-            }
-        }
-        let format = if types.is_empty() {
-            self.format.to_owned()
-        } else {
-            format!("{} ({})", self.format, types.join(", "))
-        };
         let mut duration = format_duration(self.duration);
         if let [grid] = &self.grids[..] {
             duration += &format!(" ({} samples)", grid.samples);
         }
         let mut rows = vec![
-            ("Format".to_owned(), format),
+            ("Format".to_owned(), self.format.to_owned()),
             (
                 "Start".to_owned(),
                 self.start.clone().unwrap_or_else(|| "unknown".into()),
@@ -372,7 +361,7 @@ mod tests {
         // Several grids: each row keeps its samples and channels, the duration none.
         let rows = summary.sidebar_rows();
         let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
-        assert_eq!(value("Format"), "EDF+D (int16)");
+        assert_eq!(value("Format"), "EDF+D");
         assert_eq!(*value("Duration"), format_duration(summary.duration));
         assert!(!rows.iter().any(|(k, _)| k == "Sampling"));
         for (i, grid) in summary.grids.iter().enumerate() {
@@ -407,7 +396,7 @@ mod tests {
             ]
         );
         let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
-        assert_eq!(value("Format"), "BDF+C (int32)");
+        assert_eq!(value("Format"), "BDF+C");
         assert_eq!(value("Duration"), "0:01:00.000 (30720 samples)");
         assert_eq!(value("Channels"), "5");
         assert_eq!(value("Sampling"), "512 Hz");
