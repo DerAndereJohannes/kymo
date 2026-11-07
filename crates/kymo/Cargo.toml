@@ -10,9 +10,11 @@ authors.workspace = true
 
 [dependencies]
 anyhow = "1"
+bytemuck.workspace = true
 eframe.workspace = true
 kymo-core.workspace = true
 rfd.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true
@@ -20,6 +22,7 @@ objc2-foundation.workspace = true
 [dev-dependencies]
 kymo-core = { workspace = true, features = ["testing"] }
 kymo-testgen.workspace = true
+pollster.workspace = true
 proptest.workspace = true
 
 [lints]

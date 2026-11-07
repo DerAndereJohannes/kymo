@@ -210,6 +210,17 @@ pub fn samples_in(grid: &Grid, time: &Range<f64>) -> Range<u64> {
     start..end.max(start)
 }
 
+/// The samples of `grid` that a view over `time` draws at `level`: those that intersect
+/// `time`, and at level 0 also the sample after the last of them, which the line to the
+/// right edge runs to. Empty if no sample intersects `time`.
+pub fn drawn_samples(grid: &Grid, level: Level, time: &Range<f64>) -> Range<u64> {
+    let mut samples = samples_in(grid, time);
+    if level == Level::RAW && !samples.is_empty() {
+        samples.end = (samples.end + 1).min(grid.len());
+    }
+    samples
+}
+
 /// The level a view uses for a grid.
 pub fn level_for(grid: &Grid, view: &View) -> Level {
     let seconds = view.time.end - view.time.start;
@@ -218,8 +229,8 @@ pub fn level_for(grid: &Grid, view: &View) -> Level {
 }
 
 /// The tiles a view needs: for every grid with visible channels, each channel block holding
-/// one of them, times each tile of the chosen level that intersects the visible samples.
-/// Sorted by grid, block and time. Empty for an empty view.
+/// one of them, times each tile of the chosen level that holds one of its
+/// [`drawn_samples`]. Sorted by grid, block and time. Empty for an empty view.
 pub fn tiles_for_view(recording: &Recording, view: &View) -> Vec<TileKey> {
     let mut tiles = Vec::new();
     // `is_empty` is also true for NaN bounds.
@@ -254,8 +265,8 @@ fn view_blocks(recording: &Recording, channels: &[ChannelId]) -> Vec<ChannelBloc
     blocks
 }
 
-/// The tiles of `block` at `level` that intersect `time`, in time order; none outside the
-/// grid.
+/// The tiles of `block` at `level` holding the [`drawn_samples`] over `time`, in time order;
+/// none outside the grid.
 fn tiles_over(
     grid: &Grid,
     block: ChannelBlock,
@@ -263,7 +274,7 @@ fn tiles_over(
     version: SignalVersion,
     time: &Range<f64>,
 ) -> impl Iterator<Item = TileKey> + use<> {
-    let samples = samples_in(grid, time);
+    let samples = drawn_samples(grid, level, time);
     let times = (!samples.is_empty())
         .then(|| level.tile_of(samples.start)..=level.tile_of(samples.end - 1));
     times.into_iter().flatten().map(move |time| TileKey {

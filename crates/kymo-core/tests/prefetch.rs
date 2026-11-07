@@ -8,11 +8,11 @@ mod common;
 use std::collections::{BTreeMap, HashSet};
 
 use common::{grids, shape_recording, view, view_of};
-use kymo_core::Recording;
 use kymo_core::tile::{
     CHANNEL_BLOCK, ChannelBlock, Direction, Level, TileKey, View, level_for, max_level, prefetch,
     samples_in, tile_bytes, tiles_for_view,
 };
+use kymo_core::{GridId, Recording};
 use proptest::prelude::*;
 
 /// The tiles of `block` at `level` over `time`, worked out from samples directly.
@@ -23,9 +23,14 @@ fn tiles(
     view: &View,
     time: std::ops::Range<f64>,
 ) -> Vec<TileKey> {
-    let samples = samples_in(rec.grid(block.grid), &time);
+    let grid = rec.grid(block.grid);
+    let mut samples = samples_in(grid, &time);
     if samples.is_empty() {
         return Vec::new();
+    }
+    // At level 0 the line runs on to the next sample.
+    if level == Level::RAW {
+        samples.end = (samples.end + 1).min(grid.len());
     }
     (level.tile_of(samples.start)..=level.tile_of(samples.end - 1))
         .map(|time| TileKey {
@@ -235,9 +240,14 @@ fn an_empty_view_needs_nothing() {
 
 #[test]
 fn ties_go_to_the_margin_ahead() {
-    // The screen spans exactly tiles 24 to 34, so tiles 23 and 35 both touch it.
+    // The screen spans exactly tiles 24 to 34 at level 1, so tiles 23 and 35 both touch it.
     let rec = shape_recording(&[(1000.0, 0.0, 10_000_000, 1)]);
-    let shown = view(24.0 * 4.096..35.0 * 4.096, 2000, vec![0]);
+    let tile = 4096.0 * 32.0 / 1000.0;
+    let shown = view(24.0 * tile..35.0 * tile, 12_000, vec![0]);
+    assert_eq!(
+        level_for(rec.grid(GridId(0)), &shown),
+        Level::new(1).unwrap()
+    );
     let forward = prefetch(&rec, &shown, Direction::Forward, usize::MAX);
     assert_eq!((forward[11].time, forward[12].time), (35, 23));
     let backward = prefetch(&rec, &shown, Direction::Backward, usize::MAX);

@@ -31,5 +31,13 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Mesa's software Vulkan driver (lavapipe), so the renderer's GPU tests run here
+      # instead of skipping.
+      - name: Install a software Vulkan driver
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+          echo "KYMO_REQUIRE_GPU=1" >> "$GITHUB_ENV"
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

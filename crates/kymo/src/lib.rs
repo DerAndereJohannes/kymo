@@ -4,4 +4,5 @@
 pub mod action;
 pub mod keymap;
 pub mod menu;
+pub mod render;
 pub mod view;

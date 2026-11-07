@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 
 use kymo_core::GridId;
 use kymo_core::tile::{
-    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, TileKey, choose_level, level_for,
-    max_level, samples_in, tiles_for_view,
+    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, TileKey, choose_level,
+    drawn_samples, level_for, max_level, samples_in, tiles_for_view,
 };
 use proptest::prelude::*;
 
@@ -110,6 +110,31 @@ fn whole_recording_uses_few_coarse_tiles() {
     assert!(level.up().unwrap().bucket_len() as f64 > spp);
     // 8 channel blocks of 2 tiles (4096 buckets of 8,192 samples each).
     assert_eq!(tiles.len(), 8 * 2);
+}
+
+#[test]
+fn level_0_views_need_the_sample_after_the_last_visible_one() {
+    // 100 Hz: the view ends inside the last sample of tile 0 (sample 4095).
+    let rec = recording(&[(100.0, 0.0, 100_000, 1)]);
+    let end = 40.955;
+    let tiles = tiles_for_view(&rec, &view(30.0..end, 800, vec![0]));
+    assert_eq!(tiles.iter().map(|t| t.time).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(
+        drawn_samples(rec.grid(GridId(0)), Level::RAW, &(30.0..end)),
+        3000..4097
+    );
+    // Not past the grid's end.
+    let grid = rec.grid(GridId(0));
+    assert_eq!(
+        drawn_samples(grid, Level::RAW, &(999.0..1000.0)),
+        99_900..100_000
+    );
+    assert_eq!(
+        drawn_samples(grid, Level::RAW, &(2000.0..3000.0)),
+        100_000..100_000
+    );
+    // Buckets reach to the next one by themselves.
+    assert_eq!(drawn_samples(grid, level(1), &(30.0..end)), 3000..4096);
 }
 
 #[test]
@@ -226,11 +251,15 @@ proptest! {
 
         for block in blocks {
             let grid = rec.grid(block.grid);
-            let samples = samples_in(grid, &v.time);
             let level = level_for(grid, &v);
+            // The visible samples and, at level 0, the one after them.
+            let mut samples = samples_in(grid, &v.time);
+            if level == Level::RAW {
+                samples.end = (samples.end + 1).min(grid.len());
+            }
             let mine: Vec<&TileKey> = tiles.iter().filter(|t| t.block == block).collect();
             prop_assert!(mine.iter().all(|t| t.level == level && t.version == v.version));
-            // Contiguous, in order, starting at the first visible sample and ending at the last.
+            // Contiguous, in order, starting at the first sample drawn and ending at the last.
             for pair in mine.windows(2) {
                 prop_assert_eq!(pair[0].time + 1, pair[1].time);
             }

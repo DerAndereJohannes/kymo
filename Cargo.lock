@@ -1962,12 +1962,15 @@ name = "kymo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "eframe",
  "kymo-core",
  "kymo-testgen",
  "objc2-foundation 0.3.2",
+ "pollster 1.0.1",
  "proptest",
  "rfd",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
