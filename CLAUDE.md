@@ -22,7 +22,7 @@ But don't build anything that assumes EDF's record layout or a single sampling r
 
 ```
 crates/kymo-core     library, no GUI dependencies
-crates/kymo          eframe/egui-wgpu binary (`kymo path/to/file.bdf`)
+crates/kymo          eframe/egui-wgpu binary (`kymo path/to/file.bdf`); GUI-free view logic in its lib
 crates/kymo-testgen  generates synthetic EDF/BDF files for tests and benchmarks
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff

@@ -18,7 +18,9 @@ rfd.workspace = true
 objc2-foundation.workspace = true
 
 [dev-dependencies]
+kymo-core = { workspace = true, features = ["testing"] }
 kymo-testgen.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

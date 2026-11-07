@@ -1,0 +1,220 @@
+//! The menu bar as plain data, built from the keymap. The viewer turns it into native
+//! menus (macOS, Windows) or draws it with egui (Linux).
+
+use eframe::egui::Key;
+
+use crate::action::Action;
+use crate::keymap::{Chord, Keymap, Platform};
+
+/// Items the system provides on macOS, with their standard behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemItem {
+    About,
+    Services,
+    Hide,
+    HideOthers,
+    ShowAll,
+    Minimize,
+    Zoom,
+    BringAllToFront,
+}
+
+impl SystemItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            SystemItem::About => "About Kymo",
+            SystemItem::Services => "Services",
+            SystemItem::Hide => "Hide Kymo",
+            SystemItem::HideOthers => "Hide Others",
+            SystemItem::ShowAll => "Show All",
+            SystemItem::Minimize => "Minimize",
+            SystemItem::Zoom => "Zoom",
+            SystemItem::BringAllToFront => "Bring All to Front",
+        }
+    }
+
+    /// The system's shortcut, which the menu takes.
+    pub fn chord(self) -> Option<Chord> {
+        match self {
+            SystemItem::Hide => Some(Chord::cmd(Key::H)),
+            SystemItem::HideOthers => Some(Chord::alt_cmd(Key::H)),
+            SystemItem::Minimize => Some(Chord::cmd(Key::M)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Item {
+    Action {
+        action: Action,
+        label: &'static str,
+        /// The shortcut shown next to the label.
+        shortcut: Option<Chord>,
+        /// Whether a native menu takes the shortcut as its key equivalent. Bare keys (D,
+        /// +) stay with the window, so text fields still get them.
+        attached: bool,
+        /// Shown with a checkmark when on ([`Action::ToggleDc`]).
+        checkable: bool,
+    },
+    System(SystemItem),
+    Separator,
+}
+
+/// The role a menu plays for the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// The macOS application menu, titled with the app's name.
+    App,
+    Plain,
+    /// The macOS Window menu, which lists the open windows.
+    Window,
+    /// The Help menu, which gets the search field on macOS.
+    Help,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Menu {
+    pub title: &'static str,
+    pub role: Role,
+    pub items: Vec<Item>,
+}
+
+impl Menu {
+    /// The actions in this menu.
+    pub fn actions(&self) -> impl Iterator<Item = Action> + '_ {
+        self.items.iter().filter_map(|item| match item {
+            Item::Action { action, .. } => Some(*action),
+            _ => None,
+        })
+    }
+}
+
+fn action(platform: Platform, action: Action) -> Item {
+    let shortcut = Keymap::chord(action);
+    let label = match (platform, action) {
+        (Platform::Mac, Action::Quit) => "Quit Kymo",
+        _ => action.label(),
+    };
+    Item::Action {
+        action,
+        label,
+        shortcut,
+        attached: platform.native_menu() && shortcut.is_some_and(|c| c.command),
+        checkable: action == Action::ToggleDc,
+    }
+}
+
+/// The menu bar for `platform`, left to right.
+pub fn menu_bar(platform: Platform) -> Vec<Menu> {
+    let mac = platform == Platform::Mac;
+    let a = |act| action(platform, act);
+    let mut menus = Vec::new();
+    if mac {
+        menus.push(Menu {
+            title: "Kymo",
+            role: Role::App,
+            items: vec![
+                Item::System(SystemItem::About),
+                Item::Separator,
+                a(Action::Settings),
+                Item::Separator,
+                Item::System(SystemItem::Services),
+                Item::Separator,
+                Item::System(SystemItem::Hide),
+                Item::System(SystemItem::HideOthers),
+                Item::System(SystemItem::ShowAll),
+                Item::Separator,
+                a(Action::Quit),
+            ],
+        });
+    }
+    let mut file = vec![a(Action::Open), a(Action::Close)];
+    if !mac {
+        file.extend([Item::Separator, a(Action::Quit)]);
+    }
+    menus.push(Menu {
+        title: "File",
+        role: Role::Plain,
+        items: file,
+    });
+    if !mac {
+        menus.push(Menu {
+            title: "Edit",
+            role: Role::Plain,
+            items: vec![a(Action::Settings)],
+        });
+    }
+    menus.push(Menu {
+        title: "View",
+        role: Role::Plain,
+        items: vec![
+            a(Action::ZoomIn),
+            a(Action::ZoomOut),
+            a(Action::DefaultWindow),
+            a(Action::Fit),
+            Item::Separator,
+            a(Action::MoreChannels),
+            a(Action::FewerChannels),
+            Item::Separator,
+            a(Action::ScaleUp),
+            a(Action::ScaleDown),
+            Item::Separator,
+            a(Action::ToggleDc),
+        ],
+    });
+    menus.push(Menu {
+        title: "Go",
+        role: Role::Plain,
+        items: vec![
+            a(Action::ToStart),
+            a(Action::ToEnd),
+            Item::Separator,
+            a(Action::FirstChannels),
+            a(Action::LastChannels),
+        ],
+    });
+    if mac {
+        menus.push(Menu {
+            title: "Window",
+            role: Role::Window,
+            items: vec![
+                Item::System(SystemItem::Minimize),
+                Item::System(SystemItem::Zoom),
+                Item::Separator,
+                Item::System(SystemItem::BringAllToFront),
+            ],
+        });
+    }
+    let mut help = vec![a(Action::Shortcuts)];
+    if !mac {
+        help.extend([Item::Separator, a(Action::About)]);
+    }
+    menus.push(Menu {
+        title: "Help",
+        role: Role::Help,
+        items: help,
+    });
+    menus
+}
+
+/// The chords a native menu bar takes on `platform`: attached item shortcuts and the
+/// system items' own. None on Linux, whose menu is drawn by egui.
+pub fn taken_chords(platform: Platform) -> Vec<Chord> {
+    if !platform.native_menu() {
+        return Vec::new();
+    }
+    menu_bar(platform)
+        .iter()
+        .flat_map(|menu| &menu.items)
+        .filter_map(|item| match item {
+            Item::Action {
+                shortcut: Some(chord),
+                attached: true,
+                ..
+            } => Some(*chord),
+            Item::System(system) => system.chord(),
+            _ => None,
+        })
+        .collect()
+}
