@@ -6,6 +6,7 @@ Later phases ship it in a Python wheel as an MNE-Python browser backend and laun
 
 **Read `docs/design.md` before changing anything architectural.** It is the source of truth.
 If an implementation detail has to deviate from it, say so explicitly and update the doc in the same change.
+Phase 2 work follows `docs/phase2-plan.md` (steps, decisions, controls, and what phase 1 provides).
 
 ## Current scope
 
@@ -25,6 +26,7 @@ crates/kymo          eframe/egui-wgpu binary (`kymo path/to/file.bdf`)
 crates/kymo-testgen  generates synthetic EDF/BDF files for tests and benchmarks
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff
+docs/phase2-plan.md  agreed plan for phase 2 (the viewer)
 ```
 
 ## Non-negotiables
