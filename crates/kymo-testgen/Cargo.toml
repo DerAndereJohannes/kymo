@@ -4,6 +4,9 @@ description = "Generates synthetic EDF/BDF files for Kymo tests and benchmarks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
 
 [dependencies]

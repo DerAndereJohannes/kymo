@@ -6,6 +6,9 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "BSD-3-Clause"
+repository = "https://github.com/cbrnr/kymo"
+authors = ["Clemens Brunner"]
 
 [workspace.dependencies]
 kymo-core = { path = "crates/kymo-core" }
