@@ -10,6 +10,7 @@ mod error;
 mod grid;
 mod recording;
 mod sample;
+pub mod tile;
 
 #[cfg(feature = "testing")]
 pub mod testing;
