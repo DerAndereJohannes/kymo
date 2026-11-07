@@ -282,10 +282,11 @@ fn need(bytes: &[u8], needed: u64) -> Result<(), EdfError> {
     }
 }
 
-/// Decodes a field as Latin-1 (as MNE does) and trims trailing spaces and NULs.
+/// Decodes a field as Latin-1 and trims spaces and NULs at both ends (as MNE does; fields
+/// are left-aligned, so leading spaces carry no meaning).
 fn text(field: &[u8]) -> String {
     let s: String = field.iter().map(|&b| char::from(b)).collect();
-    s.trim_end_matches([' ', '\0']).to_owned()
+    s.trim_matches([' ', '\0']).to_owned()
 }
 
 fn invalid(field: &str, value: &[u8]) -> EdfError {

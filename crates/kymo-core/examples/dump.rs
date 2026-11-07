@@ -12,6 +12,7 @@
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
+//! - `grid{g}.i32`: the same samples as raw digital values (little-endian i32, 0 in gaps)
 //!
 //! A grid with at most N values (channels × samples, default 20 million) is dumped whole;
 //! otherwise 16 windows, the first at the start, the last at the end, the others spread
@@ -23,7 +24,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use kymo_core::{GridId, Recording};
+use kymo_core::{GridId, Recording, SampleType, SamplesMut};
 
 const WINDOWS: u64 = 16;
 
@@ -68,15 +69,39 @@ fn main() -> Result<()> {
         let sep = if g == 0 { "" } else { "," };
         let _ = write!(windows_json, "{sep}\n  [{}]", ranges.join(", "));
 
-        let mut data = BufWriter::new(fs::File::create(out.join(format!("grid{g}.f32")))?);
+        let create = |ext: &str| -> Result<BufWriter<fs::File>> {
+            Ok(BufWriter::new(fs::File::create(
+                out.join(format!("grid{g}.{ext}")),
+            )?))
+        };
+        let (mut physical, mut native) = (create("f32")?, create("i32")?);
+        let id = GridId(g as u32);
         for w in windows {
-            let mut values = vec![0.0f32; grid.channels().len() * (w.end - w.start) as usize];
-            rec.read_physical(GridId(g as u32), grid.channels(), w, &mut values)?;
+            let n = grid.channels().len() * (w.end - w.start) as usize;
+            let mut values = vec![0.0f32; n];
+            rec.read_physical(id, grid.channels(), w.clone(), &mut values)?;
             for v in values {
-                data.write_all(&v.to_le_bytes())?;
+                physical.write_all(&v.to_le_bytes())?;
+            }
+            let digital: Vec<i32> = match grid.sample_type() {
+                SampleType::I16 => {
+                    let mut buf = vec![0i16; n];
+                    rec.read_native(id, grid.channels(), w, SamplesMut::I16(&mut buf))?;
+                    buf.into_iter().map(i32::from).collect()
+                }
+                SampleType::I32 => {
+                    let mut buf = vec![0i32; n];
+                    rec.read_native(id, grid.channels(), w, SamplesMut::I32(&mut buf))?;
+                    buf
+                }
+                other => bail!("unexpected sample type {other:?}"),
+            };
+            for v in digital {
+                native.write_all(&v.to_le_bytes())?;
             }
         }
-        data.flush()?;
+        physical.flush()?;
+        native.flush()?;
     }
     windows_json.push_str("\n]\n");
     fs::write(out.join("windows.json"), windows_json)?;

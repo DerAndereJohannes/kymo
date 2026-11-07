@@ -21,6 +21,11 @@ Known differences between the readers, which the comparison accounts for:
   must report NaN exactly in its gaps.
 - MNE counts annotation onsets from the first record's onset, kymo from the header's start
   time. MNE onsets are compared after adding the first record's onset back.
+- MNE makes duplicate channel names unique ("POL" -> "POL-0", "POL-1", ...); kymo keeps the
+  labels as stored. kymo's names are compared after applying MNE's own renaming.
+- MNE treats channels named Status or Trigger as stim channels: in BDF it ignores their
+  scaling and keeps only the lower 17 bits of the raw value. kymo scales them like any
+  channel. For BDF stim channels, MNE's value is compared with kymo's digital value & 0x1FFFF.
 """
 
 import argparse
@@ -28,14 +33,18 @@ import json
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 import mne
 import numpy as np
+from mne._fiff.meas_info import _unique_channel_names  # MNE's rule for duplicate names
 
 REPO = Path(__file__).resolve().parent.parent
 # float32 rounding is at most 2**-24 relative; leave a little room for MNE's own float64 math.
 RTOL = 1.5e-7
+STIM_NAMES = ("status", "trigger")  # MNE's default stim channel names
+STIM_MASK = 2**17 - 1  # MNE keeps the 16 trigger bits and bit 16
 
 
 def cargo(*args):
@@ -80,7 +89,14 @@ def compare(path, max_values=None):
 
         channels = header["channels"]
         names = [c["name"] for c in channels]
-        if raw.ch_names != names:
+        mne_names = names
+        if len(set(names)) < len(names):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # MNE warns about the duplicates it renames
+                mne_names = _unique_channel_names(list(names))
+        if mne_names != names:
+            notes.append("duplicate channel names, compared after MNE's renaming")
+        if raw.ch_names != mne_names:
             problems.append(f"channel names differ:\n    kymo {names}\n    MNE  {raw.ch_names}")
         fmax = max(g["rate"] for g in header["grids"])
         if raw.info["sfreq"] != fmax:
@@ -104,7 +120,15 @@ def compare(path, max_values=None):
             unknown = [names[c] for c in ids if channels[c]["to_si"] is None]
             if unknown:
                 notes.append(f"unit without SI factor, compared unscaled: {', '.join(unknown)}")
-            p, w, n = compare_grid(raw, tmp / f"grid{g}.f32", grid, windows[g], ids, scale, names)
+            stim = [
+                header["format"].startswith("BDF") and names[c].lower() in STIM_NAMES for c in ids
+            ]
+            if any(stim):
+                notes.append(
+                    "BDF stim channel(s) compared as digital & 0x1FFFF, as MNE reads them: "
+                    + ", ".join(names[c] for c, s in zip(ids, stim) if s)
+                )
+            p, w, n = compare_grid(raw, tmp, g, grid, windows[g], ids, scale, stim, names)
             problems += p
             worst = max(worst, w)
             compared += n
@@ -126,9 +150,12 @@ def compare(path, max_values=None):
     return problems
 
 
-def compare_grid(raw, data_path, grid, windows, ids, scale, names):
+def compare_grid(raw, tmp, g, grid, windows, ids, scale, stim, names):
     problems, worst, compared = [], 0.0, 0
-    data = np.fromfile(data_path, dtype="<f4")
+    data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
+    digital = np.fromfile(tmp / f"grid{g}.i32", dtype="<i4")
+    stim = np.array(stim, dtype=bool)
+    scale = np.where(stim, 1.0, scale)
     segments = np.array(grid["segments"], dtype=np.int64).reshape(-1, 2)
     # Index of each segment's first sample in MNE's joined data.
     lengths = segments[:, 1] - segments[:, 0]
@@ -136,7 +163,12 @@ def compare_grid(raw, data_path, grid, windows, ids, scale, names):
     offset = 0
     for a, b in windows:
         n = b - a
-        block = data[offset : offset + len(ids) * n].reshape(len(ids), n)
+        block = data[offset : offset + len(ids) * n].reshape(len(ids), n).astype(np.float64)
+        if stim.any():
+            raw_values = digital[offset : offset + len(ids) * n].reshape(len(ids), n)
+            block[stim] = np.where(
+                np.isnan(block[stim]), np.nan, np.bitwise_and(raw_values[stim], STIM_MASK)
+            )
         offset += len(ids) * n
         idx = np.arange(a, b)
         seg = np.searchsorted(segments[:, 0], idx, side="right") - 1
@@ -149,7 +181,7 @@ def compare_grid(raw, data_path, grid, windows, ids, scale, names):
         mne_idx = joined_start[seg[present]] + idx[present] - segments[seg[present], 0]
         lo, hi = int(mne_idx.min()), int(mne_idx.max()) + 1
         theirs = raw.get_data(picks=ids, start=lo, stop=hi)[:, mne_idx - lo]
-        ours = block[:, present].astype(np.float64) * scale[:, None]
+        ours = block[:, present] * scale[:, None]
         error = np.abs(ours - theirs)
         bad = error > RTOL * np.abs(theirs) + 1e-30
         if bad.any():
