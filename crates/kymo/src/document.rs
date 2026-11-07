@@ -114,6 +114,62 @@ impl GridSummary {
     }
 }
 
+impl Summary {
+    /// The sidebar's rows, key and value. The sample type goes with the format, and with one
+    /// grid its sample count goes with the duration, leaving the rate (and gaps) for
+    /// "Sampling"; several grids each keep their samples and channels.
+    pub fn sidebar_rows(&self) -> Vec<(String, String)> {
+        let mut types: Vec<&str> = Vec::new();
+        for grid in &self.grids {
+            let name = sample_type_name(grid.sample_type);
+            if !types.contains(&name) {
+                types.push(name);
+            }
+        }
+        let format = if types.is_empty() {
+            self.format.to_owned()
+        } else {
+            format!("{} ({})", self.format, types.join(", "))
+        };
+        let mut duration = format_duration(self.duration);
+        if let [grid] = &self.grids[..] {
+            duration += &format!(" ({} samples)", grid.samples);
+        }
+        let mut rows = vec![
+            ("Format".to_owned(), format),
+            (
+                "Start".to_owned(),
+                self.start.clone().unwrap_or_else(|| "unknown".into()),
+            ),
+            ("Duration".to_owned(), duration),
+            ("Channels".to_owned(), self.channels.to_string()),
+            ("Annotations".to_owned(), self.annotations.to_string()),
+        ];
+        let single = self.grids.len() == 1;
+        for (i, grid) in self.grids.iter().enumerate() {
+            let mut value = format!("{} Hz", grid.rate);
+            if !single {
+                value += &format!(
+                    ", {} samples, {} channel{}",
+                    grid.samples,
+                    grid.channels.len(),
+                    plural(grid.channels.len())
+                );
+            }
+            if grid.segments != 1 {
+                value += &format!(", {} segments", grid.segments);
+            }
+            let key = if single {
+                "Sampling".to_owned()
+            } else {
+                format!("Grid {}", i + 1)
+            };
+            rows.push((key, value));
+        }
+        rows
+    }
+}
+
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "format       {}", self.format)?;
@@ -312,6 +368,49 @@ mod tests {
         let text = summary.to_string();
         assert!(text.contains("EDF+D"), "{text}");
         assert!(text.contains("EEG DC"), "{text}");
+
+        // Several grids: each row keeps its samples and channels, the duration none.
+        let rows = summary.sidebar_rows();
+        let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
+        assert_eq!(value("Format"), "EDF+D (int16)");
+        assert_eq!(*value("Duration"), format_duration(summary.duration));
+        assert!(!rows.iter().any(|(k, _)| k == "Sampling"));
+        for (i, grid) in summary.grids.iter().enumerate() {
+            let n = grid.channels.len();
+            assert_eq!(
+                *value(&format!("Grid {}", i + 1)),
+                format!(
+                    "{} Hz, {} samples, {n} channel{}, 4 segments",
+                    grid.rate,
+                    grid.samples,
+                    plural(n)
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_names_each_fact_once() {
+        let file = TempFile::preset("bdf+c-small");
+        let summary = load(&file.0).unwrap().summary();
+        let rows = summary.sidebar_rows();
+        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "Format",
+                "Start",
+                "Duration",
+                "Channels",
+                "Annotations",
+                "Sampling"
+            ]
+        );
+        let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
+        assert_eq!(value("Format"), "BDF+C (int32)");
+        assert_eq!(value("Duration"), "0:01:00.000 (30720 samples)");
+        assert_eq!(value("Channels"), "5");
+        assert_eq!(value("Sampling"), "512 Hz");
     }
 
     #[test]

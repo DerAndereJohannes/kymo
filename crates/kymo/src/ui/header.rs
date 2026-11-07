@@ -3,7 +3,7 @@
 use eframe::egui::{self, Align, Label, Layout, RichText, ScrollArea, TextStyle, Ui};
 use kymo_core::ChannelKind;
 
-use crate::document::{Document, Summary, format_duration, plural};
+use crate::document::{Document, Summary, plural};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
 /// grows to fit wider contents, and while its edge is dragged the difference stays unpainted
@@ -51,22 +51,8 @@ pub fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool
                 ui.add(Label::new(value).truncate());
                 ui.end_row();
             };
-            row(ui, "Format", summary.format.to_owned());
-            row(
-                ui,
-                "Start",
-                summary.start.clone().unwrap_or_else(|| "unknown".into()),
-            );
-            row(ui, "Duration", format_duration(summary.duration));
-            row(ui, "Channels", summary.channels.to_string());
-            row(ui, "Annotations", summary.annotations.to_string());
-            for (i, grid) in summary.grids.iter().enumerate() {
-                let key = if summary.grids.len() == 1 {
-                    "Sampling".to_owned()
-                } else {
-                    format!("Grid {}", i + 1)
-                };
-                row(ui, &key, grid.describe());
+            for (key, value) in summary.sidebar_rows() {
+                row(ui, &key, value);
             }
         });
 
