@@ -355,6 +355,10 @@ fn usable_records(
 
 /// Channel type from the label, following EDF+ conventions ("EEG Fpz-Cz") and BioSemi's
 /// status channel. Anything else is EEG, as in MNE.
+///
+/// TODO(later): also recognize the type prefix without a space ("EOG-L", "EMG_chin",
+/// "ECGII"), and decide whether the channel name keeps the full label or drops the prefix
+/// ("L"). Until then such channels are EEG.
 fn kind(label: &str) -> ChannelKind {
     let upper = label.trim().to_ascii_uppercase();
     if upper == "STATUS" || upper == "TRIGGER" {
