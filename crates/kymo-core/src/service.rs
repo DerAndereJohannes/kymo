@@ -36,21 +36,22 @@ pub struct ServiceOptions {
     /// Byte budget of the tile cache.
     pub cache_budget: usize,
     pub pyramids: PyramidStore,
-    /// Threads per build step; `None` for the builder's default.
-    pub build_threads: Option<usize>,
+    /// Threads per build step (at least 1).
+    pub build_threads: usize,
     /// Samples per build step; `None` for the builder's default.
     pub build_chunk_len: Option<u64>,
 }
 
 impl ServiceOptions {
-    /// Defaults: one worker per CPU up to 4, the default cache budget, and the builder's
-    /// own step size and threads.
+    /// Defaults: one worker per CPU up to 4, the default cache budget, half the CPUs for
+    /// the build (so tile work stays responsive), and the builder's own step size.
     pub fn new(pyramids: PyramidStore) -> Self {
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
         ServiceOptions {
-            workers: std::thread::available_parallelism().map_or(1, |n| n.get().min(4)),
+            workers: cpus.min(4),
             cache_budget: DEFAULT_BUDGET,
             pyramids,
-            build_threads: None,
+            build_threads: (cpus / 2).max(1),
             build_chunk_len: None,
         }
     }
@@ -307,7 +308,7 @@ impl Drop for TileService {
 struct BuildOptions {
     /// Per grid, for an in-memory pyramid.
     storages: Option<Vec<Arc<dyn PyramidStorage>>>,
-    threads: Option<usize>,
+    threads: usize,
     chunk_len: Option<u64>,
 }
 
@@ -410,9 +411,7 @@ impl Shared {
             let Some(mut builder) = builder else {
                 continue;
             };
-            if let Some(threads) = options.threads {
-                builder = builder.with_threads(threads);
-            }
+            builder = builder.with_threads(options.threads);
             if let Some(len) = options.chunk_len {
                 builder = builder.with_chunk_len(len);
             }

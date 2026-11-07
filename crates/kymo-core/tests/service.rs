@@ -178,7 +178,7 @@ fn start(opened: Opened, configure: impl FnOnce(&mut ServiceOptions, &Probe)) ->
 /// A build that takes a while: one-tile steps on one thread, each read slowed by `delay`.
 fn slow(options: &mut ServiceOptions, probe: &Probe, delay: Duration) {
     options.build_chunk_len = Some(TILE_LEN);
-    options.build_threads = Some(1);
+    options.build_threads = 1;
     probe.slow_build(delay);
 }
 
