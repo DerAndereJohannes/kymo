@@ -11,6 +11,8 @@ const APP_NAME: &str = "Kymo";
 
 /// Narrowest the header panel can be dragged.
 const HEADER_MIN_WIDTH: f32 = 200.0;
+/// Widest the header panel can be dragged, as a fraction of the window.
+const HEADER_MAX_FRACTION: f32 = 0.5;
 
 pub struct KymoApp {
     state: State,
@@ -126,6 +128,7 @@ impl eframe::App for KymoApp {
                     .resizable(true)
                     .default_size(300.0)
                     .min_size(HEADER_MIN_WIDTH)
+                    .max_size((ui.available_width() * HEADER_MAX_FRACTION).max(HEADER_MIN_WIDTH))
                     .show(ui, |ui| {
                         open_clicked = within_width(ui, |ui| header_panel(ui, document, summary));
                     });
@@ -188,14 +191,14 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     clicked
 }
 
-/// Runs `add_contents` in exactly the width `ui` offers: text truncates, and whatever is still
-/// wider is clipped. A panel grows to fit wider contents, and while its edge is dragged the
-/// difference stays unpainted (black), so panel contents must never be wider than the panel.
+/// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
+/// grows to fit wider contents, and while its edge is dragged the difference stays unpainted
+/// (black), so panel contents must never be wider than the panel. Text that should shorten
+/// with "…" instead opts in with `Label::truncate`.
 fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = ui.max_rect();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     child.shrink_clip_rect(rect);
-    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
     let inner = add_contents(&mut child);
     ui.advance_cursor_after_rect(rect);
     inner
@@ -210,14 +213,17 @@ fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             open_clicked = ui.button("Open…").clicked();
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.heading(document.name());
+                ui.add(Label::new(RichText::new(document.name()).heading()).truncate());
             });
         });
     });
-    ui.label(
-        RichText::new(document.path.display().to_string())
-            .small()
-            .weak(),
+    ui.add(
+        Label::new(
+            RichText::new(document.path.display().to_string())
+                .small()
+                .weak(),
+        )
+        .truncate(),
     );
     ui.add_space(6.0);
 
@@ -225,9 +231,10 @@ fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool {
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
+            // Keys at their full width; values, in the last column, shorten to what is left.
             let row = |ui: &mut Ui, key: &str, value: String| {
-                ui.label(RichText::new(key).weak());
-                ui.label(value);
+                ui.add(Label::new(RichText::new(key).weak()).extend());
+                ui.add(Label::new(value).truncate());
                 ui.end_row();
             };
             row(ui, "Format", summary.format.to_owned());
@@ -286,13 +293,16 @@ fn channel_list(ui: &mut Ui, document: &Document) {
                 .striped(true)
                 .spacing([12.0, ui.spacing().item_spacing.y])
                 .show(ui, |ui| {
+                    // Every column at its full width; a narrow panel clips the right ones.
+                    let cell = |ui: &mut Ui, text: RichText| {
+                        ui.add(Label::new(text).extend());
+                    };
                     for channel in &rec.channels()[rows] {
-                        ui.label(&channel.name);
-                        ui.label(RichText::new(kind_name(channel.kind)).weak());
-                        ui.label(RichText::new(&channel.unit.label).weak());
-                        ui.label(
-                            RichText::new(format!("{} Hz", rec.grid(channel.grid).rate())).weak(),
-                        );
+                        let rate = rec.grid(channel.grid).rate();
+                        cell(ui, RichText::new(&channel.name));
+                        cell(ui, RichText::new(kind_name(channel.kind)).weak());
+                        cell(ui, RichText::new(&channel.unit.label).weak());
+                        cell(ui, RichText::new(format!("{rate} Hz")).weak());
                         ui.end_row();
                     }
                 });
