@@ -13,9 +13,11 @@ mod sample;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use annotation::{Annotation, AnnotationData, AnnotationId, Origin};
+pub use annotation::{
+    Annotation, AnnotationData, AnnotationId, AnnotationOp, AnnotationStore, Origin,
+};
 pub use channel::{Channel, ChannelId, ChannelKind, Unit};
-pub use error::{ModelError, ReadError};
+pub use error::{AnnotationError, ModelError, ReadError};
 pub use grid::{Grid, GridId, Timebase};
 pub use recording::{BlockReader, Header, Opened, Recording};
 pub use sample::{Sample, SampleType, SamplesMut};

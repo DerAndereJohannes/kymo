@@ -367,10 +367,8 @@ fn validate_annotations(
     n_channels: usize,
 ) -> Result<(), ModelError> {
     for (index, a) in annotations.iter().enumerate() {
-        let reason = if !a.onset.is_finite() {
-            format!("onset {} is not finite", a.onset)
-        } else if !(a.duration.is_finite() && a.duration >= 0.0) {
-            format!("duration {} is not a finite number >= 0", a.duration)
+        let reason = if let Some(reason) = a.timing_error() {
+            reason
         } else if let Some(c) = a.channels.iter().find(|c| c.0 as usize >= n_channels) {
             format!("channel {c:?} does not exist")
         } else {

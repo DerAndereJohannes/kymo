@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use crate::{ChannelId, GridId, SampleType};
+use crate::{AnnotationId, ChannelId, GridId, SampleType};
 
 /// A header, grid or annotation violates the recording model's invariants.
 ///
@@ -77,4 +77,16 @@ pub enum ReadError {
     Corrupt(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// An annotation operation could not be applied; the store is unchanged.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum AnnotationError {
+    #[error("annotation {0:?} does not exist")]
+    UnknownId(AnnotationId),
+    #[error("annotation {0:?} already exists")]
+    DuplicateId(AnnotationId),
+    #[error("annotation {id:?}: {reason}")]
+    Invalid { id: AnnotationId, reason: String },
 }
