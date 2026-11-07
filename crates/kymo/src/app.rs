@@ -2,12 +2,15 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Align, Color32, Layout, RichText, ScrollArea, TextStyle, Ui};
+use eframe::egui::{self, Align, Color32, Label, Layout, RichText, ScrollArea, TextStyle, Ui};
 use kymo_core::ChannelKind;
 
 use crate::document::{Document, Loading, Summary, error_text, file_name, format_duration, plural};
 
 const APP_NAME: &str = "Kymo";
+
+/// Narrowest the header panel can be dragged.
+const HEADER_MIN_WIDTH: f32 = 200.0;
 
 pub struct KymoApp {
     state: State,
@@ -122,8 +125,9 @@ impl eframe::App for KymoApp {
                 egui::Panel::left("header")
                     .resizable(true)
                     .default_size(300.0)
+                    .min_size(HEADER_MIN_WIDTH)
                     .show(ui, |ui| {
-                        open_clicked = header_panel(ui, document, summary);
+                        open_clicked = within_width(ui, |ui| header_panel(ui, document, summary));
                     });
                 egui::CentralPanel::default().show(ui, |_ui| {
                     // The trace area; traces arrive with the renderer.
@@ -184,14 +188,30 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     clicked
 }
 
+/// Runs `add_contents` in exactly the width `ui` offers: text truncates, and whatever is still
+/// wider is clipped. A panel grows to fit wider contents, and while its edge is dragged the
+/// difference stays unpainted (black), so panel contents must never be wider than the panel.
+fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let rect = ui.max_rect();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    child.shrink_clip_rect(rect);
+    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    let inner = add_contents(&mut child);
+    ui.advance_cursor_after_rect(rect);
+    inner
+}
+
 /// File header and channel list. Returns whether Open was clicked.
 fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool {
     let mut open_clicked = false;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.heading(document.name());
+        // The button first, so a long file name truncates instead of pushing it out.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             open_clicked = ui.button("Open…").clicked();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.heading(document.name());
+            });
         });
     });
     ui.label(
@@ -242,7 +262,7 @@ fn header_panel(ui: &mut Ui, document: &Document, summary: &Summary) -> bool {
             .strong(),
         );
         for warning in &summary.warnings {
-            ui.label(RichText::new(warning).color(color));
+            ui.add(Label::new(RichText::new(warning).color(color)).wrap());
         }
     }
 
