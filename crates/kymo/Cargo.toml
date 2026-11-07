@@ -1,0 +1,13 @@
+[package]
+name = "kymo"
+description = "Viewer for large EEG/MEG recordings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+kymo-core.workspace = true
+
+[lints]
+workspace = true

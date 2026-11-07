@@ -1,0 +1,13 @@
+[package]
+name = "kymo-testgen"
+description = "Generates synthetic EDF/BDF files for Kymo tests and benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+
+[lints]
+workspace = true

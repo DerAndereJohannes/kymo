@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+kymo-core = { path = "crates/kymo-core" }
+
+[workspace.lints.rust]
+# `unsafe` is only allowed where unavoidable (memory mapping), opted in locally with a SAFETY comment.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+[profile.release]
+debug = "line-tables-only"
