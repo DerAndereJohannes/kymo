@@ -4,11 +4,13 @@
 //! the same samples of a grid, whatever the view. Panning is a pure translation, and a tile
 //! computed once stays valid.
 
+mod cache;
 mod data;
 mod raw;
 
 use std::ops::Range;
 
+pub use cache::{DEFAULT_BUDGET, TileCache};
 pub(crate) use data::TileSample;
 pub use data::{Tile, TileData, TileSlice};
 pub use raw::compute_raw;

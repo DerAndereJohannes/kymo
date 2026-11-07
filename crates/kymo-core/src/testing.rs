@@ -1,4 +1,5 @@
-//! Test support: an in-memory [`BlockReader`]. Enabled by the `testing` feature.
+//! Test support: an in-memory [`BlockReader`], the brute-force min/max reference and
+//! hand-made tiles. Enabled by the `testing` feature.
 //!
 //! The reader checks the [`BlockReader`] contract strictly (for example, it fails on any
 //! request that touches a gap), so tests also catch callers that break it.
@@ -6,6 +7,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::tile::{Level, Tile, TileData, TileKey};
 use crate::{
     BlockReader, Channel, ChannelId, Grid, GridId, Header, Opened, ReadError, Recording, Sample,
     SampleType, SamplesMut, Timebase,
@@ -201,6 +203,33 @@ fn native<T: Sample>(
     let mut buf = vec![T::default(); len];
     recording.read_native(grid, &[channel], range, T::as_samples_mut(&mut buf))?;
     Ok(buf.into_iter().map(Sample::to_f64).collect())
+}
+
+/// A tile with the given contents, for filling caches by hand: `channels` rows of `len`
+/// samples (level 0) or (min, max) pairs (levels ≥ 1), laid out as in [`TileData`].
+///
+/// # Panics
+/// If `data` does not hold `channels · len` values (twice that above level 0), or `valid`
+/// is not sorted, disjoint and inside `0..len`.
+pub fn tile(
+    key: TileKey,
+    channels: usize,
+    len: usize,
+    data: TileData,
+    valid: Vec<Range<u32>>,
+) -> Tile {
+    let per_bucket = if key.level == Level::RAW { 1 } else { 2 };
+    assert_eq!(data.len(), channels * len * per_bucket, "tile data length");
+    let mut end = 0;
+    for v in &valid {
+        assert!(
+            end <= v.start && v.start < v.end,
+            "valid ranges sorted and disjoint"
+        );
+        end = v.end;
+    }
+    assert!(end as usize <= len, "valid ranges inside the tile");
+    Tile::new(key, channels as u32, len as u32, data, valid)
 }
 
 /// Wraps channels, grids and their data as a reader's [`Opened`] (format `"MEM"`).
