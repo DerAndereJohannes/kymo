@@ -66,11 +66,12 @@ pub fn query(recording: &Recording, view: &View, cache: &TileCache) -> Query {
 
         match found {
             Some((tile, exact)) => {
-                if let Some(last) = query.draw.last_mut() {
-                    if Arc::ptr_eq(&last.tile, &tile) && last.samples.end == samples.start {
-                        last.samples.end = samples.end;
-                        continue;
-                    }
+                if let Some(last) = query.draw.last_mut()
+                    && Arc::ptr_eq(&last.tile, &tile)
+                    && last.samples.end == samples.start
+                {
+                    last.samples.end = samples.end;
+                    continue;
                 }
                 query.draw.push(Placed {
                     tile,

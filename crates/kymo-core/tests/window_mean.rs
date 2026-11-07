@@ -26,7 +26,7 @@ impl PyramidStorage for OddSumsLost {
     }
 
     fn put_sums(&self, block: u64, sums: &[f64]) {
-        if block % 2 == 0 {
+        if block.is_multiple_of(2) {
             self.0.put_sums(block, sums);
         }
     }

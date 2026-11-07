@@ -243,7 +243,7 @@ impl<T: Fold> Levels<T> {
             });
             self.section(recording, grid, start..end, &present, threads)?;
             self.store_sums(start..end, storage);
-            if level1.is_some_and(|l| end % l == 0 || end == self.len) {
+            if level1.is_some_and(|l| end.is_multiple_of(l) || end == self.len) {
                 self.finish_tile(storage);
             }
             start = end;
@@ -375,7 +375,7 @@ impl<T: Fold> Levels<T> {
     fn store_sums(&mut self, section: Range<u64>, storage: &dyn PyramidStorage) {
         let first_block = section.start / TILE_LEN;
         let blocks = ((section.end - 1) / TILE_LEN - first_block + 1) as usize;
-        let last_complete = section.end % TILE_LEN == 0 || section.end == self.len;
+        let last_complete = section.end.is_multiple_of(TILE_LEN) || section.end == self.len;
         let complete = if last_complete { blocks } else { blocks - 1 };
         for b in 0..complete {
             self.column.clear();
@@ -410,7 +410,7 @@ impl<T: Fold> Levels<T> {
                 for c in 0..self.channels {
                     let pairs = &tile.pairs[c * TILE * 2..][..len * 2];
                     let up = &mut parent.pairs[c * TILE * 2..][..TILE * 2];
-                    for (j, pair) in pairs.chunks_exact(2).enumerate() {
+                    for (j, pair) in pairs.as_chunks::<2>().0.iter().enumerate() {
                         let slot = &mut up[2 * (base + j / LEVEL_FACTOR as usize)..][..2];
                         if pair[0] < slot[0] {
                             slot[0] = pair[0];
@@ -502,7 +502,7 @@ impl Fold for f32 {
 
 /// Resets (min, max) pairs to the empty sentinel.
 fn clear<T: Sample>(pairs: &mut [T]) {
-    for pair in pairs.chunks_exact_mut(2) {
+    for pair in pairs.as_chunks_mut::<2>().0 {
         pair[0] = T::EMPTY_MIN;
         pair[1] = T::EMPTY_MAX;
     }

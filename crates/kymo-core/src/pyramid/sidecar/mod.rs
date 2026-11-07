@@ -436,7 +436,7 @@ fn parse_trailer(bytes: &[u8], layouts: &[GridLayout]) -> Option<Vec<Changes>> {
         }
         let mut list = Vec::with_capacity(count);
         let mut previous: Option<u64> = None;
-        for entry in bytes[at..end].chunks_exact(CHANGE) {
+        for entry in bytes[at..end].as_chunks::<CHANGE>().0 {
             let sample = u64_at(entry, 0)?;
             let value = u32_at(entry, 8)? as i32;
             if sample >= layout.len || previous.is_some_and(|p| p >= sample) {
@@ -698,20 +698,26 @@ fn decode(sample_type: SampleType, bytes: &[u8]) -> TileData {
     match sample_type {
         SampleType::I16 => TileData::I16(
             bytes
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b))
                 .collect(),
         ),
         SampleType::I32 => TileData::I32(
             bytes
-                .chunks_exact(4)
-                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| i32::from_le_bytes(*b))
                 .collect(),
         ),
         SampleType::F32 => TileData::F32(
             bytes
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect(),
         ),
     }

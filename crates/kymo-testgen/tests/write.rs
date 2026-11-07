@@ -120,13 +120,17 @@ fn parse_header(bytes: &[u8]) -> Header {
 fn decode(bytes: &[u8], bdf: bool) -> Vec<i32> {
     if bdf {
         bytes
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|b| i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8)
             .collect()
     } else {
         bytes
-            .chunks_exact(2)
-            .map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i32::from(i16::from_le_bytes(*b)))
             .collect()
     }
 }

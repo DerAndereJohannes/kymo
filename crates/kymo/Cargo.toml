@@ -10,7 +10,12 @@ authors.workspace = true
 
 [dependencies]
 anyhow = "1"
+eframe.workspace = true
 kymo-core.workspace = true
+rfd.workspace = true
+
+[dev-dependencies]
+kymo-testgen.workspace = true
 
 [lints]
 workspace = true

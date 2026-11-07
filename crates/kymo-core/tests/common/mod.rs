@@ -22,7 +22,7 @@ pub fn len_and_segments(max_len: u64) -> impl Strategy<Value = (u64, Vec<Range<u
         .prop_flat_map(|len| (Just(len), proptest::collection::btree_set(0..=len, 0..12)))
         .prop_map(|(len, cuts)| {
             let cuts: Vec<u64> = cuts.into_iter().collect();
-            let segments = cuts.chunks_exact(2).map(|c| c[0]..c[1]).collect();
+            let segments = cuts.as_chunks::<2>().0.iter().map(|c| c[0]..c[1]).collect();
             (len, segments)
         })
 }

@@ -75,11 +75,12 @@ impl ChannelSignal {
 
     fn spike_from(&self, h: u64) -> Option<i32> {
         let s = splitmix64(h);
-        (s % SPIKE_EVERY == 0).then_some(if s & (1 << 40) != 0 {
-            self.max
-        } else {
-            self.min
-        })
+        s.is_multiple_of(SPIKE_EVERY)
+            .then_some(if s & (1 << 40) != 0 {
+                self.max
+            } else {
+                self.min
+            })
     }
 
     /// The value at `i`, given `sine = self.sine(i % self.sine_period)`.
