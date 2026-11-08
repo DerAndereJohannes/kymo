@@ -165,7 +165,8 @@ impl KymoApp {
     }
 
     /// Changes the settings and applies them at once: the tile cache and GPU budgets (a
-    /// smaller one evicts) and the default window for ⌘0 and recordings opened from now on.
+    /// smaller one evicts), anti-aliasing, and the default window for ⌘0 and recordings
+    /// opened from now on.
     pub fn set_settings(&mut self, settings: Settings) {
         let settings = settings.clamped();
         self.options.settings = settings;
@@ -173,6 +174,7 @@ impl KymoApp {
         if let State::Ready(viewer) = &mut self.state {
             viewer.cache().set_budget(settings.tile_cache_bytes());
             viewer.set_default_span(settings.default_window_s);
+            viewer.set_antialias(settings.antialias);
         }
     }
 
@@ -185,6 +187,7 @@ impl KymoApp {
         AppMenuState {
             ready: matches!(self.state, State::Ready(_)),
             sidebar: self.show_sidebar,
+            antialias: self.options.settings.antialias,
             channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
             dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
             stim: self.viewer().is_some_and(Viewer::has_stim),
@@ -334,6 +337,10 @@ impl KymoApp {
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Action::ToggleAntialias => self.set_settings(Settings {
+                antialias: !self.options.settings.antialias,
+                ..self.options.settings
+            }),
             Action::Settings => self.settings_open = true,
             _ => {
                 if let Some(options) = action.stim_options(self.stim_options) {
@@ -407,12 +414,14 @@ impl KymoApp {
         self.state = match result {
             Ok((document, service)) => {
                 set_title(ctx, Some(&document.name()));
-                State::Ready(Box::new(Viewer::new(
+                let mut viewer = Viewer::new(
                     document,
                     service,
                     self.options.settings.default_window_s,
                     self.stim_options,
-                )))
+                );
+                viewer.set_antialias(self.options.settings.antialias);
+                State::Ready(Box::new(viewer))
             }
             Err(error) => State::Failed {
                 path: loading.path().to_owned(),
@@ -437,6 +446,7 @@ impl eframe::App for KymoApp {
 struct AppMenuState {
     ready: bool,
     sidebar: bool,
+    antialias: bool,
     /// Whether the pointer is over a channel, which Toggle Bad acts on.
     channel: bool,
     dc: bool,
@@ -459,6 +469,7 @@ impl MenuState for AppMenuState {
     fn checked(&self, action: Action) -> Option<bool> {
         match action {
             Action::ToggleSidebar => Some(self.sidebar),
+            Action::ToggleAntialias => Some(self.antialias),
             Action::ToggleDc => Some(self.dc),
             _ => action.stim_checked(self.stim_options),
         }

@@ -45,7 +45,9 @@ pub fn check_support(limits: &wgpu::Limits) -> Result<(), RenderError> {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
     size: [f32; 2],
-    _pad: [f32; 2],
+    /// 1 to anti-alias traces, 0 not to.
+    antialias: f32,
+    _pad: f32,
 }
 
 #[repr(C)]
@@ -58,10 +60,11 @@ struct Slot {
     offset: f32,
     next: [u32; 2],
     has_next: u32,
-    _pad: u32,
+    has_seam: u32,
     /// The y range (top, bottom) the trace is clamped to.
     clip: [f32; 2],
-    _pad_clip: [u32; 2],
+    /// The y range the next tile reaches in the draw's seam column, if `has_seam` is 1.
+    seam: [f32; 2],
 }
 
 #[repr(C)]
@@ -81,7 +84,9 @@ struct DrawParams {
     pairs: u32,
     data: u32,
     next_item: u32,
-    _pad: [u32; 2],
+    /// The column where the next tile's part joins in, or `u32::MAX`.
+    seam: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -361,7 +366,8 @@ impl TraceRenderer {
                 } else {
                     u32::MAX
                 },
-                _pad: [0; 2],
+                seam: draw.seam.unwrap_or(u32::MAX),
+                _pad: 0,
             };
             slots.extend(draw.channels.iter().map(|c| Slot {
                 color: c.color,
@@ -371,9 +377,9 @@ impl TraceRenderer {
                 offset: c.coefficients.offset,
                 next: c.next.map_or([0; 2], |n| n.map(Native::bits)),
                 has_next: u32::from(c.next.is_some()),
-                _pad: 0,
+                has_seam: u32::from(c.seam.is_some()),
                 clip: c.clip.unwrap_or([f32::MIN, f32::MAX]),
-                _pad_clip: [0; 2],
+                seam: c.seam.unwrap_or([0.0; 2]),
             }));
             let offset = params.len();
             params.extend_from_slice(bytemuck::bytes_of(&p));
@@ -413,7 +419,8 @@ impl TraceRenderer {
         }
         let globals = Globals {
             size: frame.size.map(|s| s as f32),
-            _pad: [0.0; 2],
+            antialias: if frame.antialias { 1.0 } else { 0.0 },
+            _pad: 0.0,
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         self.slots.write(queue, slot_bytes);

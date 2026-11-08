@@ -285,6 +285,7 @@ impl ViewState {
             | Action::Shortcuts
             | Action::About
             | Action::ToggleSidebar
+            | Action::ToggleAntialias
             | Action::StimEveryChange
             | Action::StimFromZero
             | Action::StimIncreasing

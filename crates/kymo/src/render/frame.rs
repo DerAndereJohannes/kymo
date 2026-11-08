@@ -50,6 +50,10 @@ pub struct Scene {
     pub rows: Vec<Row>,
     /// Premultiplied RGBA of the hatch over parts that are still loading.
     pub hatch: [f32; 4],
+    /// Whether traces are anti-aliased: each pixel drawn with the share of it the trace
+    /// covers, the trace widened by half a pixel on either side. Otherwise traces fill
+    /// whole pixels.
+    pub antialias: bool,
 }
 
 impl Scene {
@@ -84,6 +88,7 @@ impl Scene {
             size,
             rows,
             hatch: color.map(|c| c * 0.25),
+            antialias: false,
         }
     }
 }
@@ -180,6 +185,9 @@ pub struct ChannelDraw {
     /// The first item of the next tile, when [`TileDraw::continues`]: its sample twice at
     /// level 0, or its bucket's minimum and maximum. `None` in a gap.
     pub next: Option<[Native; 2]>,
+    /// The y range (top, bottom) the next tile's items reach in the [`TileDraw::seam`]
+    /// column, as the shader would compute it; `None` if they reach none there.
+    pub seam: Option<[f32; 2]>,
 }
 
 /// A tile placed on screen.
@@ -208,6 +216,11 @@ pub struct TileDraw {
     /// tile's first if the tile [`continues`](Self::continues).
     /// [`columns`](Self::columns) are the pixels it touches.
     pub domain: [f32; 2],
+    /// The column where the tile meets the next one, if it [`continues`](Self::continues):
+    /// the one holding the next tile's first item. This draw takes it alone, with the next
+    /// tile's part from [`ChannelDraw::seam`], and the next tile's draw starts after it, so
+    /// no column is drawn twice (which anti-aliasing would show as a darker column).
+    pub seam: Option<u32>,
     pub channels: Vec<ChannelDraw>,
 }
 
@@ -225,6 +238,8 @@ pub struct Frame {
     pub size: [u32; 2],
     pub draws: Vec<TileDraw>,
     pub hatches: Vec<Hatch>,
+    /// See [`Scene::antialias`].
+    pub antialias: bool,
 }
 
 /// Seconds to pixels.
@@ -245,6 +260,7 @@ impl Frame {
     pub fn new(recording: &Recording, scene: &Scene, query: &Query) -> Frame {
         let mut frame = Frame {
             size: scene.size,
+            antialias: scene.antialias,
             ..Frame::default()
         };
         let [width, height] = scene.size;
@@ -258,10 +274,21 @@ impl Frame {
         };
         let rows: HashMap<ChannelId, &Row> = scene.rows.iter().map(|r| (r.channel, r)).collect();
 
+        // The seam column of the tile before, which the next draw leaves to it.
+        let mut seam: Option<u32> = None;
         for (i, placed) in query.draw.iter().enumerate() {
             let next = query.draw.get(i + 1);
-            if let Some(draw) = tile_draw(recording, &pixels, &rows, width, placed, next) {
-                frame.draws.push(draw);
+            let draw = tile_draw(recording, &pixels, &rows, width, placed, next);
+            if let Some(mut draw) = draw {
+                if let Some(c) = seam {
+                    draw.columns.start = draw.columns.start.max(c + 1);
+                }
+                seam = draw.seam;
+                if !draw.columns.is_empty() {
+                    frame.draws.push(draw);
+                }
+            } else {
+                seam = None;
             }
         }
 
@@ -337,11 +364,16 @@ fn tile_draw(
     };
     let domain = [x(samples.start), end];
     let tolerance = f64::from(EDGE_TOLERANCE);
-    let columns = (domain[0] - tolerance).floor().max(0.0)
-        ..((domain[1] + tolerance).floor() + 1.0).min(f64::from(width));
+    // The column holding the next tile's first item ends this draw.
+    let seam = next.map(|_| end.floor());
+    let last_column = seam.unwrap_or((domain[1] + tolerance).floor());
+    let columns =
+        (domain[0] - tolerance).floor().max(0.0)..(last_column + 1.0).min(f64::from(width));
     if columns.is_empty() {
         return None;
     }
+    // Only a seam on screen needs the next tile's part.
+    let seam = seam.filter(|&c| c >= columns.start && c < columns.end);
 
     let item_width = bucket as f64 / grid.rate() * pixels.per_second;
     let anchor = (-x(first) / item_width).floor().clamp(lo as f64, hi as f64) as u64;
@@ -366,11 +398,19 @@ fn tile_draw(
                 }),
                 color: row.color,
                 next: next.and_then(|n| first_item(n, r)),
+                seam: None,
             })
         })
         .collect();
     if channels.is_empty() {
         return None;
+    }
+    let mut channels = channels;
+    if let (Some(c), Some(next)) = (seam, next) {
+        let nx = |sample: u64| pixels.x(grid, sample);
+        for draw in &mut channels {
+            draw.seam = seam_extent(next, draw.row as usize, &draw.coefficients, c, nx);
+        }
     }
 
     Some(TileDraw {
@@ -383,8 +423,57 @@ fn tile_draw(
         item_width: item_width as f32,
         inverse_width: (1.0 / item_width) as f32,
         domain: domain.map(|d| d as f32),
+        seam: seam.map(|c| c as u32),
         channels,
     })
+}
+
+/// The y range that the items of `placed` (channel `row`) reach in column `column`, which
+/// holds its first item: samples and buckets starting in it, and at level 0 the line where
+/// it crosses the column's right edge. In f32 from `coefficients`, as the shader computes y.
+fn seam_extent(
+    placed: &Placed,
+    row: usize,
+    coefficients: &Coefficients,
+    column: f64,
+    x: impl Fn(u64) -> f64,
+) -> Option<[f32; 2]> {
+    let tile = &placed.tile;
+    let key = tile.key();
+    let bucket = key.level.bucket_len();
+    let first = key.sample_range().start;
+    let right = column + 1.0;
+    let mut range: Option<[f32; 2]> = None;
+    let mut extend = |y: f32| {
+        range = Some(range.map_or([y, y], |[lo, hi]| [lo.min(y), hi.max(y)]));
+    };
+    let y_of = |item: u64| -> Option<[f32; 2]> {
+        let [a, b] = item_values(tile, row, u32::try_from(item).ok()?)?;
+        Some([coefficients.y(a)?, coefficients.y(b)?])
+    };
+    let start = (placed.samples.start - first) / bucket;
+    let end = (placed.samples.end - first).div_ceil(bucket);
+    let mut before: Option<(f64, f32)> = None;
+    for item in start..end {
+        let at = x(first + item * bucket);
+        let y = y_of(item);
+        if at > right + f64::from(EDGE_TOLERANCE) {
+            // The line crossing the right edge, from the last sample before it.
+            if key.level == Level::RAW
+                && let (Some((x0, y0)), Some([y1, _])) = (before, y)
+            {
+                let t = (right - x0) / (at - x0);
+                extend((f64::from(y0) + (f64::from(y1) - f64::from(y0)) * t) as f32);
+            }
+            break;
+        }
+        if let Some([lo, hi]) = y {
+            extend(lo);
+            extend(hi);
+        }
+        before = y.map(|[y, _]| (at, y));
+    }
+    range
 }
 
 /// The first item `placed` draws of channel `row`: a sample twice, or a bucket's minimum and
@@ -393,7 +482,13 @@ fn first_item(placed: &Placed, row: usize) -> Option<[Native; 2]> {
     let tile = &placed.tile;
     let key = tile.key();
     let item = (placed.samples.start - key.sample_range().start) / key.level.bucket_len();
-    let item = u32::try_from(item).ok()?;
+    item_values(tile, row, u32::try_from(item).ok()?)
+}
+
+/// Item `item` of channel `row` in `tile`: a sample twice, or a bucket's minimum and
+/// maximum; `None` in a gap.
+fn item_values(tile: &Tile, row: usize, item: u32) -> Option<[Native; 2]> {
+    let key = tile.key();
     if !tile.valid().iter().any(|v| v.contains(&item)) {
         return None;
     }

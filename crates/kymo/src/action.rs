@@ -43,6 +43,8 @@ pub enum Action {
     ToggleBad,
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
+    /// Turns anti-aliased traces on or off (a setting).
+    ToggleAntialias,
     /// Stim events at every change to a non-zero code (see [`EventRule`]).
     StimEveryChange,
     /// Stim annotations only at changes from 0.
@@ -54,7 +56,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 34] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -84,6 +86,7 @@ impl Action {
         Action::ToggleDc,
         Action::ToggleBad,
         Action::ToggleSidebar,
+        Action::ToggleAntialias,
         Action::StimEveryChange,
         Action::StimFromZero,
         Action::StimIncreasing,
@@ -122,6 +125,7 @@ impl Action {
             Action::ToggleDc => "Remove DC",
             Action::ToggleBad => "Toggle Bad Channel",
             Action::ToggleSidebar => "Show Sidebar",
+            Action::ToggleAntialias => "Anti-aliasing",
             Action::StimEveryChange => "Every Change",
             Action::StimFromZero => "From Zero",
             Action::StimIncreasing => "Increasing",
@@ -135,6 +139,7 @@ impl Action {
             self,
             Action::ToggleDc
                 | Action::ToggleSidebar
+                | Action::ToggleAntialias
                 | Action::StimEveryChange
                 | Action::StimFromZero
                 | Action::StimIncreasing
@@ -175,7 +180,12 @@ impl Action {
     pub fn needs_recording(self) -> bool {
         !matches!(
             self,
-            Action::Open | Action::Quit | Action::Settings | Action::Shortcuts | Action::About
+            Action::Open
+                | Action::Quit
+                | Action::Settings
+                | Action::Shortcuts
+                | Action::About
+                | Action::ToggleAntialias
         )
     }
 

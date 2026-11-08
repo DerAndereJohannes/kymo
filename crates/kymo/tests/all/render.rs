@@ -165,6 +165,11 @@ impl Image {
         self.at(x, y)[0] > 0
     }
 
+    /// The share of pixel (x, y) a white trace covers.
+    fn cover(&self, x: u32, y: u32) -> f64 {
+        f64::from(self.at(x, y)[3]) / 255.0
+    }
+
     fn hatch(&self, x: u32, y: u32) -> bool {
         let p = self.at(x, y);
         p[0] == 0 && p[1] > 0
@@ -280,6 +285,74 @@ fn check_columns(
     Ok(())
 }
 
+/// Checks every column of an anti-aliased image: the trace covers the reference's span
+/// widened by half a pixel on either side, as one run, every row the span reaches at least
+/// half, and in all about as much as the widened span is long.
+fn check_antialiased(
+    image: &Image,
+    truth: &Truth,
+    shape: &Shape,
+    columns: &[std::ops::Range<u32>],
+) -> Result<(), String> {
+    let height = f64::from(image.height);
+    // The widened span's length on screen.
+    let length = |range: Option<(f64, f64)>| {
+        range.map_or(0.0, |(lo, hi)| {
+            ((hi + 0.5).clamp(0.0, height) - (lo - 0.5).clamp(0.0, height)).max(0.0)
+        })
+    };
+    for x in columns.iter().flat_map(Clone::clone) {
+        let c = f64::from(x);
+        let (inner, outer) = match shape {
+            Shape::Line => (
+                truth.line(c + EPS, c + 1.0 - EPS),
+                truth.line(c - EPS, c + 1.0 + EPS),
+            ),
+            Shape::Buckets { widths } => {
+                let width = widths[x as usize];
+                (
+                    truth.samples(c + EPS, c + 1.0 - EPS),
+                    truth.samples(c - width - EPS, c + 1.0 + width + EPS),
+                )
+            }
+        };
+        let lit = image.run(x)?;
+        let covers: Vec<f64> = (0..image.height).map(|y| image.cover(x, y)).collect();
+        let total: f64 = covers.iter().sum();
+        // Rounding to 8 bits per lit pixel, and f32 positions at both ends.
+        let slack = lit.map_or(0.0, |(a, b)| (b - a + 1) as f64) / 255.0 + 4.0 * EPS;
+        let fail = |what: String| {
+            Err(format!(
+                "column {x}: {what}; lit {lit:?}, cover {total:.3} (inner {inner:?}, outer {outer:?})"
+            ))
+        };
+        if total < length(inner) - slack || total > length(outer) + slack {
+            return fail(format!(
+                "cover outside {:.3}..={:.3}",
+                length(inner),
+                length(outer)
+            ));
+        }
+        if let (Some((a, b)), Some(may)) = (lit, rows(outer, -0.5 - EPS, image.height))
+            && (a < may.0 || b > may.1)
+        {
+            return fail(format!("lit beyond {may:?}"));
+        }
+        if lit.is_some() && outer.is_none() {
+            return fail("lit without data".into());
+        }
+        if let Some((m0, m1)) = rows(inner, EPS, image.height)
+            && let Some(y) = (m0..=m1).find(|&y| covers[y as usize] < 0.5 - 1.0 / 255.0)
+        {
+            return fail(format!(
+                "row {y} of the span covered {:.3}",
+                covers[y as usize]
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The reference shape for what `query` draws: lines if everything is level 0, otherwise
 /// buckets as wide as the widest drawn.
 fn shape(fx: &Fixture, scene: &Scene, query: &Query) -> Shape {
@@ -347,16 +420,22 @@ fn check_some(
         ppm.extend(image.pixels.iter().flat_map(|p| [p[0], p[1], p[2]]));
         std::fs::write(std::path::Path::new(&dir).join(format!("{n:03}.ppm")), ppm).unwrap();
     }
-    if let Err(e) = check_columns(&image, &truth, &shape, columns) {
+    let checked = if scene.antialias {
+        check_antialiased(&image, &truth, &shape, columns)
+    } else {
+        check_columns(&image, &truth, &shape, columns)
+    };
+    if let Err(e) = checked {
         panic!(
-            "{:?} over {:?} at {:?} ({shape:?}): {e}",
+            "{:?} over {:?} at {:?} ({shape:?}, antialias {}): {e}",
             scene.rows[0].channel,
             scene.time,
             query
                 .draw
                 .iter()
                 .map(|p| (p.tile.key().level, p.samples.clone()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            scene.antialias,
         );
     }
     image
@@ -436,8 +515,11 @@ fn columns_match_the_samples_at_every_zoom() {
         let id = ChannelId(id);
         let rate = fx.grid_of(id).rate();
         for time in views(fx.recording.duration(), rate) {
-            let scene = fx.scene(id, time, SIZE);
-            check(gpu, &fx, &scene, &exact(&fx, &scene));
+            for antialias in [false, true] {
+                let mut scene = fx.scene(id, time.clone(), SIZE);
+                scene.antialias = antialias;
+                check(gpu, &fx, &scene, &exact(&fx, &scene));
+            }
         }
     }
 }
@@ -480,18 +562,110 @@ fn a_single_sample_spike_shows_at_every_zoom() {
     while span < fx.recording.duration() * 2.0 {
         let span_now = span.min(fx.recording.duration());
         let start = (at - span_now * 0.37).clamp(0.0, fx.recording.duration() - span_now);
-        let scene = fx.scene(id, start..start + span_now, SIZE);
-        let image = check(gpu, &fx, &scene, &exact(&fx, &scene));
-        // A column next to the spike's reaches the spike's row.
-        let row = &scene.rows[0];
-        let x = ((at - start) / span_now * f64::from(SIZE[0])) as u32;
-        let top = (row.center - (1000.0 - row.baseline) * row.px_per_unit).floor() as u32;
-        let reaches = (x.saturating_sub(1)..=(x + 1).min(SIZE[0] - 1)).any(|x| image.trace(x, top));
-        assert!(
-            reaches,
-            "span {span_now}: spike at column {x} doesn't reach row {top}"
-        );
+        for antialias in [false, true] {
+            let mut scene = fx.scene(id, start..start + span_now, SIZE);
+            scene.antialias = antialias;
+            let image = check(gpu, &fx, &scene, &exact(&fx, &scene));
+            // A column next to the spike's reaches the spike's row, at least half of it.
+            let row = &scene.rows[0];
+            let x = ((at - start) / span_now * f64::from(SIZE[0])) as u32;
+            let top = (row.center - (1000.0 - row.baseline) * row.px_per_unit).floor() as u32;
+            let reaches = (x.saturating_sub(1)..=(x + 1).min(SIZE[0] - 1))
+                .any(|x| image.cover(x, top) >= 0.5);
+            assert!(
+                reaches,
+                "span {span_now}, antialias {antialias}: spike at column {x} doesn't reach row {top}"
+            );
+        }
         span *= 3.0;
+    }
+}
+
+/// A flat channel, drawn at `center` (pixels from the top) in a scene of `SIZE`.
+fn flat_scene(fx: &Fixture, center: f64, antialias: bool) -> Scene {
+    let mut scene = fx.scene(ChannelId(0), 0.0..1.0, SIZE);
+    scene.rows[0].center = center;
+    scene.rows[0].baseline = 0.0;
+    scene.antialias = antialias;
+    scene
+}
+
+fn flat() -> Fixture {
+    Fixture::new(
+        vec![channel("flat", 0, 1.0, 0.0)],
+        vec![grid(1000.0, 4000, vec![0..4000], SampleType::I16, 0..1)],
+        vec![i16_rows(vec![vec![0.0; 4000]])],
+    )
+}
+
+#[test]
+fn a_flat_trace_covers_rows_in_proportion() {
+    let Some(gpu) = gpu() else { return };
+    let fx = flat();
+    // The trace's y, and the rows it covers by how much with anti-aliasing.
+    let cases: [(f64, &[(u32, f64)]); 4] = [
+        (10.3, &[(9, 0.2), (10, 0.8)]),
+        (10.0, &[(9, 0.5), (10, 0.5)]),
+        (10.5, &[(10, 1.0)]),
+        (10.8, &[(10, 0.7), (11, 0.3)]),
+    ];
+    for (y, want) in cases {
+        let scene = flat_scene(&fx, y, true);
+        let image = check(gpu, &fx, &scene, &exact(&fx, &scene));
+        for x in 0..SIZE[0] {
+            for row in 0..SIZE[1] {
+                let expected = want.iter().find(|w| w.0 == row).map_or(0.0, |w| w.1);
+                let got = image.cover(x, row);
+                assert!(
+                    (got - expected).abs() <= 1.5 / 255.0,
+                    "y {y}: column {x}, row {row} covered {got:.3}, not {expected}"
+                );
+            }
+        }
+        // Without anti-aliasing, the row holding y, whole.
+        let scene = flat_scene(&fx, y, false);
+        let image = check(gpu, &fx, &scene, &exact(&fx, &scene));
+        for row in 0..SIZE[1] {
+            let expected = if row == y.floor() as u32 { 1.0 } else { 0.0 };
+            assert_eq!(image.cover(7, row), expected, "y {y}: row {row}");
+        }
+    }
+}
+
+#[test]
+fn antialiased_clipped_rows_stay_in_their_rows() {
+    let Some(gpu) = gpu() else { return };
+    // A walk far beyond its row, clipped to rows 40.3 to 60.6: the trace may light rows
+    // 40 to 60, as without anti-aliasing, and runs along the edges at full cover.
+    let mut rng = Rng::new(11);
+    let n = 20_000u64;
+    let fx = Fixture::new(
+        vec![channel("stim", 0, 1.0, 0.0)],
+        vec![grid(1000.0, n, vec![0..n], SampleType::I16, 0..1)],
+        vec![i16_rows(vec![walk(
+            &mut rng, n as usize, 2_000.0, -30_000.0, 30_000.0,
+        )])],
+    );
+    for time in views(fx.recording.duration(), 1000.0) {
+        for antialias in [false, true] {
+            let mut scene = fx.scene(ChannelId(0), time.clone(), SIZE);
+            scene.rows[0].center = 50.45;
+            scene.rows[0].height = 20.3;
+            scene.rows[0].px_per_unit = 0.05;
+            scene.rows[0].clip = true;
+            scene.antialias = antialias;
+            let query = query(&fx.recording, &view(&scene), &exact(&fx, &scene));
+            let frame = Frame::new(&fx.recording, &scene, &query);
+            let image = gpu.render(&mut gpu.renderer(), &frame);
+            for x in 0..SIZE[0] {
+                if let Some((a, b)) = image.run(x).unwrap() {
+                    assert!(
+                        40 <= a && b <= 60,
+                        "{time:?}, antialias {antialias}: column {x} lights rows {a}..={b}"
+                    );
+                }
+            }
+        }
     }
 }
 

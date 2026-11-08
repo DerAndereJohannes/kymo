@@ -35,6 +35,10 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                             .speed(8.0)
                             .suffix(" MB"),
                     );
+                    ui.label("Traces");
+                    ui.checkbox(&mut settings.antialias, "Anti-aliased");
+                    ui.end_row();
+                    hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
                     row(
                         ui,
                         "Default window",
@@ -60,7 +64,12 @@ fn row(ui: &mut Ui, label: &str, hint: &str, value: DragValue<'_>) {
     let label = ui.label(label);
     ui.add(value).labelled_by(label.id);
     ui.end_row();
+    self::hint(ui, hint);
+}
+
+/// A hint below a row, in the value's column.
+fn hint(ui: &mut Ui, text: &str) {
     ui.label("");
-    ui.add(Label::new(RichText::new(hint).small().weak()).wrap());
+    ui.add(Label::new(RichText::new(text).small().weak()).wrap());
     ui.end_row();
 }

@@ -98,6 +98,8 @@ pub struct Viewer {
     pointed: String,
     /// The stim channels' annotations, for recordings that have stim channels.
     stim: Option<StimAnnotations>,
+    /// Whether traces are anti-aliased.
+    antialias: bool,
 }
 
 impl Viewer {
@@ -131,6 +133,7 @@ impl Viewer {
             missing: 0,
             marks: Marks::default(),
             pointed: String::new(),
+            antialias: false,
         }
     }
 
@@ -188,6 +191,11 @@ impl Viewer {
     }
 
     /// Seconds [`Action::DefaultWindow`] shows from now on.
+    /// Whether traces are anti-aliased from the next frame on.
+    pub fn set_antialias(&mut self, on: bool) {
+        self.antialias = on;
+    }
+
     pub fn set_default_span(&mut self, seconds: f64) {
         self.view.set_default_span(seconds);
     }
@@ -481,6 +489,7 @@ impl Viewer {
         }
 
         let mut scene = Scene::from_view(&self.view, size_px, rgba(visuals.text_color()));
+        scene.antialias = self.antialias;
         for row in &mut scene.rows {
             row.color = rgba(self.channel_color(row.channel, visuals));
             row.baseline = self.baseline(row.channel);

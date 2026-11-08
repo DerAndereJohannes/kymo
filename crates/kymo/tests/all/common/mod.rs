@@ -187,6 +187,7 @@ impl Fixture {
                 clip: false,
             }],
             hatch: HATCH,
+            antialias: false,
         }
     }
 }

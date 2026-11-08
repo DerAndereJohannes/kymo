@@ -3,7 +3,7 @@
 //! public API and egui's input, as the keys and the trackpad do:
 //!
 //! ```text
-//! cargo bench -p kymo --bench frames -- FILE [--fresh]
+//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]
 //! ```
 //!
 //! The window (1280×800, vsync off, drawing continuously) opens FILE at the default view
@@ -25,6 +25,7 @@
 //! Without `--fresh` the sidecar in the user's cache directory is used, built first (and
 //! then the benchmark started again, so the build doesn't count towards peak memory); with
 //! `--fresh` the pyramid builds into an empty directory during the run, as on a first open.
+//! Traces are anti-aliased, as by default, unless `--no-antialias` is given.
 
 // A measuring tool: panicking on a broken input is the point.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -59,17 +60,23 @@ fn main() {
         .filter(|a| a != "--bench")
         .collect();
     let fresh = args.iter().any(|a| a == "--fresh");
+    let settings = Settings {
+        antialias: !args.iter().any(|a| a == "--no-antialias"),
+        ..Settings::default()
+    };
     let files: Vec<PathBuf> = args
         .iter()
-        .filter(|a| *a != "--fresh")
+        .filter(|a| *a != "--fresh" && *a != "--no-antialias")
         .map(PathBuf::from)
         .collect();
     let [path] = &files[..] else {
         if args.is_empty() {
-            eprintln!("skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh]`");
+            eprintln!(
+                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]`"
+            );
             return;
         }
-        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh]");
+        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]");
         std::process::exit(2);
     };
 
@@ -94,11 +101,10 @@ fn main() {
         }
     };
 
-    let report = run(path, sidecar_dir);
+    let report = run(path, sidecar_dir, settings);
     if let Some(dir) = fresh_dir {
         let _ = std::fs::remove_dir_all(dir);
     }
-    let settings = Settings::default();
     println!("{}", path.display());
     println!(
         "sidecar: {}",
@@ -107,6 +113,10 @@ fn main() {
         } else {
             "complete"
         }
+    );
+    println!(
+        "anti-aliasing: {}",
+        if settings.antialias { "on" } else { "off" }
     );
     report.print();
     match peak_resident_bytes() {
@@ -140,7 +150,7 @@ fn build_sidecar(dir: &Path, path: &Path) -> bool {
 }
 
 /// Opens the window, runs the sequence and returns what it measured.
-fn run(path: &Path, sidecar_dir: PathBuf) -> Report {
+fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings) -> Report {
     let report = Rc::new(RefCell::new(Report::default()));
     let out = Rc::clone(&report);
     let path = path.to_owned();
@@ -161,7 +171,7 @@ fn run(path: &Path, sidecar_dir: PathBuf) -> Report {
             let options = Options {
                 sidecar_dir: Some(sidecar_dir),
                 menus: Menus::Egui(Platform::current()),
-                settings: Settings::default(),
+                settings,
             };
             let app = KymoApp::new(&cc.egui_ctx, gpu, options, Some(path));
             Ok(Box::new(Bench::new(app, out)))

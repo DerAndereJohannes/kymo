@@ -155,7 +155,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// Every item of every placed tile lies where its first sample's time puts it, within
-    /// a thousandth of a pixel, and the tiles of a block cover the screen without gaps.
+    /// a thousandth of a pixel, and the tiles of a block cover the screen without gaps or
+    /// overlaps: a tile that runs on into the next takes their shared column alone.
     #[test]
     fn tiles_land_at_their_samples_times(
         start in 0.0f64..100.0,
@@ -174,6 +175,7 @@ proptest! {
         let per_px = f64::from(width) / span;
 
         let mut ends: Vec<(u32, f32)> = Vec::new();
+        let mut columns: Vec<(u32, u32)> = Vec::new();
         for draw in &frame.draws {
             let key = draw.tile.key();
             let bucket = key.level.bucket_len();
@@ -197,6 +199,20 @@ proptest! {
                 prop_assert!((draw.domain[0] - end).abs() < EDGE_TOLERANCE, "{end} then {:?}", draw.domain);
             }
             ends.push((key.block.index, draw.domain[1]));
+            if let Some(&(block, end)) = columns.last()
+                && block == key.block.index
+            {
+                prop_assert_eq!(draw.columns.start, end, "{:?}", key);
+            }
+            columns.push((key.block.index, draw.columns.end));
+            prop_assert_eq!(
+                draw.seam.is_some(),
+                draw.continues && draw.domain[1].floor() < width as f32
+            );
+            if let Some(seam) = draw.seam {
+                prop_assert_eq!(seam, draw.domain[1].floor() as u32);
+                prop_assert_eq!(draw.columns.end, seam + 1);
+            }
         }
         // Both blocks are drawn from the left edge to the right edge, or to the last sample
         // where the recording ends on screen.
@@ -240,6 +256,34 @@ fn drawing_continues_into_the_next_tile() {
     };
     let first = Native::Int(i32::from(d[0]));
     assert_eq!(draw.channels[0].next, Some([first, first]));
+    // The column holding the next tile's first sample is this draw's alone: it adds the
+    // next tile's samples there, and the line where it leaves the column.
+    let seam = draw.seam.unwrap();
+    assert_eq!(seam, draw.domain[1].floor() as u32);
+    assert_eq!(draw.columns.end, seam + 1);
+    assert_eq!(frame.draws[1].columns.start, seam + 1);
+    let c = draw.channels[0].coefficients;
+    let next = &frame.draws[1];
+    let x = |i: u32| {
+        f64::from(next.anchor_x)
+            + (f64::from(i) - f64::from(next.anchor)) * f64::from(next.item_width)
+    };
+    let y = |i: u32| f64::from(c.y(Native::Int(i32::from(d[i as usize]))).unwrap());
+    let right = f64::from(seam) + 1.0;
+    let mut want = [f64::INFINITY, f64::NEG_INFINITY];
+    let mut i = 0;
+    while x(i) <= right {
+        want = [want[0].min(y(i)), want[1].max(y(i))];
+        i += 1;
+    }
+    let t = (right - x(i - 1)) / (x(i) - x(i - 1));
+    let cross = y(i - 1) + (y(i) - y(i - 1)) * t;
+    want = [want[0].min(cross), want[1].max(cross)];
+    let got = draw.channels[0].seam.unwrap();
+    assert!(
+        (f64::from(got[0]) - want[0]).abs() < 1e-3 && (f64::from(got[1]) - want[1]).abs() < 1e-3,
+        "{got:?} vs {want:?}"
+    );
 
     // Without the next tile, the line ends at the tile's last sample.
     let frame = frame_of(fx, &scene, &fx.cache(wanted.iter().copied().take(1)));
@@ -247,6 +291,8 @@ fn drawing_continues_into_the_next_tile() {
     assert!(!draw.continues);
     assert_eq!(*draw.items.end(), TILE_LEN as u32 - 1);
     assert_eq!(draw.channels[0].next, None);
+    assert_eq!(draw.seam, None);
+    assert_eq!(draw.channels[0].seam, None);
     // The rest is loading, hatched over the channel's row.
     assert_eq!(frame.hatches.len(), 1);
     let [x0, y0, x1, y1] = frame.hatches[0].rect;

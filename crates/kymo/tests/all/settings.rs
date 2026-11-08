@@ -31,6 +31,7 @@ fn defaults_without_storage_or_values() {
     assert_eq!(defaults.tile_cache_mb, 256);
     assert_eq!(defaults.gpu_memory_mb, 256);
     assert_eq!(defaults.default_window_s, 20.0);
+    assert!(defaults.antialias);
     assert_eq!(Settings::load(None), defaults);
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
 }
@@ -41,6 +42,7 @@ fn saved_settings_read_back() {
         tile_cache_mb: 1024,
         gpu_memory_mb: 96,
         default_window_s: 7.5,
+        antialias: false,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
@@ -55,6 +57,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         tile_cache_mb: 512,
         gpu_memory_mb: 128,
         default_window_s: 5.0,
+        antialias: false,
     };
     let defaults = Settings::default();
     let cases = [
@@ -79,6 +82,13 @@ fn unreadable_values_are_defaults_and_others_kept() {
                 ..saved
             },
         ),
+        (
+            "kymo.antialias",
+            Settings {
+                antialias: defaults.antialias,
+                ..saved
+            },
+        ),
     ];
     for (key, want) in cases {
         for value in ["lots", "", "-1.5e", "NaN"] {
@@ -98,6 +108,7 @@ fn values_out_of_range_are_clamped() {
         tile_cache_mb: 1,
         gpu_memory_mb: u32::MAX,
         default_window_s: 1e9,
+        antialias: true,
     }
     .save(&mut storage);
     let loaded = Settings::load(Some(&storage));

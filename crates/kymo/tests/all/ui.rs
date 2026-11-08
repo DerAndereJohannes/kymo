@@ -8,6 +8,7 @@ use eframe::egui::{self, Key, Modifiers};
 use eframe::egui_wgpu;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use kymo::action::Action;
 use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
 use kymo::settings::Settings;
@@ -1296,6 +1297,39 @@ fn settings_apply_at_once() {
 }
 
 #[test]
+fn anti_aliasing_follows_the_menu_and_settings() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // On by default.
+    assert!(harness.state().settings().antialias);
+    assert!(checked(&mut harness, "View", "Anti-aliasing"));
+    choose(&mut harness, "View", "Anti-aliasing");
+    assert!(!harness.state().settings().antialias);
+    assert!(!checked(&mut harness, "View", "Anti-aliasing"));
+
+    // The Settings checkbox shows and changes the same setting.
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    let checkbox = harness.get_by_label("Anti-aliased");
+    assert_eq!(
+        checkbox.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::False)
+    );
+    checkbox.click();
+    harness.run_steps(2);
+    assert!(harness.state().settings().antialias);
+    assert!(checked(&mut harness, "View", "Anti-aliasing"));
+
+    // A setting, so it can change without a recording.
+    harness.key_press_modifiers(command(), Key::W);
+    harness.step();
+    assert!(enabled(&mut harness, "View", "Anti-aliasing"));
+    choose(&mut harness, "View", "Anti-aliasing");
+    assert!(!harness.state().settings().antialias);
+}
+
+#[test]
 fn settings_are_kept_between_runs() {
     #[derive(Default)]
     struct Memory(std::collections::HashMap<String, String>);
@@ -1411,6 +1445,32 @@ fn traces_image(harness: &mut Harness<'_, KymoApp>) -> Vec<[u8; 4]> {
 }
 
 #[test]
+fn anti_aliased_traces_blend_their_edges() {
+    let Some(setup) = gpu_setup() else { return };
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = gpu_window(file.path(), setup);
+    ready(&mut harness);
+    // Distinct colours in the trace area: whole pixels give the background, the grid and
+    // the traces' colours; anti-aliased edges give many shades between them.
+    let colours = |harness: &mut Harness<'_, KymoApp>| {
+        traces_image(harness)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    };
+    let on = colours(&mut harness);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().perform(&ctx, Action::ToggleAntialias);
+    harness.run_steps(2);
+    assert!(!harness.state().settings().antialias);
+    let off = colours(&mut harness);
+    assert!(
+        on >= off + 20,
+        "{on} colours with anti-aliasing, {off} without"
+    );
+}
+
+#[test]
 fn opening_another_recording_never_draws_the_last_ones_tiles() {
     let Some(setup) = gpu_setup() else { return };
     // The same layout, so the same tile keys, with different values.
@@ -1497,6 +1557,13 @@ fn traces_take_their_types_colours() {
     kymo_testgen::write(&spec, file.path()).unwrap();
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
+    // Whole pixels, so every trace pixel has its type's colour exactly.
+    let settings = *harness.state().settings();
+    harness.state_mut().set_settings(Settings {
+        antialias: false,
+        ..settings
+    });
+    harness.run_steps(2);
     let visuals = harness.ctx.global_style().visuals.clone();
     // The rows, top to bottom; the last is Status.
     let kinds = [

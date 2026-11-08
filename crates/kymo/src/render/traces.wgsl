@@ -3,13 +3,19 @@
 // lowest row they reach. Quad corners lie on pixel edges, so a peak can never fall between
 // pixel centres and vanish.
 //
+// With anti-aliasing, the trace covers its exact span in the column widened by half a pixel
+// on either side, and each pixel is drawn with the share of it the trace covers: at least
+// half for the pixels holding the span's ends, so peaks stay visible.
+//
 // Positions are physical pixels of the trace area, y down. The CPU side
 // (`render/frame.rs`) computes every parameter in f64 relative to an anchor near the
 // screen, so the f32 numbers here stay small.
 
 struct Globals {
     size: vec2<f32>,
-    _pad: vec2<f32>,
+    // 1 to anti-alias traces, 0 to draw them in whole pixels.
+    antialias: f32,
+    _pad: f32,
 };
 
 // One channel of a tile draw.
@@ -27,13 +33,13 @@ struct Slot {
     next_min: u32,
     next_max: u32,
     has_next: u32,
-    _pad: u32,
+    // 1 if `seam` holds the y range the next tile reaches in the draw's seam column.
+    has_seam: u32,
     // The y range (top, bottom) the trace is clamped to: the row for stim channels,
     // everything for others.
     clip_top: f32,
     clip_bottom: f32,
-    _pad_clip0: u32,
-    _pad_clip1: u32,
+    seam: vec2<f32>,
 };
 
 // One tile draw. Items are samples (level 0) or buckets; item `i` starts at
@@ -58,8 +64,10 @@ struct Draw {
     data: u32,
     // The item that stands for the next tile's first, or 0xffffffff.
     next_item: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // The column holding the next tile's first item, which this draw takes alone, adding
+    // the next tile's part from the slot's `seam`; 0xffffffff if none.
+    seam: u32,
+    _pad: u32,
 };
 
 struct Hatch {
@@ -77,6 +85,11 @@ struct Hatch {
 struct Out {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    // The y range the trace covers in its column, for anti-aliasing (traces only).
+    @location(1) @interpolate(flat) span: vec2<f32>,
+    // y in the trace area, which the fragment's position isn't: the area is a viewport
+    // inside the window (traces only).
+    @location(2) y: f32,
 };
 
 const KIND_I16: u32 = 0u;
@@ -91,6 +104,8 @@ fn nothing() -> Out {
     var out: Out;
     out.position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
     out.color = vec4<f32>(0.0);
+    out.span = vec2<f32>(0.0);
+    out.y = 0.0;
     return out;
 }
 
@@ -219,25 +234,46 @@ fn vs_trace(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
             }
         }
     }
+    if u32(column) == draw.seam && slot.has_seam != 0u {
+        lo = min(lo, slot.seam.x);
+        hi = max(hi, slot.seam.y);
+    }
     if lo > hi {
         return nothing();
     }
     // A clipped trace runs along the row's edge where it would leave the row.
     lo = clamp(lo, slot.clip_top, slot.clip_bottom);
     hi = clamp(hi, slot.clip_top, slot.clip_bottom);
+    // Every pixel covers all of itself without anti-aliasing.
+    var span = vec2<f32>(-3.0e38, 3.0e38);
+    if globals.antialias > 0.5 {
+        // Widened by half a pixel, but never past the rows the clip lets the trace reach.
+        let first = floor(slot.clip_top);
+        let last = floor(slot.clip_bottom) + 1.0;
+        lo = max(lo - 0.5, first);
+        hi = min(hi + 0.5, last);
+        span = vec2<f32>(lo, hi);
+    }
     // Whole rows: from the row holding the highest point to the one holding the lowest.
     let top = floor(clamp(lo, -2.0, globals.size.y + 2.0));
     let bottom = floor(clamp(hi, -2.0, globals.size.y + 2.0)) + 1.0;
     let corner = vec2<f32>(f32(vertex & 1u), f32(vertex >> 1u));
+    let y = mix(top, bottom, corner.y);
     var out: Out;
-    out.position = clip(vec2<f32>(column + corner.x, mix(top, bottom, corner.y)));
+    out.position = clip(vec2<f32>(column + corner.x, y));
     out.color = slot.color;
+    out.span = span;
+    out.y = y;
     return out;
 }
 
 @fragment
 fn fs_trace(input: Out) -> @location(0) vec4<f32> {
-    return input.color;
+    // The share of this pixel's row that the span covers (premultiplied colours scale as a
+    // whole).
+    let row = floor(input.y);
+    let cover = clamp(min(row + 1.0, input.span.y) - max(row, input.span.x), 0.0, 1.0);
+    return input.color * cover;
 }
 
 @vertex
@@ -247,6 +283,8 @@ fn vs_hatch(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     var out: Out;
     out.position = clip(mix(hatch.rect.xy, hatch.rect.zw, corner));
     out.color = hatch.color;
+    out.span = vec2<f32>(0.0);
+    out.y = 0.0;
     return out;
 }
 
