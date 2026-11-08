@@ -46,6 +46,8 @@ docs/phase2-plan.md  agreed plan for phase 2 (the viewer)
 - `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires), with a `// SAFETY:` comment.
 - Tests are behavioral: they check outputs (decoded samples, tile values, annotations), not internal structure.
   Use `proptest` to compare tiles against a brute-force min/max pass.
+- Integration tests live in one binary per crate, `tests/all/`, a module per area (`main.rs` lists them), so they link once
+  and run in parallel. Proptest keeps their failure seeds in `tests/proptest-regressions/<module>.txt`; commit them.
 - Test data comes from `crates/kymo-testgen`; never commit large binary files. Real recordings live outside the repo,
   pointed to by the `KYMO_TEST_DATA` env var; tests that need them are `#[ignore]` by default.
 - Benchmarks with `criterion` in `crates/kymo-core/benches`.
