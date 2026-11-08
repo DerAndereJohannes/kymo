@@ -13,6 +13,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
+use kymo::settings::Settings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::trace_color;
 use kymo::viewer::Viewer;
@@ -50,11 +51,13 @@ impl Drop for TempFile {
     }
 }
 
-/// Pyramids in memory, and the menu bar drawn by egui as on Linux, on every platform.
+/// Pyramids in memory, the menu bar drawn by egui as on Linux, on every platform, and
+/// default settings.
 fn options() -> Options {
     Options {
         sidecar_dir: None,
         menus: Menus::Egui(Platform::Linux),
+        settings: Settings::default(),
     }
 }
 
@@ -407,8 +410,7 @@ fn menu_items_are_enabled_as_the_state_allows() {
     // The pointer is on the menu, not over a channel.
     assert!(!enabled(&mut harness, "View", "Toggle Bad"));
     assert!(enabled(&mut harness, "View", "Remove DC"));
-    // Step 5c brings it.
-    assert!(!enabled(&mut harness, "Edit", "Settings"));
+    assert!(enabled(&mut harness, "Edit", "Settings"));
 
     harness.key_press_modifiers(command(), Key::W);
     harness.step();
@@ -417,6 +419,7 @@ fn menu_items_are_enabled_as_the_state_allows() {
     assert!(!enabled(&mut harness, "View", "Show Sidebar"));
     assert!(enabled(&mut harness, "File", "Quit"));
     assert!(enabled(&mut harness, "Help", "Keyboard Shortcuts"));
+    assert!(enabled(&mut harness, "Edit", "Settings"));
 }
 
 #[test]
@@ -430,9 +433,13 @@ fn menu_items_act_and_disabled_ones_dont() {
     assert_eq!(viewer(&harness).view().time(), 50.0..60.0);
     choose(&mut harness, "View", "Remove DC");
     assert!(viewer(&harness).view().dc_removed());
-    // Settings come in step 5c.
     choose(&mut harness, "Edit", "Settings");
-    assert!(harness.query_by_label("Settings").is_none());
+    assert!(harness.state().settings_open());
+    harness.get_by_label("Tile cache");
+    // Its close button.
+    harness.get_by_label("Close window").click();
+    harness.run_steps(2);
+    assert!(!harness.state().settings_open());
 
     choose(&mut harness, "File", "Close");
     assert!(harness.state().viewer().is_none());
@@ -677,6 +684,111 @@ fn the_sidebar_hides_and_shows() {
     assert_eq!(width(&harness), with_sidebar);
 }
 
+/// The window opening `path` with `settings`, without a GPU.
+fn window_with(path: &Path, settings: Settings) -> Harness<'static, KymoApp> {
+    let path = path.to_owned();
+    Harness::builder().with_size(SIZE).build_eframe(move |cc| {
+        KymoApp::new(
+            &cc.egui_ctx,
+            Gpu::none("no GPU in this test"),
+            Options {
+                settings,
+                ..options()
+            },
+            Some(path),
+        )
+    })
+}
+
+/// Sets the number field labelled `label` in the Settings window.
+fn set_field(harness: &mut Harness<'_, KymoApp>, label: &str, value: f64) {
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::SpinButton, label)
+        .set_value_accesskit(value);
+    harness.run_steps(2);
+}
+
+#[test]
+fn settings_apply_at_once() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    assert!(harness.state().settings_open());
+
+    // The tile cache: the service's budget changes, and the cached tiles stay within it.
+    set_field(&mut harness, "Tile cache", 100.0);
+    assert_eq!(harness.state().settings().tile_cache_mb, 100);
+    let cache = viewer(&harness).cache();
+    assert_eq!(cache.budget(), 100 << 20);
+    assert!(cache.bytes() <= cache.budget());
+    // Out of range: the nearest allowed value.
+    set_field(&mut harness, "Tile cache", 1.0);
+    assert_eq!(viewer(&harness).cache().budget(), 64 << 20);
+
+    // The default window: ⌘0 shows it from now on; the window on screen stays.
+    set_field(&mut harness, "Default window", 12.5);
+    assert_eq!(viewer(&harness).view().time(), 0.0..20.0);
+    harness.key_press(Key::ArrowRight);
+    harness.key_press_modifiers(command(), Key::Num0);
+    harness.step();
+    assert_eq!(viewer(&harness).view().time(), 5.0..17.5);
+
+    set_field(&mut harness, "GPU memory", 512.0);
+    assert_eq!(harness.state().settings().gpu_memory_mb, 512);
+
+    // Restore Defaults, at once too.
+    harness.get_by_label("Restore Defaults").click();
+    harness.run_steps(2);
+    assert_eq!(*harness.state().settings(), Settings::default());
+    assert_eq!(viewer(&harness).cache().budget(), 256 << 20);
+    harness.key_press_modifiers(command(), Key::Num0);
+    harness.step();
+    assert_eq!(viewer(&harness).view().time(), 5.0..25.0);
+}
+
+#[test]
+fn settings_are_kept_between_runs() {
+    #[derive(Default)]
+    struct Memory(std::collections::HashMap<String, String>);
+    impl eframe::Storage for Memory {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+
+    let file = TempFile::preset("bdf+c-small");
+    let mut storage = Memory::default();
+    {
+        let mut harness = window(&file.0);
+        ready(&mut harness);
+        harness.key_press_modifiers(command(), Key::Comma);
+        harness.step();
+        set_field(&mut harness, "Default window", 8.0);
+        set_field(&mut harness, "Tile cache", 300.0);
+        eframe::App::save(harness.state_mut(), &mut storage);
+    }
+
+    // The next run starts with them: a recording opens with an 8 s window and a 300 MB
+    // cache.
+    let settings = Settings::load(Some(&storage));
+    assert_eq!(settings.default_window_s, 8.0);
+    assert_eq!(settings.tile_cache_mb, 300);
+    let mut harness = window_with(&file.0, settings);
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).view().time(), 0.0..8.0);
+    assert_eq!(viewer(&harness).cache().budget(), 300 << 20);
+    assert!(!harness.state().settings_open());
+}
+
 #[test]
 fn the_shortcut_overview_and_about_open() {
     let file = TempFile::new("bdf");
@@ -806,6 +918,22 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
         on > 500 && on > 20 * off,
         "{off} pixels without DC removal, {on} with"
     );
+}
+
+#[test]
+fn the_gpu_budget_follows_the_settings() {
+    let Some(setup) = gpu_setup() else { return };
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = gpu_window(&file.0, setup);
+    ready(&mut harness);
+    let gpu = |h: &Harness<'_, KymoApp>| h.state().gpu().budget();
+    assert_eq!(gpu(&harness), Some(256 << 20));
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    set_field(&mut harness, "GPU memory", 96.0);
+    assert_eq!(gpu(&harness), Some(96 << 20));
+    // The traces stay drawn.
+    assert!(viewer(&harness).complete());
 }
 
 #[test]

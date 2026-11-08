@@ -82,11 +82,13 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn new(document: Document, service: TileService) -> Viewer {
+    /// A recording on screen with its tile service, showing `default_span` seconds at
+    /// first.
+    pub fn new(document: Document, service: TileService, default_span: f64) -> Viewer {
         static SERIAL: AtomicU64 = AtomicU64::new(1);
         Viewer {
             summary: document.summary(),
-            view: ViewState::new(&document.recording),
+            view: ViewState::with_default_span(&document.recording, default_span),
             document,
             service: Some(service),
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
@@ -123,6 +125,16 @@ impl Viewer {
     /// The layout of the last frame, once there was one with room for traces.
     pub fn layout(&self) -> Option<Layout> {
         self.layout
+    }
+
+    /// The tile service's cache, for its budget and size.
+    pub fn cache(&self) -> &kymo_core::tile::TileCache {
+        self.service().cache()
+    }
+
+    /// Seconds [`Action::DefaultWindow`] shows from now on.
+    pub fn set_default_span(&mut self, seconds: f64) {
+        self.view.set_default_span(seconds);
     }
 
     fn service(&self) -> &TileService {

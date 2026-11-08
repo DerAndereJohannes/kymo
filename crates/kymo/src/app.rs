@@ -12,18 +12,21 @@ use crate::document::{self, Document, Loading, error_text, file_name};
 use crate::keymap::{Keymap, Platform};
 #[cfg(any(target_os = "macos", windows))]
 use crate::native_menu::NativeMenu;
+use crate::settings::Settings;
 use crate::ui::gpu::Gpu;
 use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
+use crate::ui::settings::settings_window;
 use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
 
-/// How the window keeps recordings and shows its menus.
+/// How the window keeps recordings and shows its menus, and the settings it starts with.
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Where pyramid sidecars go; `None` keeps pyramids in memory.
     pub sidecar_dir: Option<PathBuf>,
     pub menus: Menus,
+    pub settings: Settings,
 }
 
 /// Where the menu bar comes from.
@@ -36,7 +39,8 @@ pub enum Menus {
 }
 
 impl Default for Options {
-    /// Sidecars in the user's cache directory; native menus where the platform has them.
+    /// Sidecars in the user's cache directory; native menus where the platform has them;
+    /// default settings.
     fn default() -> Self {
         let platform = Platform::current();
         Options {
@@ -46,6 +50,7 @@ impl Default for Options {
             } else {
                 Menus::Egui(platform)
             },
+            settings: Settings::default(),
         }
     }
 }
@@ -60,6 +65,7 @@ pub struct KymoApp {
     show_sidebar: bool,
     shortcuts_open: bool,
     about_open: bool,
+    settings_open: bool,
     /// Show the file dialog once the window is on screen.
     pick_file: bool,
     /// Whether a frame has been shown yet.
@@ -82,6 +88,7 @@ impl KymoApp {
         // ⌘+ and ⌘− zoom time, not the interface.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         add_symbol_font(ctx);
+        gpu.set_budget(options.settings.gpu_memory_bytes());
         let mut app = KymoApp {
             state: State::Empty,
             gpu,
@@ -92,6 +99,7 @@ impl KymoApp {
             show_sidebar: true,
             shortcuts_open: false,
             about_open: false,
+            settings_open: false,
             pick_file: path.is_none(),
             shown: false,
         };
@@ -136,6 +144,32 @@ impl KymoApp {
     /// Whether the shortcut overview is open.
     pub fn shortcuts_open(&self) -> bool {
         self.shortcuts_open
+    }
+
+    /// Whether the Settings window is open.
+    pub fn settings_open(&self) -> bool {
+        self.settings_open
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.options.settings
+    }
+
+    /// The GPU the traces are drawn on.
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
+    /// Changes the settings and applies them at once: the tile cache and GPU budgets (a
+    /// smaller one evicts) and the default window for ⌘0 and recordings opened from now on.
+    pub fn set_settings(&mut self, settings: Settings) {
+        let settings = settings.clamped();
+        self.options.settings = settings;
+        self.gpu.set_budget(settings.gpu_memory_bytes());
+        if let State::Ready(viewer) = &mut self.state {
+            viewer.cache().set_budget(settings.tile_cache_bytes());
+            viewer.set_default_span(settings.default_window_s);
+        }
     }
 
     /// Whether the About window is open.
@@ -185,13 +219,14 @@ impl KymoApp {
         };
         let repaint = ctx.clone();
         let tiles = ctx.clone();
+        let mut service_options = ServiceOptions::new(store);
+        service_options.cache_budget = self.options.settings.tile_cache_bytes();
         let open = move |path: &Path| -> Result<Opened> {
             let document = document::open(path)?;
-            let service = TileService::new(
-                document.recording.clone(),
-                ServiceOptions::new(store),
-                move || tiles.request_repaint(),
-            )?;
+            let service =
+                TileService::new(document.recording.clone(), service_options, move || {
+                    tiles.request_repaint()
+                })?;
             Ok((document, service))
         };
         self.state = State::Loading(Loading::start(path, open, move || {
@@ -237,6 +272,10 @@ impl KymoApp {
         }
         shortcuts_window(&ctx, &mut self.shortcuts_open, self.keymap.platform());
         about_window(&ctx, &mut self.about_open);
+        let mut settings = self.options.settings;
+        if settings_window(&ctx, &mut self.settings_open, &mut settings) {
+            self.set_settings(settings);
+        }
         #[cfg(any(target_os = "macos", windows))]
         {
             let state = self.menu_state();
@@ -294,8 +333,7 @@ impl KymoApp {
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
-            // Disabled until step 5c (see `AppMenuState::enabled`).
-            Action::Settings => {}
+            Action::Settings => self.settings_open = true,
             _ => {
                 if let State::Ready(viewer) = &mut self.state {
                     viewer.apply(action);
@@ -363,7 +401,11 @@ impl KymoApp {
         self.state = match result {
             Ok((document, service)) => {
                 set_title(ctx, Some(&document.name()));
-                State::Ready(Box::new(Viewer::new(document, service)))
+                State::Ready(Box::new(Viewer::new(
+                    document,
+                    service,
+                    self.options.settings.default_window_s,
+                )))
             }
             Err(error) => State::Failed {
                 path: loading.path().to_owned(),
@@ -376,6 +418,11 @@ impl KymoApp {
 impl eframe::App for KymoApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+    }
+
+    /// Keeps the settings for the next run.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.options.settings.save(storage);
     }
 }
 
@@ -390,10 +437,9 @@ struct AppMenuState {
 
 impl MenuState for AppMenuState {
     fn enabled(&self, action: Action) -> bool {
-        // Settings come in step 5c; Toggle Bad needs a channel to act on.
+        // Toggle Bad needs a channel to act on.
         let now = match action {
             Action::ToggleBad => self.channel,
-            Action::Settings => false,
             _ => true,
         };
         action.enabled(self.ready) && now
@@ -464,7 +510,10 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
         options,
         Box::new(|cc| {
             let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
-            let options = Options::default();
+            let options = Options {
+                settings: Settings::load(cc.storage),
+                ..Options::default()
+            };
             let native = options.menus == Menus::Native;
             #[allow(unused_mut)]
             let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);

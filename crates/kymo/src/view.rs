@@ -11,7 +11,7 @@ use kymo_core::{ChannelId, ChannelKind, Recording};
 
 use crate::action::{Action, Gesture};
 
-/// Seconds shown at first and after [`Action::DefaultWindow`].
+/// Seconds shown at first and after [`Action::DefaultWindow`], unless set otherwise.
 pub const DEFAULT_SPAN: f64 = 20.0;
 /// Channel rows shown at first, as MNE's `n_channels`.
 pub const DEFAULT_ROWS: usize = 20;
@@ -73,6 +73,8 @@ pub struct ViewState {
     to_si: Vec<Option<f64>>,
     start: f64,
     span: f64,
+    /// Seconds shown at first and after [`Action::DefaultWindow`].
+    default_span: f64,
     /// The first row on screen; fractional while scrolling smoothly.
     top: f64,
     /// Rows on screen as last chosen; fewer while fewer channels are shown.
@@ -92,6 +94,12 @@ impl ViewState {
     /// [`DEFAULT_SPAN`] from the start (or the whole recording if shorter), the first
     /// [`DEFAULT_ROWS`] channels, default amplitudes, DC removal off, no bad channels.
     pub fn new(recording: &Recording) -> Self {
+        Self::with_default_span(recording, DEFAULT_SPAN)
+    }
+
+    /// As [`new`](Self::new), showing `seconds` at first and after
+    /// [`Action::DefaultWindow`].
+    pub fn with_default_span(recording: &Recording, seconds: f64) -> Self {
         let channels = recording.channels();
         let rate = recording.sfreq();
         let mut state = ViewState {
@@ -107,6 +115,7 @@ impl ViewState {
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
             start: 0.0,
             span: DEFAULT_SPAN,
+            default_span: DEFAULT_SPAN,
             top: 0.0,
             rows: DEFAULT_ROWS,
             amplitudes: KINDS.map(default_amplitude),
@@ -117,6 +126,8 @@ impl ViewState {
             requested: None,
             dc_requested: None,
         };
+        state.set_default_span(seconds);
+        state.span = state.default_span;
         state.clamp();
         state
     }
@@ -228,7 +239,7 @@ impl ViewState {
             Action::ZoomIn => self.zoom(ZOOM_STEP, 0.5),
             Action::ZoomOut => self.zoom(1.0 / ZOOM_STEP, 0.5),
             Action::DefaultWindow => {
-                self.span = DEFAULT_SPAN;
+                self.span = self.default_span;
                 self.clamp();
             }
             Action::Fit => {
@@ -334,6 +345,18 @@ impl ViewState {
                 *amplitude /= factor;
             }
         }
+    }
+
+    /// Seconds [`Action::DefaultWindow`] shows from now on; the window shown now stays.
+    /// Values that aren't positive and finite are ignored.
+    pub fn set_default_span(&mut self, seconds: f64) {
+        if seconds.is_finite() && seconds > 0.0 {
+            self.default_span = seconds;
+        }
+    }
+
+    pub fn default_span(&self) -> f64 {
+        self.default_span
     }
 
     pub fn set_dc_removed(&mut self, on: bool) {

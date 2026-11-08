@@ -415,6 +415,29 @@ fn bad_channels_stay_bad_while_hidden() {
 }
 
 #[test]
+fn the_default_window_can_be_set() {
+    let rec = recording(4, 600);
+    let mut view = ViewState::with_default_span(&rec, 7.5);
+    assert_time(&view, 0.0..7.5);
+    assert_eq!(view.default_span(), 7.5);
+    view.pan(100.0);
+    act(&mut view, Action::ZoomOut);
+    // A new default leaves the window alone until Default Window.
+    view.set_default_span(30.0);
+    assert_time(&view, 96.25..111.25);
+    act(&mut view, Action::DefaultWindow);
+    assert_time(&view, 96.25..126.25);
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        view.set_default_span(bad);
+        assert_eq!(view.default_span(), 30.0, "{bad}");
+    }
+    // Longer than the recording: all of it.
+    let short = recording(1, 5);
+    assert_time(&ViewState::with_default_span(&short, 60.0), 0.0..5.0);
+    assert_time(&ViewState::with_default_span(&short, f64::NAN), 0.0..5.0);
+}
+
+#[test]
 fn leaves_other_actions_to_the_app() {
     let (_, mut view) = state();
     for action in [

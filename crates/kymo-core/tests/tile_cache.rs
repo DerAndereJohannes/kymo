@@ -60,6 +60,13 @@ impl Model {
         true
     }
 
+    fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        while self.bytes() > budget {
+            self.items.remove(0);
+        }
+    }
+
     fn remove(&mut self, time: u64) -> bool {
         self.position(time).map(|p| self.items.remove(p)).is_some()
     }
@@ -75,6 +82,7 @@ enum Op {
     Get(u64),
     Remove(u64),
     Clear,
+    Budget(usize),
 }
 
 fn ops() -> impl Strategy<Value = Vec<Op>> {
@@ -83,13 +91,14 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         8 => (0..KEYS).prop_map(Op::Get),
         2 => (0..KEYS).prop_map(Op::Remove),
         1 => Just(Op::Clear),
+        1 => (0..25_000usize).prop_map(Op::Budget),
     ];
     proptest::collection::vec(op, 0..200)
 }
 
 proptest! {
-    /// Random operation sequences behave exactly like the reference LRU list, and the cache
-    /// never holds more than its budget.
+    /// Random operation sequences, budget changes included, behave exactly like the
+    /// reference LRU list, and the cache never holds more than its budget.
     #[test]
     fn cache_matches_reference_lru(budget in 0..25_000usize, ops in ops()) {
         let cache = TileCache::new(budget);
@@ -112,8 +121,13 @@ proptest! {
                     cache.clear();
                     model.items.clear();
                 }
+                Op::Budget(budget) => {
+                    cache.set_budget(budget);
+                    model.set_budget(budget);
+                }
             }
-            prop_assert!(cache.bytes() <= budget);
+            prop_assert_eq!(cache.budget(), model.budget);
+            prop_assert!(cache.bytes() <= model.budget);
             prop_assert_eq!(cache.bytes(), model.bytes());
             prop_assert_eq!(cache.len(), model.items.len());
             for t in 0..KEYS {

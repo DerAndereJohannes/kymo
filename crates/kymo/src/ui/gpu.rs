@@ -69,6 +69,24 @@ impl Gpu {
         Some(resources.renderer.gpu_bytes())
     }
 
+    /// The budget for tiles on the GPU.
+    pub fn budget(&self) -> Option<usize> {
+        let state = self.state.as_ref()?;
+        let renderer = state.renderer.read();
+        let resources = renderer.callback_resources.get::<Resources>()?;
+        Some(resources.renderer.budget())
+    }
+
+    /// Sets the budget for tiles on the GPU; tiles beyond it go at the next frame.
+    pub fn set_budget(&self, bytes: usize) {
+        if let Some(state) = &self.state {
+            let mut renderer = state.renderer.write();
+            if let Some(resources) = renderer.callback_resources.get_mut::<Resources>() {
+                resources.renderer.set_budget(bytes);
+            }
+        }
+    }
+
     /// Paints `frame` into `rect`, which must lie on whole physical pixels and measure
     /// `frame.size` of them. `serial` names the recording: tile keys don't, so the
     /// renderer drops its tiles when it changes.
