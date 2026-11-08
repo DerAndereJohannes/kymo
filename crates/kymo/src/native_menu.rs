@@ -3,7 +3,8 @@
 //! On macOS the menu takes its items' ⌘ shortcuts as key equivalents, so the system hands
 //! them to the menu (and flashes its title) before the window sees the key. Every menu
 //! shortcut has ⌘ for that reason: a macOS menu item can only show a key by taking it, and
-//! a bare key taken by the menu would never reach a text field. On Windows every item shows its shortcut after a tab, and egui handles the keys (see
+//! a bare key taken by the menu would never reach a text field. On Windows every item shows
+//! its shortcut after a tab, and egui handles the keys (see
 //! [`Platform::menu_takes_shortcuts`]).
 
 use std::collections::HashMap;

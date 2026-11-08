@@ -4,7 +4,8 @@ use std::mem::size_of;
 use std::ops::Range;
 
 use super::TileKey;
-use crate::{Sample, SampleType};
+use crate::SampleType;
+use crate::sample::NativeSample;
 
 /// The values of a tile in the grid's native sample type, channel-major.
 ///
@@ -85,52 +86,9 @@ impl TileSlice<'_> {
     }
 }
 
-/// Native sample types that can be stored in a [`TileData`].
-pub(crate) trait TileSample: Sample {
-    fn into_data(values: Box<[Self]>) -> TileData;
-    /// The value with only the bits of `mask` kept, as a stim code.
-    fn masked(self, mask: u32) -> Self;
-}
-
-impl TileSample for i16 {
-    fn into_data(values: Box<[Self]>) -> TileData {
-        TileData::I16(values)
-    }
-
-    fn masked(self, mask: u32) -> Self {
-        // Reinterpreting the bits: the mask applies to the two's-complement value.
-        self & mask as i16
-    }
-}
-
-impl TileSample for i32 {
-    fn into_data(values: Box<[Self]>) -> TileData {
-        TileData::I32(values)
-    }
-
-    fn masked(self, mask: u32) -> Self {
-        self & mask as i32
-    }
-}
-
-impl TileSample for f32 {
-    fn into_data(values: Box<[Self]>) -> TileData {
-        TileData::F32(values)
-    }
-
-    /// Truncated toward zero and saturated as an integer first; NaN stays NaN.
-    fn masked(self, mask: u32) -> Self {
-        if self.is_nan() {
-            self
-        } else {
-            (self as i32 & mask as i32) as f32
-        }
-    }
-}
-
 /// Masks the rows (`len` values each) of the channels in `channels` that have a
 /// [`trigger_mask`](crate::Channel::trigger_mask).
-pub(crate) fn mask_rows<T: TileSample>(
+pub(crate) fn mask_rows<T: NativeSample>(
     recording: &crate::Recording,
     channels: &[crate::ChannelId],
     rows: &mut [T],

@@ -97,13 +97,17 @@ pub struct GridSummary {
 impl GridSummary {
     /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels".
     pub fn describe(&self) -> String {
-        let mut s = format!(
-            "{} Hz, {} samples, {} channel{}",
-            self.rate,
-            self.samples,
-            self.channels.len(),
-            plural(self.channels.len()),
-        );
+        self.text(true)
+    }
+
+    /// The rate, with the samples and channels if `sizes`, and the segments if more than
+    /// one.
+    fn text(&self, sizes: bool) -> String {
+        let mut s = format!("{} Hz", self.rate);
+        if sizes {
+            let n = self.channels.len();
+            s += &format!(", {} samples, {n} channel{}", self.samples, plural(n));
+        }
         if self.segments != 1 {
             s += &format!(", {} segments", self.segments);
         }
@@ -115,7 +119,8 @@ impl Summary {
     /// The sidebar's rows, key and value. With one grid its sample count goes with the
     /// duration, leaving the rate (and gaps) for "Sampling"; several grids each keep their
     /// samples and channels. No sample type: for EDF and BDF the format implies it, and
-    /// ours is the type in memory (BDF's int24 is widened to int32), not the file's.
+    /// ours is the type in memory (BDF's int24 is widened to int32), not the file's. No
+    /// annotation count: the legend has it, with the stim channels' annotations.
     pub fn sidebar_rows(&self) -> Vec<(String, String)> {
         let mut duration = format_duration(self.duration);
         if let [grid] = &self.grids[..] {
@@ -129,28 +134,15 @@ impl Summary {
             ),
             ("Duration".to_owned(), duration),
             ("Channels".to_owned(), self.channels.to_string()),
-            ("Annotations".to_owned(), self.annotations.to_string()),
         ];
         let single = self.grids.len() == 1;
         for (i, grid) in self.grids.iter().enumerate() {
-            let mut value = format!("{} Hz", grid.rate);
-            if !single {
-                value += &format!(
-                    ", {} samples, {} channel{}",
-                    grid.samples,
-                    grid.channels.len(),
-                    plural(grid.channels.len())
-                );
-            }
-            if grid.segments != 1 {
-                value += &format!(", {} segments", grid.segments);
-            }
             let key = if single {
                 "Sampling".to_owned()
             } else {
                 format!("Grid {}", i + 1)
             };
-            rows.push((key, value));
+            rows.push((key, grid.text(!single)));
         }
         rows
     }
@@ -374,14 +366,7 @@ mod tests {
         let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             keys,
-            [
-                "Format",
-                "Start",
-                "Duration",
-                "Channels",
-                "Annotations",
-                "Sampling"
-            ]
+            ["Format", "Start", "Duration", "Channels", "Sampling"]
         );
         let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
         assert_eq!(value("Format"), "BDF+C");

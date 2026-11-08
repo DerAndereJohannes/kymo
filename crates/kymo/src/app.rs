@@ -495,16 +495,27 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     clicked
 }
 
-/// Builds the native menu bar and puts it in place, once the window exists.
+/// Builds the native menu bar, puts it in place and hands it to `app`, once the window
+/// exists. If that fails, egui draws the menu bar.
 #[cfg(any(target_os = "macos", windows))]
-fn install_native_menu(cc: &eframe::CreationContext<'_>) -> Result<NativeMenu> {
-    let menu = NativeMenu::new(Platform::current(), &cc.egui_ctx)?;
-    #[cfg(target_os = "macos")]
-    menu.install();
-    #[cfg(windows)]
-    menu.install(cc)?;
-    Ok(menu)
+fn attach_native_menu(app: &mut KymoApp, cc: &eframe::CreationContext<'_>) {
+    let install = || -> Result<NativeMenu> {
+        let menu = NativeMenu::new(Platform::current(), &cc.egui_ctx)?;
+        #[cfg(target_os = "macos")]
+        menu.install();
+        #[cfg(windows)]
+        menu.install(cc)?;
+        Ok(menu)
+    };
+    match install() {
+        Ok(menu) => app.set_native_menu(menu),
+        Err(error) => eprintln!("kymo: no native menu bar: {error}"),
+    }
 }
+
+/// No native menu bar on this platform: egui draws one.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn attach_native_menu(_: &mut KymoApp, _: &eframe::CreationContext<'_>) {}
 
 /// Starts the window and runs until it closes.
 pub fn run(path: Option<PathBuf>) -> Result<()> {
@@ -531,18 +542,10 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
                 ..Options::default()
             };
             let native = options.menus == Menus::Native;
-            #[allow(unused_mut)]
             let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
-            #[cfg(any(target_os = "macos", windows))]
             if native {
-                // Without a native menu bar, egui draws one.
-                match install_native_menu(cc) {
-                    Ok(menu) => app.set_native_menu(menu),
-                    Err(error) => eprintln!("kymo: no native menu bar: {error}"),
-                }
+                attach_native_menu(&mut app, cc);
             }
-            #[cfg(not(any(target_os = "macos", windows)))]
-            let _ = native;
             Ok(Box::new(app))
         }),
     )

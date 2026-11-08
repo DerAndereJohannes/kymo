@@ -193,10 +193,7 @@ impl Viewer {
     }
 
     fn service(&self) -> &TileService {
-        // Only taken in `drop`.
-        self.service
-            .as_ref()
-            .expect("the tile service lives as long as the viewer")
+        live(&self.service)
     }
 
     /// The physical value drawn at the middle of `channel`'s row: its mean over the window
@@ -262,10 +259,7 @@ impl Viewer {
         let Some(stim) = &mut self.stim else {
             return;
         };
-        let service = self
-            .service
-            .as_ref()
-            .expect("the tile service lives as long as the viewer");
+        let service = live(&self.service);
         let rec = &self.document.recording;
         let changes = || -> Vec<kymo_core::stim::StimChanges> {
             (0..rec.grids().len() as u32)
@@ -414,10 +408,7 @@ impl Viewer {
         // Tiles: ask for what's missing, draw what's cached.
         self.width_px = size_px[0];
         let rec = &self.document.recording;
-        let service = self
-            .service
-            .as_ref()
-            .expect("the tile service lives as long as the viewer");
+        let service = live(&self.service);
         let budget = service.cache().budget() / PREFETCH_SHARE;
         if let Some((generation, keys)) = self.view.request(rec, size_px[0], budget) {
             service.submit(generation, keys);
@@ -663,6 +654,14 @@ impl Drop for Viewer {
                 .spawn(move || drop(service));
         }
     }
+}
+
+/// The viewer's tile service, borrowed on its own so other fields can be borrowed mutably
+/// beside it. Only `drop` takes it.
+fn live(service: &Option<TileService>) -> &TileService {
+    service
+        .as_ref()
+        .expect("the tile service lives as long as the viewer")
 }
 
 /// An egui colour as the renderer's premultiplied RGBA.

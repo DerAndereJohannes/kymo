@@ -50,6 +50,14 @@ pub fn open(path: &std::path::Path) -> Result<Opened, OpenError> {
     }
 }
 
+/// Locks `mutex`, poisoned or not: every critical section in this crate leaves its state
+/// consistent before anything could panic.
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Version of this crate, as set in `Cargo.toml`.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

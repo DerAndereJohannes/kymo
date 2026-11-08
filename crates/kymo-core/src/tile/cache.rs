@@ -1,7 +1,7 @@
 //! The in-memory tile cache: least recently used tiles go first once the byte budget is full.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{Tile, TileKey};
 
@@ -127,9 +127,7 @@ impl TileCache {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        // Every operation leaves the state consistent before it could panic, so a poisoned
-        // lock still guards a valid cache.
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::lock(&self.inner)
     }
 }
 

@@ -2,7 +2,8 @@
 
 use std::ops::Range;
 
-use super::{ChannelBlock, Level, SignalVersion, Tile, TileData, TileKey, TileSample, mask_rows};
+use super::{ChannelBlock, Level, SignalVersion, Tile, TileData, TileKey, mask_rows};
+use crate::sample::NativeSample;
 use crate::{ChannelId, GridId, ReadError, Recording, SampleType, TileError};
 
 /// Decodes the level-0 tile `key` from the recording: native samples (masked codes for
@@ -45,7 +46,7 @@ pub fn compute_raw(recording: &Recording, key: TileKey) -> Result<Tile, TileErro
     Ok(Tile::new(key, channels.len() as u32, len, data, valid))
 }
 
-fn read<T: TileSample>(
+fn read<T: NativeSample>(
     recording: &Recording,
     grid: GridId,
     channels: &[ChannelId],

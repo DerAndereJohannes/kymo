@@ -4,8 +4,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::{MemStorage, Pyramid, PyramidStorage};
+use crate::sample::NativeSample;
 use crate::stim::Scanner;
-use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, TileSample, max_level};
+use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, max_level};
 use crate::{ChannelKind, GridId, ReadError, Recording, Sample, SampleType};
 
 /// By default a step reads 10 s of samples or 16 MB, whichever is longer, but at most
@@ -196,7 +197,7 @@ struct Partial<T> {
 
 const TILE: usize = TILE_LEN as usize;
 
-impl<T: Fold> Levels<T> {
+impl<T: NativeSample> Levels<T> {
     fn new(channels: usize, len: u64, stim: Vec<(usize, Scanner)>) -> Self {
         let top = max_level(len);
         let mut tiles = Vec::new();
@@ -442,71 +443,6 @@ impl<T: Fold> Levels<T> {
             }
             l += 1;
         }
-    }
-}
-
-/// The per-sample kernels of the build, one per sample type so that they vectorise.
-trait Fold: TileSample {
-    /// `acc` plus the sum of `xs`, which lie inside one block. Exact for integers; for
-    /// floats the samples are added one by one, in order.
-    fn sum(xs: &[Self], acc: f64) -> f64;
-    /// `(min, max)` extended by `xs`. NaN never becomes a min or max.
-    fn min_max(xs: &[Self], min: Self, max: Self) -> (Self, Self);
-    /// The value as a stim code.
-    fn code(self) -> i32;
-}
-
-impl Fold for i16 {
-    fn code(self) -> i32 {
-        i32::from(self)
-    }
-
-    fn sum(xs: &[i16], acc: f64) -> f64 {
-        debug_assert!(xs.len() <= TILE);
-        // At most 4096 · 2^15 = 2^27 in magnitude: exact in i32, then exact in f64.
-        acc + f64::from(xs.iter().map(|&x| i32::from(x)).sum::<i32>())
-    }
-
-    fn min_max(xs: &[i16], min: i16, max: i16) -> (i16, i16) {
-        let lo = xs.iter().copied().fold(min, Ord::min);
-        let hi = xs.iter().copied().fold(max, Ord::max);
-        (lo, hi)
-    }
-}
-
-impl Fold for i32 {
-    fn code(self) -> i32 {
-        self
-    }
-
-    fn sum(xs: &[i32], acc: f64) -> f64 {
-        debug_assert!(xs.len() <= TILE);
-        // At most 4096 · 2^31 = 2^43 in magnitude: exact in i64 and in f64.
-        acc + xs.iter().map(|&x| i64::from(x)).sum::<i64>() as f64
-    }
-
-    fn min_max(xs: &[i32], min: i32, max: i32) -> (i32, i32) {
-        let lo = xs.iter().copied().fold(min, Ord::min);
-        let hi = xs.iter().copied().fold(max, Ord::max);
-        (lo, hi)
-    }
-}
-
-impl Fold for f32 {
-    /// Truncated toward zero and saturated; NaN is 0.
-    fn code(self) -> i32 {
-        self as i32
-    }
-
-    fn sum(xs: &[f32], acc: f64) -> f64 {
-        xs.iter().fold(acc, |sum, &x| sum + f64::from(x))
-    }
-
-    fn min_max(xs: &[f32], min: f32, max: f32) -> (f32, f32) {
-        // NaN compares false either way and never replaces the bound.
-        xs.iter().fold((min, max), |(lo, hi), &x| {
-            (if x < lo { x } else { lo }, if x > hi { x } else { hi })
-        })
     }
 }
 

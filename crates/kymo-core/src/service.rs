@@ -22,7 +22,7 @@ use crate::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage, Sideca
 use crate::tile::{
     DEFAULT_BUDGET, Level, SignalVersion, TILE_LEN, Tile, TileCache, TileKey, compute_raw,
 };
-use crate::{ChannelId, GridId, Recording, TileError};
+use crate::{ChannelId, GridId, Recording, TileError, lock};
 
 /// Where the pyramid is kept.
 #[derive(Clone, Debug)]
@@ -571,9 +571,4 @@ impl Shared {
 enum Job {
     Tile(TileKey),
     Mean(ChannelId, Range<u64>),
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Every critical section leaves the state consistent before anything could panic.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

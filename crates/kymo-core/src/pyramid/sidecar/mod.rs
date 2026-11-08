@@ -35,10 +35,11 @@ use map::SharedMap;
 use super::{Pyramid, PyramidBuilder, PyramidStorage};
 use crate::stim::Change;
 use crate::tile::{Level, TILE_LEN, TileData, max_level};
-use crate::{Grid, GridId, ReadError, Recording, SampleType};
+use crate::{Grid, GridId, ReadError, Recording, SampleType, lock};
 
 const MAGIC: &[u8; 8] = b"KYMOPYR\0";
-/// 3: the envelopes of channels with a trigger mask hold the masked codes.
+/// Bump whenever the layout or the meaning of the contents changes: it is part of the file
+/// name, so a sidecar of another version is never opened, just rebuilt.
 const VERSION: u32 = 3;
 const TRAILER_MAGIC: &[u8; 8] = b"KYMOSTIM";
 /// Bytes per stored change: sample (u64), value (i32), padding.
@@ -378,10 +379,6 @@ impl Inner {
     fn state(&self) -> MutexGuard<'_, State> {
         lock(&self.state)
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Where the trailer starts: after the `total` bytes of header and grids, 64-aligned.
