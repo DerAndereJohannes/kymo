@@ -15,7 +15,7 @@ use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
 use kymo::settings::Settings;
 use kymo::ui::gpu::Gpu;
-use kymo::ui::palette::trace_color;
+use kymo::ui::palette::{annotation_color, trace_color};
 use kymo::viewer::Viewer;
 
 /// A generated recording in the temp directory, deleted on drop. Declare it before the
@@ -822,6 +822,79 @@ fn the_channel_list_right_aligns_rates() {
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
+/// The legend lists every description with its count; its checkboxes show and hide
+/// annotations by description, or all at once.
+#[test]
+fn the_legend_shows_and_hides_annotations() {
+    use egui::accesskit::{Role, Toggled};
+    // In the first 20 s: "event 0" (an event, colour 0), "sleep stage N2" (2.5 s, colour 1),
+    // and "eyes closed" and "Elektrodenprüfung µV" (events at 15 s, colours 2 and 3; one
+    // label, as the second would overlap the first).
+    let file = TempFile::preset("edf+d-mixed");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    // 20 "event k", 7 "stim k", and three more.
+    assert_eq!(viewer(&harness).legend().shown_count(), (30, 30));
+    let colors = |harness: &Harness<'_, KymoApp>| {
+        let marks = viewer(harness).marks();
+        let mut bands: Vec<usize> = marks.bands.iter().map(|m| m.color).collect();
+        let mut lines: Vec<usize> = marks.lines.iter().map(|m| m.color).collect();
+        bands.sort();
+        lines.sort();
+        (bands, lines, marks.labels.len())
+    };
+    assert_eq!(colors(&harness), (vec![1], vec![0, 2, 3], 3));
+    assert!(harness.query_by_label("sleep stage N2").is_some());
+    assert!(harness.query_by_label("Elektrodenprüfung µV").is_some());
+    assert_eq!(
+        viewer(&harness)
+            .legend()
+            .entry("sleep stage N2")
+            .unwrap()
+            .count,
+        20
+    );
+
+    click_in_list(&mut harness, Role::CheckBox, "Show sleep stage N2");
+    assert_eq!(colors(&harness), (vec![], vec![0, 2, 3], 2));
+    assert_eq!(viewer(&harness).legend().shown_count(), (29, 30));
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Annotations"),
+        Toggled::Mixed
+    );
+
+    // A mixed box shows them all; then it hides them all.
+    click_in_list(&mut harness, Role::CheckBox, "Annotations");
+    assert_eq!(colors(&harness), (vec![1], vec![0, 2, 3], 3));
+    click_in_list(&mut harness, Role::CheckBox, "Annotations");
+    assert_eq!(colors(&harness), (vec![], vec![], 0));
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show event 0"),
+        Toggled::False
+    );
+}
+
+/// Without annotations there is no legend.
+#[test]
+fn recordings_without_annotations_have_no_legend() {
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.annotations.clear();
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let role = egui::accesskit::Role::CheckBox;
+    assert!(
+        harness
+            .query_by_role_and_label(role, "Annotations")
+            .is_none()
+    );
+    assert_eq!(
+        viewer(&harness).marks(),
+        &kymo::annotations::Marks::default()
+    );
+}
+
 #[test]
 fn the_sidebar_hides_and_shows() {
     let file = TempFile::preset("bdf+c-small");
@@ -1203,7 +1276,71 @@ fn stim_traces_stay_in_their_row() {
     check(&counts(&mut harness));
 }
 
-/// Whether a pixel is within a small distance of `color`.
+/// Bands tint the background behind the traces, which keep their colour; event lines are
+/// solid.
+#[test]
+fn annotations_lie_behind_the_traces() {
+    let Some(setup) = gpu_setup() else { return };
+    // In the first 20 s: "trigger 0" at 0.5 s (colour 0), "trigger 1" from 5.5 s to 6.5 s
+    // (colour 1), and so on.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = gpu_window(&file.0, setup);
+    ready(&mut harness);
+    let visuals = harness.ctx.global_style().visuals.clone();
+    let marks = viewer(&harness).marks().clone();
+    let traces = viewer(&harness).layout().unwrap().traces;
+    let (width, height) = (traces.width() as usize, traces.height() as usize);
+    let image = traces_image(&mut harness);
+    let column =
+        |c: u32| -> Vec<[u8; 4]> { (0..height).map(|y| image[y * width + c as usize]).collect() };
+    let mode = |pixels: &[[u8; 4]]| -> [u8; 4] {
+        let mut counts = std::collections::HashMap::new();
+        for p in pixels {
+            *counts.entry(*p).or_insert(0) += 1;
+        }
+        counts.into_iter().max_by_key(|&(_, n)| n).unwrap().0
+    };
+    let distance = |p: [u8; 4], c: egui::Color32| {
+        let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
+        d(p[0], c.r()) + d(p[1], c.g()) + d(p[2], c.b())
+    };
+
+    let band = marks.bands.iter().find(|b| b.color == 1).unwrap().clone();
+    assert!(band.columns.len() > 10, "{band:?}");
+    let marked = |c: u32| {
+        marks
+            .bands
+            .iter()
+            .chain(&marks.lines)
+            .any(|m| m.columns.start <= c + 2 && c < m.columns.end + 2)
+    };
+    let plain = (0..width as u32).find(|&c| !marked(c)).unwrap();
+    let background = mode(&column(plain));
+    let tinted = mode(&column((band.columns.start + band.columns.end) / 2));
+    let band_color = annotation_color(1, &visuals);
+    assert!(
+        tinted != background && distance(tinted, band_color) < distance(background, band_color),
+        "band {tinted:?}, background {background:?}"
+    );
+    // The traces cross the band in their own colour.
+    let trace = trace_color(kymo_core::ChannelKind::Eeg, &visuals);
+    let on_top = band
+        .columns
+        .clone()
+        .flat_map(column)
+        .filter(|&p| distance(p, trace) < 12)
+        .count();
+    assert!(on_top > 20, "{on_top} trace pixels in the band");
+
+    let line = marks.lines.iter().find(|l| l.color == 0).unwrap();
+    let solid = mode(&column(line.columns.start));
+    assert!(
+        distance(solid, annotation_color(0, &visuals)) < 12,
+        "line {solid:?}"
+    );
+}
+
+/// Whether a pixel is within a small distance of `color`./// Whether a pixel is within a small distance of `color`.
 fn near(pixel: &[u8; 4], color: egui::Color32) -> bool {
     let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
     d(pixel[0], color.r()) + d(pixel[1], color.g()) + d(pixel[2], color.b()) < 40

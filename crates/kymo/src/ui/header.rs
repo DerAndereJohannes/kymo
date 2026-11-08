@@ -6,8 +6,9 @@ use eframe::egui::{
 };
 use kymo_core::{ChannelId, ChannelKind};
 
+use crate::annotations::Legend;
 use crate::document::{Document, Summary, plural};
-use crate::ui::palette::{bad_color, trace_color};
+use crate::ui::palette::{annotation_color, bad_color, trace_color};
 use crate::view::{KINDS, ViewState};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
@@ -23,13 +24,18 @@ pub fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
     inner
 }
 
-/// File header and channel list, which shows and hides channels and marks them bad in
-/// `view`. Returns whether Open was clicked.
+/// Rows of the annotation legend shown before it scrolls.
+const LEGEND_ROWS: f32 = 8.0;
+
+/// File header, annotation legend and channel list. The legend shows and hides annotations
+/// by description in `legend`; the channel list shows and hides channels and marks them bad
+/// in `view`. Returns whether Open was clicked.
 pub fn header_panel(
     ui: &mut Ui,
     document: &Document,
     summary: &Summary,
     view: &mut ViewState,
+    legend: &mut Legend,
 ) -> bool {
     let mut open_clicked = false;
     ui.add_space(6.0);
@@ -88,6 +94,10 @@ pub fn header_panel(
     ui.separator();
     kind_list(ui, view);
     ui.separator();
+    if !legend.is_empty() {
+        legend_list(ui, legend);
+        ui.separator();
+    }
     channel_list(ui, document, view);
     open_clicked
 }
@@ -115,6 +125,64 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
                 let count = format!("{shown} of {all} shown");
                 ui.add(Label::new(RichText::new(count).weak()).extend());
                 ui.end_row();
+            }
+        });
+}
+
+/// A checkbox for all annotations (mixed while some are shown), then a row per
+/// description: a checkbox, its colour, the description and how many annotations have it.
+/// Scrolls beyond [`LEGEND_ROWS`] rows.
+fn legend_list(ui: &mut Ui, legend: &mut Legend) {
+    let (shown, all) = legend.shown_count();
+    ui.horizontal(|ui| {
+        let mut checked = shown == all;
+        let checkbox =
+            Checkbox::new(&mut checked, "Annotations").indeterminate(0 < shown && shown < all);
+        if ui.add(checkbox).changed() {
+            legend.set_all_shown(checked);
+        }
+        let count = format!("{shown} of {all} shown");
+        ui.add(Label::new(RichText::new(count).weak()).extend());
+    });
+    let row_height = ui.spacing().interact_size.y;
+    let max_height = LEGEND_ROWS * (row_height + ui.spacing().item_spacing.y);
+    let entries: Vec<(String, usize, usize, bool)> = legend
+        .entries()
+        .map(|e| (e.description.clone(), e.color, e.count, e.shown))
+        .collect();
+    ScrollArea::vertical()
+        .id_salt("legend")
+        .max_height(max_height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (description, color, count, shown) in entries {
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
+                let mut row = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::right_to_left(Align::Center)),
+                );
+                // The count first, at the right, so a long description truncates.
+                row.add(Label::new(RichText::new(count.to_string()).weak()).extend());
+                row.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let mut checked = shown;
+                    let response = ui.add(Checkbox::without_text(&mut checked));
+                    accessible_label(ui, &response, format!("Show {description}"));
+                    if response.changed() {
+                        legend.set_shown(&description, checked);
+                    }
+                    let side = ui.text_style_height(&TextStyle::Body) * 0.7;
+                    let (swatch, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                    let color = annotation_color(color, ui.visuals());
+                    ui.painter().rect_filled(swatch, 2.0, color);
+                    let text = if shown {
+                        RichText::new(&description)
+                    } else {
+                        RichText::new(&description).weak()
+                    };
+                    ui.add(Label::new(text).truncate());
+                });
             }
         });
 }

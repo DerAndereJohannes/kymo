@@ -4,20 +4,21 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use eframe::egui::{
-    self, Align, Align2, Color32, Event, FontId, Pos2, Rect, Sense, TextStyle, Ui, pos2,
+    self, Align, Align2, Color32, Event, FontId, Pos2, Rangef, Rect, Sense, TextStyle, Ui, pos2,
 };
 use kymo_core::ChannelId;
 use kymo_core::service::TileService;
 use kymo_core::tile::query;
 
 use crate::action::Action;
+use crate::annotations::{self, Legend, Marks};
 use crate::document::{Document, Summary};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{header_panel, within_width};
-use crate::ui::palette::{bad_color, trace_color};
+use crate::ui::palette::{annotation_color, bad_color, trace_color};
 use crate::ui::{readout, scrollbar, status};
 use crate::view::{Area, ViewState};
 
@@ -33,6 +34,11 @@ const NAME_PADDING: f32 = 6.0;
 const TICK: f32 = 4.0;
 /// Room between axis labels beyond the widest label, in points.
 const LABEL_GAP: f32 = 24.0;
+/// Opacity of annotation bands.
+const BAND_ALPHA: f32 = 0.2;
+/// Room left of an annotation label, and between labels, in points.
+const ANNOTATION_LABEL_PAD: f32 = 3.0;
+const ANNOTATION_LABEL_GAP: f32 = 8.0;
 /// The share of the tile cache that tiles beyond the screen may take.
 const PREFETCH_SHARE: usize = 2;
 
@@ -79,6 +85,9 @@ pub struct Viewer {
     layout: Option<Layout>,
     /// Tiles the last frame wanted that weren't cached.
     missing: usize,
+    legend: Legend,
+    /// The annotation marks of the last frame.
+    marks: Marks,
 }
 
 impl Viewer {
@@ -88,6 +97,7 @@ impl Viewer {
         static SERIAL: AtomicU64 = AtomicU64::new(1);
         Viewer {
             summary: document.summary(),
+            legend: Legend::new(&document.annotations),
             view: ViewState::with_default_span(&document.recording, default_span),
             document,
             service: Some(service),
@@ -98,6 +108,7 @@ impl Viewer {
             names_width: None,
             layout: None,
             missing: 0,
+            marks: Marks::default(),
         }
     }
 
@@ -111,6 +122,16 @@ impl Viewer {
 
     pub fn hover(&self) -> Hover {
         self.hover
+    }
+
+    /// The annotations' descriptions, colours and whether they are shown.
+    pub fn legend(&self) -> &Legend {
+        &self.legend
+    }
+
+    /// The annotation marks of the last frame, in physical pixels of the trace area.
+    pub fn marks(&self) -> &Marks {
+        &self.marks
     }
 
     pub fn status(&self) -> &StatusLine {
@@ -179,7 +200,13 @@ impl Viewer {
                 .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
                 .show(ui, |ui| {
                     open_clicked = within_width(ui, |ui| {
-                        header_panel(ui, &self.document, &self.summary, &mut self.view)
+                        header_panel(
+                            ui,
+                            &self.document,
+                            &self.summary,
+                            &mut self.view,
+                            &mut self.legend,
+                        )
                     });
                 });
         }
@@ -345,6 +372,38 @@ impl Viewer {
             );
         }
 
+        // Annotations behind the traces; their labels go on top, below.
+        self.marks = annotations::marks(
+            &self.view,
+            &self.document.annotations,
+            &self.legend,
+            size_px[0],
+            |text| {
+                let width = ui.fonts_mut(|f| {
+                    f.layout_no_wrap(text.to_owned(), small.clone(), Color32::PLACEHOLDER)
+                        .size()
+                        .x
+                });
+                f64::from((width + ANNOTATION_LABEL_PAD + ANNOTATION_LABEL_GAP) * ppp)
+            },
+        );
+        let overlay = painter.with_clip_rect(traces);
+        let x_of = |column: u32| traces.left() + column as f32 / ppp;
+        let rect_of = |mark: &annotations::Mark| {
+            let y = annotations::span_y(&self.view, mark.span, area.height);
+            let top = traces.top();
+            let y = Rangef::new(top + y.start as f32, top + y.end as f32);
+            let x = Rangef::new(x_of(mark.columns.start), x_of(mark.columns.end));
+            Rect::from_x_y_ranges(x, y)
+        };
+        for band in &self.marks.bands {
+            let color = annotation_color(band.color, visuals).gamma_multiply(BAND_ALPHA);
+            overlay.rect_filled(rect_of(band), 0.0, color);
+        }
+        for line in &self.marks.lines {
+            overlay.rect_filled(rect_of(line), 0.0, annotation_color(line.color, visuals));
+        }
+
         let mut scene = Scene::from_view(&self.view, size_px, rgba(visuals.text_color()));
         for row in &mut scene.rows {
             row.color = rgba(self.channel_color(row.channel, visuals));
@@ -363,6 +422,19 @@ impl Viewer {
             );
             let pos = traces.center() - galley.size() / 2.0;
             painter.galley(pos, galley, visuals.error_fg_color);
+        }
+
+        for label in &self.marks.labels {
+            overlay.text(
+                pos2(
+                    traces.left() + label.x as f32 / ppp + ANNOTATION_LABEL_PAD,
+                    traces.top() + 1.0,
+                ),
+                Align2::LEFT_TOP,
+                &label.text,
+                small.clone(),
+                annotation_color(label.color, visuals),
+            );
         }
 
         // Channel names, centred on their rows.
