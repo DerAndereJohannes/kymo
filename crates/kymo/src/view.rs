@@ -305,7 +305,12 @@ impl ViewState {
             | Action::StimEveryChange
             | Action::StimFromZero
             | Action::StimIncreasing
-            | Action::ToggleInitialCode => return false,
+            | Action::ToggleInitialCode
+            | Action::ToggleEditing
+            | Action::Undo
+            | Action::Redo
+            | Action::DeleteAnnotation
+            | Action::Deselect => return false,
         }
         true
     }

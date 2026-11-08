@@ -647,6 +647,14 @@ fn typed_preset() -> TempFile {
 
 /// Clicks the sidebar widget labeled `label` (exactly, with `role`).
 fn click_in_list(harness: &mut Harness<'_, KymoApp>, role: egui::accesskit::Role, label: &str) {
+    // A row scrolled out of its list takes no clicks. Scrolled to at once, without
+    // the animation, which would leave it moving under the pointer.
+    harness
+        .ctx
+        .global_style_mut(|s| s.scroll_animation = egui::style::ScrollAnimation::none());
+    harness.get_by_role_and_label(role, label).scroll_to_me();
+    // One frame scrolls, the next lays the rows out there, the third hit-tests them.
+    harness.run_steps(3);
     harness.get_by_role_and_label(role, label).click();
     harness.run_steps(2);
 }
@@ -1677,6 +1685,409 @@ fn the_shortcut_overview_and_about_open() {
     choose(&mut harness, "Help", "About Kymo");
     assert!(harness.state().about_open());
     harness.get_by_label(kymo::ui::menus::ABOUT);
+}
+
+/// The point in the traces at time `t`, `dy` points below their top.
+fn at_time(harness: &Harness<'_, KymoApp>, t: f64, dy: f32) -> egui::Pos2 {
+    let traces = viewer(harness).layout().unwrap().traces;
+    let x = viewer(harness).view().x_at(t, f64::from(traces.width()));
+    egui::pos2(traces.left() + x as f32, traces.top() + dy)
+}
+
+/// A click in the traces at time `t`, near their top.
+fn click_at_time(harness: &mut Harness<'_, KymoApp>, t: f64) {
+    let p = at_time(harness, t, 20.0);
+    click(harness, p);
+}
+
+/// A primary drag from `from` to `to`, through the middle.
+fn drag(harness: &mut Harness<'_, KymoApp>, from: egui::Pos2, to: egui::Pos2) {
+    hover(harness, from);
+    harness.drag_at(from);
+    harness.step();
+    for pos in [from + (to - from) / 2.0, to] {
+        hover(harness, pos);
+    }
+    harness.drop_at(to);
+    harness.step();
+}
+
+/// The annotations made in the viewer: onset, duration and description.
+fn made(harness: &Harness<'_, KymoApp>) -> Vec<(f64, f64, String)> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::Viewer)
+        .inspect(|a| assert!(a.data.channels.is_empty()))
+        .map(|a| (a.data.onset, a.data.duration, a.data.description.clone()))
+        .collect()
+}
+
+fn press(harness: &mut Harness<'_, KymoApp>, modifiers: Modifiers, key: Key) {
+    harness.key_press_modifiers(modifiers, key);
+    harness.step();
+}
+
+fn selected_data(harness: &Harness<'_, KymoApp>) -> Option<kymo_core::AnnotationData> {
+    let viewer = viewer(harness);
+    let id = viewer.selected()?;
+    Some(viewer.document().annotations.get(id).unwrap().data.clone())
+}
+
+#[test]
+fn annotation_mode_creates_selects_and_deletes_with_undo() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let count = viewer(&harness).document().annotations.len();
+    assert!(!checked(&mut harness, "View", "Edit Annotations"));
+    assert!(!enabled(&mut harness, "Edit", "Undo"));
+    assert!(!enabled(&mut harness, "Edit", "Delete"));
+    press(&mut harness, command(), Key::E);
+    assert!(viewer(&harness).editing());
+    assert!(checked(&mut harness, "View", "Edit Annotations"));
+    let p = at_time(&harness, 12.0, 20.0);
+    hover(&mut harness, p);
+    let status = viewer(&harness).status().left.clone();
+    assert!(status.starts_with("Editing annotations · "), "{status}");
+
+    // A drag from right to left creates an annotation of all channels over its range,
+    // selected, and doesn't pan.
+    let (from, to) = (at_time(&harness, 4.0, 40.0), at_time(&harness, 2.0, 60.0));
+    drag(&mut harness, from, to);
+    let both = made(&harness);
+    assert_eq!(both.len(), 1, "{both:?}");
+    let x_tolerance = 1e-4;
+    assert!((both[0].0 - 2.0).abs() < x_tolerance, "{both:?}");
+    assert!((both[0].1 - 2.0).abs() < x_tolerance, "{both:?}");
+    assert_eq!(both[0].2, "BAD");
+    assert_eq!(viewer(&harness).document().annotations.len(), count + 1);
+    assert_eq!(viewer(&harness).view().time(), 0.0..20.0);
+    let id = viewer(&harness)
+        .selected()
+        .expect("the new annotation is selected");
+    let entry = viewer(&harness).legend().entry("BAD").unwrap().clone();
+    assert_eq!((entry.count, entry.shown), (1, true));
+    assert!(enabled(&mut harness, "Edit", "Undo"));
+    assert!(enabled(&mut harness, "Edit", "Delete"));
+    // Outlined, and named in the status line.
+    let outline = viewer(&harness).outline().unwrap();
+    let traces = viewer(&harness).layout().unwrap().traces;
+    assert!((outline.left() - to.x).abs() <= 1.0, "{outline:?} {to:?}");
+    assert!(
+        (outline.right() - from.x).abs() <= 1.0,
+        "{outline:?} {from:?}"
+    );
+    assert_eq!(outline.y_range(), traces.y_range());
+    hover(&mut harness, p);
+    let status = viewer(&harness).status().left.clone();
+    assert!(
+        status.starts_with("BAD at 0:02.000 for 2.000 s · "),
+        "{status}"
+    );
+
+    // A click away from annotations deselects; on it, selects.
+    click_at_time(&mut harness, 12.0);
+    assert_eq!(viewer(&harness).selected(), None);
+    assert_eq!(viewer(&harness).outline(), None);
+    assert!(!enabled(&mut harness, "Edit", "Delete"));
+    click_at_time(&mut harness, 3.0);
+    assert_eq!(viewer(&harness).selected(), Some(id));
+
+    // ⌫ deletes it; undo brings it back, selected; redo deletes it again.
+    press(&mut harness, Modifiers::NONE, Key::Backspace);
+    assert!(made(&harness).is_empty());
+    assert_eq!(viewer(&harness).selected(), None);
+    assert!(
+        viewer(&harness)
+            .legend()
+            .entries()
+            .all(|e| e.description != "BAD")
+    );
+    let shift_command = command() | Modifiers::SHIFT;
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(made(&harness), both);
+    assert_eq!(viewer(&harness).selected(), Some(id));
+    press(&mut harness, shift_command, Key::Z);
+    assert!(made(&harness).is_empty());
+    assert!(!enabled(&mut harness, "Edit", "Redo"));
+    assert!(enabled(&mut harness, "Edit", "Undo"));
+    // ⌘Y redoes too, Delete deletes too, and the menu items act.
+    choose(&mut harness, "Edit", "Undo");
+    assert_eq!(made(&harness), both);
+    press(&mut harness, Modifiers::NONE, Key::Delete);
+    assert!(made(&harness).is_empty());
+    choose(&mut harness, "Edit", "Undo");
+    click_at_time(&mut harness, 3.0);
+    choose(&mut harness, "Edit", "Delete");
+    assert!(made(&harness).is_empty());
+    press(&mut harness, command(), Key::Z);
+    press(&mut harness, command(), Key::Z);
+    // The creation undone: nothing left to undo.
+    assert!(made(&harness).is_empty());
+    assert_eq!(viewer(&harness).selected(), None);
+    assert!(!viewer(&harness).history().can_undo());
+    assert_eq!(viewer(&harness).document().annotations.len(), count);
+    press(&mut harness, command(), Key::Y);
+    assert_eq!(made(&harness), both);
+    assert_eq!(viewer(&harness).selected(), Some(id));
+    // Esc deselects.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(viewer(&harness).selected(), None);
+
+    // Out of annotation mode, clicks don't select, a drag pans, and undo still works.
+    click_at_time(&mut harness, 3.0);
+    assert_eq!(viewer(&harness).selected(), Some(id));
+    choose(&mut harness, "View", "Edit Annotations");
+    assert!(!viewer(&harness).editing());
+    assert_eq!(viewer(&harness).selected(), None);
+    click_at_time(&mut harness, 3.0);
+    assert_eq!(viewer(&harness).selected(), None);
+    hover(&mut harness, p);
+    assert!(
+        !viewer(&harness).status().left.contains("Editing"),
+        "{}",
+        viewer(&harness).status().left
+    );
+    let (from, to) = (at_time(&harness, 8.0, 40.0), at_time(&harness, 6.0, 40.0));
+    drag(&mut harness, from, to);
+    assert_eq!(made(&harness), both);
+    let time = viewer(&harness).view().time();
+    assert!((time.start - 2.0).abs() < 1e-3, "{time:?}");
+    press(&mut harness, command(), Key::Z);
+    assert!(made(&harness).is_empty());
+}
+
+#[test]
+fn short_drags_and_an_empty_description_create_nothing() {
+    let file = without_triggers("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    // Far enough to be a drag, but less than 3 points sideways.
+    let from = at_time(&harness, 12.0, 20.0);
+    drag(&mut harness, from, from + egui::vec2(2.5, 30.0));
+    assert!(made(&harness).is_empty());
+    assert!(!viewer(&harness).history().can_undo());
+    // Back to where it started: what it made is gone again.
+    let to = from + egui::vec2(40.0, 0.0);
+    hover(&mut harness, from);
+    harness.drag_at(from);
+    harness.step();
+    hover(&mut harness, to);
+    assert_eq!(made(&harness).len(), 1);
+    hover(&mut harness, from + egui::vec2(1.0, 20.0));
+    assert!(made(&harness).is_empty());
+    harness.drop_at(from + egui::vec2(1.0, 20.0));
+    harness.step();
+    assert!(made(&harness).is_empty());
+    assert!(!viewer(&harness).history().can_undo());
+    assert!(
+        viewer(&harness)
+            .legend()
+            .entries()
+            .all(|e| e.description != "BAD")
+    );
+
+    // Without a description, a drag makes nothing.
+    let field = "Description of new annotations";
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    press(&mut harness, command(), Key::A);
+    press(&mut harness, Modifiers::NONE, Key::Backspace);
+    assert_eq!(viewer(&harness).description(), "");
+    drag(&mut harness, from, to);
+    assert!(made(&harness).is_empty());
+    // A drag past the recording's start stops there.
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    harness.get_by_label(field).type_text("x");
+    harness.run_steps(2);
+    let start = at_time(&harness, 0.0, 20.0) - egui::vec2(30.0, 0.0);
+    let from = at_time(&harness, 1.0, 20.0);
+    drag(&mut harness, from, start);
+    let got = made(&harness);
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].0, got[0].2.as_str()), (0.0, "x"));
+    assert!((got[0].1 - 1.0).abs() < 1e-4, "{got:?}");
+    // And past its end, at the end.
+    press(&mut harness, Modifiers::NONE, Key::End);
+    let from = at_time(&harness, 59.0, 20.0);
+    let end = at_time(&harness, 60.0, 20.0) + egui::vec2(30.0, 0.0);
+    drag(&mut harness, from, end);
+    let got = made(&harness);
+    assert_eq!(got.len(), 2);
+    assert!((got[1].0 - 59.0).abs() < 1e-4, "{got:?}");
+    assert_eq!(got[1].0 + got[1].1, 60.0, "{got:?}");
+}
+
+#[test]
+fn clicks_select_the_shortest_editable_annotation() {
+    // File annotations "trigger 3" from 15.5 s to 16.5 s, events at 10.5 s and 20.5 s, and
+    // stim annotations from the Status channel.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let (a, b) = (at_time(&harness, 12.0, 40.0), at_time(&harness, 19.0, 40.0));
+    drag(&mut harness, a, b);
+    let (a, b) = (at_time(&harness, 13.0, 40.0), at_time(&harness, 14.0, 40.0));
+    drag(&mut harness, a, b);
+    assert_eq!(made(&harness).len(), 2);
+    let pick = |harness: &mut Harness<'_, KymoApp>, t: f64| {
+        click_at_time(harness, t);
+        selected_data(harness).map(|d| (d.description, d.duration.round(), d.origin))
+    };
+    use kymo_core::Origin::{File, Viewer};
+    assert_eq!(pick(&mut harness, 13.5), Some(("BAD".into(), 1.0, Viewer)));
+    assert_eq!(pick(&mut harness, 12.5), Some(("BAD".into(), 7.0, Viewer)));
+    // A file annotation inside the long one is shorter.
+    assert_eq!(
+        pick(&mut harness, 16.0),
+        Some(("trigger 3".into(), 1.0, File))
+    );
+
+    // Stim annotations can't be selected: a click on one alone deselects.
+    let stim = viewer(&harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::Stim)
+        .map(|a| a.data.onset)
+        .find(|&t| (1.0..9.0).contains(&t) && (t - 5.5).abs() > 0.5)
+        .expect("a stim annotation away from the file's");
+    let p = at_time(&harness, stim, 20.0);
+    hover(&mut harness, p);
+    assert!(
+        viewer(&harness).status().left.contains(" · "),
+        "{}",
+        viewer(&harness).status().left
+    );
+    assert_eq!(pick(&mut harness, stim), None);
+
+    // A hidden description can't be selected, and hiding it deselects.
+    assert!(pick(&mut harness, 13.5).is_some());
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+    harness.step();
+    assert_eq!(viewer(&harness).selected(), None);
+    assert_eq!(pick(&mut harness, 13.5), None);
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+    assert!(pick(&mut harness, 13.5).is_some());
+    // Creating one with a hidden description shows them.
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+    let (a, b) = (at_time(&harness, 2.0, 40.0), at_time(&harness, 3.0, 40.0));
+    drag(&mut harness, a, b);
+    assert!(viewer(&harness).legend().entry("BAD").unwrap().shown);
+    assert!(pick(&mut harness, 13.5).is_some());
+
+    // An event, "trigger 2", gets an outline around its line.
+    assert_eq!(
+        pick(&mut harness, 10.5),
+        Some(("trigger 2".into(), 0.0, File))
+    );
+    let outline = viewer(&harness).outline().unwrap();
+    let x = at_time(&harness, 10.5, 0.0).x;
+    assert!(outline.width() >= 4.0, "{outline:?}");
+    assert!(outline.x_range().contains(x), "{outline:?} {x}");
+}
+
+#[test]
+fn the_description_field_names_new_annotations() {
+    // Neither annotations nor stim channels: no legend until annotation mode.
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.annotations.clear();
+    spec.channels.retain(|c| !c.trigger);
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let field = "Description of new annotations";
+    assert!(harness.query_by_label(field).is_none());
+    press(&mut harness, command(), Key::E);
+    let role = egui::accesskit::Role::CheckBox;
+    assert!(
+        harness
+            .query_by_role_and_label(role, "Annotations")
+            .is_none()
+    );
+    assert_eq!(
+        harness.get_by_label(field).value().as_deref(),
+        Some(kymo::viewer::DEFAULT_DESCRIPTION)
+    );
+
+    // Typed: new annotations take it.
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    press(&mut harness, command(), Key::A);
+    harness.get_by_label(field).type_text("spike");
+    harness.run_steps(2);
+    assert_eq!(viewer(&harness).description(), "spike");
+    // ⌘Z and ⇧⌘Z in the field undo and redo the typing (egui undoes quick typing at
+    // once); so do the menu's Undo and Redo, which hand the field their keys.
+    let shift_command = command() | Modifiers::SHIFT;
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(viewer(&harness).description(), "BAD");
+    press(&mut harness, shift_command, Key::Z);
+    assert_eq!(viewer(&harness).description(), "spike");
+    harness.event(kymo::app::text_field_key(Action::Undo).unwrap());
+    harness.step();
+    assert_eq!(viewer(&harness).description(), "BAD");
+    harness.event(kymo::app::text_field_key(Action::Redo).unwrap());
+    harness.step();
+    assert_eq!(viewer(&harness).description(), "spike");
+    // Straight from the field to the traces.
+    assert!(harness.get_by_label(field).is_focused());
+    let (a, b) = (at_time(&harness, 2.0, 40.0), at_time(&harness, 3.0, 40.0));
+    drag(&mut harness, a, b);
+    let got = made(&harness);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].2, "spike");
+    // The drag took the keyboard from the field: ⌫ deletes the new annotation, and undo
+    // brings it back.
+    assert!(!harness.get_by_label(field).is_focused());
+    press(&mut harness, Modifiers::NONE, Key::Backspace);
+    assert!(made(&harness).is_empty());
+    assert_eq!(viewer(&harness).description(), "spike");
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(made(&harness).len(), 1);
+    // Typing doesn't touch the annotations: ⌘Z there leaves them.
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    harness.get_by_label(field).type_text("!");
+    harness.run_steps(2);
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(made(&harness).len(), 1);
+    assert_eq!(viewer(&harness).description(), "spike");
+    harness.key_press(Key::Enter);
+    harness.step();
+
+    // Picked from the menu of descriptions, after typing another.
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    press(&mut harness, command(), Key::A);
+    harness.get_by_label(field).type_text("x");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.step();
+    assert_eq!(viewer(&harness).description(), "x");
+    harness.get_by_label("Descriptions").click();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "spike")
+        .click();
+    harness.run_steps(2);
+    assert_eq!(viewer(&harness).description(), "spike");
+    let (a, b) = (at_time(&harness, 7.0, 40.0), at_time(&harness, 8.0, 40.0));
+    drag(&mut harness, a, b);
+    let got = made(&harness);
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1].2, "spike");
+    assert_eq!(viewer(&harness).legend().entry("spike").unwrap().count, 2);
+
+    // Out of annotation mode the field goes, the legend stays.
+    press(&mut harness, command(), Key::E);
+    assert!(harness.query_by_label(field).is_none());
+    harness.get_by_label("Show spike");
 }
 
 /// kittest's wgpu setup on Metal, Vulkan or DX12 (traces need storage buffers in vertex

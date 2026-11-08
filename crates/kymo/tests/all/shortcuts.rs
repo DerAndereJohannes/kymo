@@ -47,6 +47,7 @@ fn sections_follow_the_menus_then_the_rest() {
             "Trackpad and Mouse",
             "Kymo",
             "File",
+            "Edit",
             "View",
             "Go",
             "Help",

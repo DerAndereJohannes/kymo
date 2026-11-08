@@ -124,6 +124,9 @@ impl Chord {
                 Key::PageDown => "⇟",
                 Key::Home => "↖",
                 Key::End => "↘",
+                Key::Backspace => "⌫",
+                Key::Delete => "⌦",
+                Key::Escape => "⎋",
                 key => key.symbol_or_name(),
             });
         } else {
@@ -194,6 +197,13 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::ToggleDc, Chord::cmd(Key::D)),
     (Action::ToggleBad, Chord::cmd(Key::B)),
     (Action::ToggleAntialias, Chord::shift_cmd(Key::A)),
+    (Action::ToggleEditing, Chord::cmd(Key::E)),
+    (Action::Undo, Chord::cmd(Key::Z)),
+    (Action::Redo, Chord::shift_cmd(Key::Z)),
+    (Action::Redo, Chord::cmd(Key::Y)),
+    (Action::DeleteAnnotation, Chord::key(Key::Delete)),
+    (Action::DeleteAnnotation, Chord::key(Key::Backspace)),
+    (Action::Deselect, Chord::key(Key::Escape)),
 ];
 
 /// Points per line of a mouse wheel.

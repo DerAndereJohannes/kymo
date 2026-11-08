@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ceafb42f3b5b08d65cf4a522cf955181731fce44e49b55e80f151fb5b67f112f # shrinks to initial = [], ops = [Insert(AnnotationData { onset: 0.0, duration: 0.0, description: "BAD", channels: [], origin: Viewer }), Insert(AnnotationData { onset: 0.0, duration: 0.0, description: "BAD", channels: [], origin: Viewer }), Undo, Replace(0, AnnotationData { onset: 7.0, duration: 0.0, description: "spike", channels: [], origin: Viewer }), Pushed(0, AnnotationData { onset: 7.0, duration: 0.0, description: "spike", channels: [], origin: Viewer }), Undo]
+cc 658493f7585006ac6e9c2a49d4099479bb8352730e84065967d968dcda7a895f # shrinks to initial = [AnnotationData { onset: 0.0, duration: 0.0, description: "BAD", channels: [], origin: Viewer }], ops = [Invalid(0, AnnotationData { onset: 0.0, duration: 0.0, description: "BAD", channels: [], origin: Viewer })]

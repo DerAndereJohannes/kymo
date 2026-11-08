@@ -58,10 +58,21 @@ pub enum Action {
     StimIncreasing,
     /// Whether a code at a stim channel's first sample is annotated.
     ToggleInitialCode,
+    /// Turns annotation mode on or off: dragging in the traces creates annotations
+    /// instead of panning, and clicking selects them.
+    ToggleEditing,
+    /// Undoes the last annotation edit, or the last typing in a text field with the
+    /// keyboard.
+    Undo,
+    Redo,
+    /// Removes the selected annotation.
+    DeleteAnnotation,
+    /// Clears the annotation selection.
+    Deselect,
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 41] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -98,6 +109,11 @@ impl Action {
         Action::StimFromZero,
         Action::StimIncreasing,
         Action::ToggleInitialCode,
+        Action::ToggleEditing,
+        Action::Undo,
+        Action::Redo,
+        Action::DeleteAnnotation,
+        Action::Deselect,
     ];
 
     /// The name in menus and the shortcut overview.
@@ -139,6 +155,11 @@ impl Action {
             Action::StimFromZero => "From Zero",
             Action::StimIncreasing => "Increasing",
             Action::ToggleInitialCode => "Initial Code",
+            Action::ToggleEditing => "Edit Annotations",
+            Action::Undo => "Undo",
+            Action::Redo => "Redo",
+            Action::DeleteAnnotation => "Delete",
+            Action::Deselect => "Deselect Annotation",
         }
     }
 
@@ -153,6 +174,7 @@ impl Action {
                 | Action::StimFromZero
                 | Action::StimIncreasing
                 | Action::ToggleInitialCode
+                | Action::ToggleEditing
         )
     }
 

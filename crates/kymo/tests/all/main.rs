@@ -10,6 +10,7 @@ mod common;
 mod annotations;
 mod axis;
 mod frame;
+mod history;
 mod keymap;
 mod menu;
 mod native_menu;

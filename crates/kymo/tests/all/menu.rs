@@ -61,7 +61,7 @@ fn follows_each_platforms_layout() {
     let titles = |p| menu_bar(p).iter().map(|m| m.title).collect::<Vec<_>>();
     assert_eq!(
         titles(Platform::Mac),
-        ["Kymo", "File", "View", "Go", "Window", "Help"]
+        ["Kymo", "File", "Edit", "View", "Go", "Window", "Help"]
     );
     assert_eq!(
         titles(Platform::Windows),
@@ -76,12 +76,24 @@ fn follows_each_platforms_layout() {
         [Action::Settings, Action::Quit]
     );
     assert!(mac[0].items.contains(&Item::System(SystemItem::About)));
-    assert_eq!(mac[4].role, Role::Window);
-    assert_eq!(mac[5].role, Role::Help);
+    assert_eq!(
+        mac[2].actions().collect::<Vec<_>>(),
+        [Action::Undo, Action::Redo, Action::DeleteAnnotation]
+    );
+    assert_eq!(mac[5].role, Role::Window);
+    assert_eq!(mac[6].role, Role::Help);
     assert!(!menu_actions(Platform::Mac).contains(&Action::About));
 
     let windows = menu_bar(Platform::Windows);
-    assert_eq!(windows[1].actions().collect::<Vec<_>>(), [Action::Settings]);
+    assert_eq!(
+        windows[1].actions().collect::<Vec<_>>(),
+        [
+            Action::Undo,
+            Action::Redo,
+            Action::DeleteAnnotation,
+            Action::Settings
+        ]
+    );
     assert!(windows[0].actions().any(|a| a == Action::Quit));
     assert!(menu_actions(Platform::Windows).contains(&Action::About));
 }
@@ -222,6 +234,7 @@ fn only_command_shortcuts_are_attached() {
                             | Action::StimFromZero
                             | Action::StimIncreasing
                             | Action::ToggleInitialCode
+                            | Action::ToggleEditing
                     ),
                     "{action:?}"
                 );

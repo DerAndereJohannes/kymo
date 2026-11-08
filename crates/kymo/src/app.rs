@@ -193,9 +193,15 @@ impl KymoApp {
         self.about_open
     }
 
-    fn menu_state(&self) -> AppMenuState {
+    fn menu_state(&self, ctx: &egui::Context) -> AppMenuState {
+        let viewer = self.viewer();
         AppMenuState {
             ready: matches!(self.state, State::Ready(_)),
+            typing: ctx.egui_wants_keyboard_input(),
+            editing: viewer.is_some_and(Viewer::editing),
+            selected: viewer.is_some_and(|v| v.selected().is_some()),
+            can_undo: viewer.is_some_and(|v| v.history().can_undo()),
+            can_redo: viewer.is_some_and(|v| v.history().can_redo()),
             sidebar: self.show_sidebar,
             antialias: self.options.settings.antialias,
             channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
@@ -276,7 +282,7 @@ impl KymoApp {
         let mut actions = Vec::new();
         actions.extend(self.key_actions(&ctx));
         if let Some(platform) = self.egui_menus() {
-            let state = self.menu_state();
+            let state = self.menu_state(&ctx);
             egui::Panel::top("menu bar").show(ui, |ui| {
                 actions.extend(egui_menu_bar(ui, platform, &state));
             });
@@ -292,7 +298,7 @@ impl KymoApp {
         }
         #[cfg(any(target_os = "macos", windows))]
         {
-            let state = self.menu_state();
+            let state = self.menu_state(&ctx);
             if let Some(menu) = &mut self.native_menu {
                 menu.update(&state);
             }
@@ -340,10 +346,18 @@ impl KymoApp {
 
     /// Carries out `action`, unless it is disabled now.
     pub fn perform(&mut self, ctx: &egui::Context, action: Action) {
-        if !self.menu_state().enabled(action) {
+        let state = self.menu_state(ctx);
+        if !state.enabled(action) {
             return;
         }
         match action {
+            // A text field with the keyboard undoes its own typing; on macOS the menu takes
+            // ⌘Z before the field sees it, so it is handed on.
+            Action::Undo | Action::Redo if state.typing => {
+                if let Some(event) = text_field_key(action) {
+                    ctx.input_mut(|i| i.events.push(event));
+                }
+            }
             Action::Open => self.pick_and_open(ctx),
             Action::Close => {
                 self.state = State::Empty;
@@ -371,12 +385,14 @@ impl KymoApp {
         }
     }
 
-    /// The actions of this frame's key presses, unless a text field has the keyboard.
+    /// The actions of this frame's key presses, unless a text field has the keyboard. Esc
+    /// with a menu or popup open only closes it.
     fn key_actions(&self, ctx: &egui::Context) -> Vec<Action> {
         if ctx.egui_wants_keyboard_input() {
             return Vec::new();
         }
-        ctx.input(|i| {
+        let popup = egui::Popup::is_any_open(ctx);
+        let actions: Vec<Action> = ctx.input(|i| {
             i.events
                 .iter()
                 .filter_map(|event| match *event {
@@ -395,7 +411,11 @@ impl KymoApp {
                     _ => None,
                 })
                 .collect()
-        })
+        });
+        actions
+            .into_iter()
+            .filter(|&a| !(popup && a == Action::Deselect))
+            .collect()
     }
 
     fn pick_and_open(&mut self, ctx: &egui::Context) {
@@ -466,6 +486,13 @@ impl eframe::App for KymoApp {
 /// What the menus show: whether a recording is open, what it has, and the toggles' states.
 struct AppMenuState {
     ready: bool,
+    /// Whether a text field has the keyboard, for Undo and Redo to act on.
+    typing: bool,
+    /// Whether annotation mode is on, and an annotation selected.
+    editing: bool,
+    selected: bool,
+    can_undo: bool,
+    can_redo: bool,
     sidebar: bool,
     antialias: bool,
     /// Whether the pointer is over a channel, which Toggle Bad acts on.
@@ -481,6 +508,9 @@ impl MenuState for AppMenuState {
         // Toggle Bad needs a channel to act on.
         let now = match action {
             Action::ToggleBad => self.channel,
+            Action::Undo => self.can_undo || self.typing,
+            Action::Redo => self.can_redo || self.typing,
+            Action::DeleteAnnotation | Action::Deselect => self.selected,
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,
             _ => true,
         };
@@ -492,9 +522,33 @@ impl MenuState for AppMenuState {
             Action::ToggleSidebar => Some(self.sidebar),
             Action::ToggleAntialias => Some(self.antialias),
             Action::ToggleDc => Some(self.dc),
+            Action::ToggleEditing => Some(self.editing),
             _ => action.stim_checked(self.stim_options),
         }
     }
+}
+
+/// The key press a text field takes as `action`, for Undo and Redo: ⌘Z and ⇧⌘Z.
+pub fn text_field_key(action: Action) -> Option<Event> {
+    let shift = match action {
+        Action::Undo => false,
+        Action::Redo => true,
+        _ => return None,
+    };
+    let mut modifiers = egui::Modifiers::COMMAND;
+    modifiers.shift = shift;
+    if cfg!(target_os = "macos") {
+        modifiers.mac_cmd = true;
+    } else {
+        modifiers.ctrl = true;
+    }
+    Some(Event::Key {
+        key: egui::Key::Z,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    })
 }
 
 fn set_title(ctx: &egui::Context, file: Option<&str>) {

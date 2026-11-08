@@ -156,13 +156,20 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         role: Role::Plain,
         items: file,
     });
+    let mut edit = vec![
+        a(Action::Undo),
+        a(Action::Redo),
+        Item::Separator,
+        a(Action::DeleteAnnotation),
+    ];
     if !mac {
-        menus.push(Menu {
-            title: "Edit",
-            role: Role::Plain,
-            items: vec![a(Action::Settings)],
-        });
+        edit.extend([Item::Separator, a(Action::Settings)]);
     }
+    menus.push(Menu {
+        title: "Edit",
+        role: Role::Plain,
+        items: edit,
+    });
     menus.push(Menu {
         title: "View",
         role: Role::Plain,
@@ -185,6 +192,8 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::ToggleDc),
             a(Action::ToggleBad),
+            Item::Separator,
+            a(Action::ToggleEditing),
             Item::Separator,
             Item::Submenu {
                 title: "Stim Annotations",

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId, Origin};
+use kymo_core::{Annotation, AnnotationData, AnnotationId, AnnotationStore, ChannelId, Origin};
 
 use crate::view::ViewState;
 
@@ -309,6 +309,33 @@ pub fn under<'s>(
             columns.start < near.end && near.start < columns.end
         })
         .collect()
+}
+
+/// The annotation a click at pixel column `x` selects, as [`under`] finds them: the
+/// shortest that can be edited (stim annotations can't), so events and short annotations
+/// inside longer ones can be reached; of equally short ones, the first by onset.
+pub fn pick(
+    view: &ViewState,
+    store: &AnnotationStore,
+    legend: &Legend,
+    width_px: u32,
+    x: f64,
+    slack: u32,
+    channel: Option<ChannelId>,
+) -> Option<AnnotationId> {
+    under(view, store, legend, width_px, x, slack, channel)
+        .into_iter()
+        .filter(|a| a.data.origin != Origin::Stim)
+        .min_by(|a, b| a.data.duration.total_cmp(&b.data.duration))
+        .map(|a| a.id)
+}
+
+/// The pixel columns `a`'s mark covers on a trace area `width_px` pixels wide, if it is in
+/// `view`'s window.
+pub fn extent(view: &ViewState, a: &AnnotationData, width_px: u32) -> Option<Range<u32>> {
+    let time = view.time();
+    (width_px > 0 && a.onset < time.end && a.end() >= time.start)
+        .then(|| columns(view, a, width_px).0)
 }
 
 /// Whether `a`'s mark spans the trace area's height: if it applies to all channels, or is a

@@ -8,6 +8,7 @@ pub mod annotations;
 pub mod app;
 pub mod cli;
 pub mod document;
+pub mod history;
 pub mod keymap;
 pub mod menu;
 #[cfg(any(target_os = "macos", windows))]

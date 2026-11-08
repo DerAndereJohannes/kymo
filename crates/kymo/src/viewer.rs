@@ -5,24 +5,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align, Align2, Color32, Event, FontId, Pos2, Rangef, Rect, Sense, TextStyle, Ui, pos2,
+    self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
+    StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 use kymo_core::service::TileService;
 use kymo_core::stim::EventOptions;
 use kymo_core::tile::query;
-use kymo_core::{ChannelId, ChannelKind, GridId};
+use kymo_core::{AnnotationData, AnnotationId, ChannelId, ChannelKind, GridId, Origin};
 
 use crate::action::Action;
 use crate::annotations::AnnotationColors;
 use crate::annotations::{self, Legend, Marks};
 use crate::document::{Document, Summary};
+use crate::history::{self, Change, History};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
 use crate::scale;
 use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
-use crate::ui::header::{header_panel, within_width};
+use crate::ui::header::{AnnotationPanel, header_panel, within_width};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{readout, scrollbar, status};
 use crate::view::{Area, ViewState};
@@ -49,6 +51,22 @@ const ANNOTATION_LABEL_GAP: f32 = 8.0;
 const POINTER_SLACK: f32 = 2.0;
 /// The share of the tile cache that tiles beyond the screen may take.
 const PREFETCH_SHARE: usize = 2;
+/// How far a drag must reach sideways, in points, to create an annotation.
+const MIN_DRAG: f32 = 3.0;
+/// Width of the selected annotation's outline, in points.
+const OUTLINE_WIDTH: f32 = 2.0;
+/// The description new annotations start with: MNE treats descriptions starting with
+/// "BAD" as bad segments.
+pub const DEFAULT_DESCRIPTION: &str = "BAD";
+
+/// An annotation being created by a drag.
+#[derive(Clone, Copy, Debug)]
+struct Creating {
+    /// The time the drag started at.
+    anchor: f64,
+    /// Its id, once the drag reached far enough to make it.
+    id: Option<AnnotationId>,
+}
 
 /// What the pointer is over.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -106,6 +124,18 @@ pub struct Viewer {
     auto_scale: bool,
     /// Colors picked per channel type.
     type_colors: TypeColors,
+    /// Whether annotation mode is on: dragging creates annotations, clicking selects.
+    editing: bool,
+    /// The selected annotation, only in annotation mode; never a stim annotation or a
+    /// hidden one.
+    selected: Option<AnnotationId>,
+    /// Where the selection's outline was drawn at the last frame, in points.
+    outline: Option<Rect>,
+    /// The annotation a drag is creating.
+    creating: Option<Creating>,
+    /// The description of annotations created from now on.
+    description: String,
+    history: History,
 }
 
 impl Viewer {
@@ -142,6 +172,12 @@ impl Viewer {
             antialias: false,
             auto_scale: false,
             type_colors: TypeColors::default(),
+            editing: false,
+            selected: None,
+            outline: None,
+            creating: None,
+            description: DEFAULT_DESCRIPTION.to_owned(),
+            history: History::default(),
         }
     }
 
@@ -169,6 +205,31 @@ impl Viewer {
 
     pub fn status(&self) -> &StatusLine {
         &self.status
+    }
+
+    /// Whether annotation mode is on.
+    pub fn editing(&self) -> bool {
+        self.editing
+    }
+
+    /// The selected annotation.
+    pub fn selected(&self) -> Option<AnnotationId> {
+        self.selected
+    }
+
+    /// Where the selected annotation's outline was drawn at the last frame, in points.
+    pub fn outline(&self) -> Option<Rect> {
+        self.outline
+    }
+
+    /// The description new annotations get.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// The annotation edits that can be undone and redone.
+    pub fn history(&self) -> &History {
+        &self.history
     }
 
     /// Whether the last frame had every tile it wanted, none drawn from a coarser one.
@@ -236,10 +297,80 @@ impl Viewer {
                 self.auto_scale = true;
                 return true;
             }
+            Action::ToggleEditing => {
+                self.finish_creating();
+                self.editing = !self.editing;
+                self.selected = None;
+                return true;
+            }
+            Action::Undo => {
+                let changed = self.history.undo(&mut self.document.annotations);
+                self.after_history(changed);
+                return true;
+            }
+            Action::Redo => {
+                let changed = self.history.redo(&mut self.document.annotations);
+                self.after_history(changed);
+                return true;
+            }
+            Action::DeleteAnnotation => {
+                if let Some(id) = self.selected.take() {
+                    // Fails only for an annotation that is gone, leaving nothing to do.
+                    let _ = self
+                        .history
+                        .edit(&mut self.document.annotations, vec![(id, None)]);
+                    self.legend.sync(&self.document.annotations);
+                }
+                return true;
+            }
+            Action::Deselect => {
+                self.selected = None;
+                return true;
+            }
             Action::ScaleUp | Action::ScaleDown | Action::DefaultScale => self.auto_scale = false,
             _ => {}
         }
         self.view.apply(action, self.hover.channel)
+    }
+
+    /// After an undo or redo that changed `changed` (`None` if there was nothing to do):
+    /// the legend follows, and in annotation mode the first of them still there is
+    /// selected.
+    fn after_history(&mut self, changed: Option<Vec<AnnotationId>>) {
+        let Some(changed) = changed else {
+            return;
+        };
+        self.legend.sync(&self.document.annotations);
+        self.selected = None;
+        if self.editing {
+            self.selected = changed.into_iter().find(|&id| self.selectable(id));
+        }
+    }
+
+    /// Whether the selected annotation `id` can stay selected: there, and shown. Stim
+    /// annotations never get selected (see [`annotations::pick`]), and the history never
+    /// holds them.
+    fn selectable(&self, id: AnnotationId) -> bool {
+        self.document.annotations.get(id).is_some_and(|a| {
+            self.legend
+                .entry(&a.data.description)
+                .is_some_and(|e| e.shown)
+        })
+    }
+
+    /// Ends the drag creating an annotation: records it as one edit, and selects it.
+    fn finish_creating(&mut self) {
+        let Some(Creating { id: Some(id), .. }) = self.creating.take() else {
+            return;
+        };
+        if let Some(a) = self.document.annotations.get(id) {
+            self.history.push(vec![Change {
+                id,
+                before: None,
+                after: Some(a.data.clone()),
+            }]);
+            self.selected = Some(id);
+        }
     }
 
     /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
@@ -255,6 +386,11 @@ impl Viewer {
     ) -> bool {
         self.sync_stim(ui.ctx());
         self.legend.apply_colors(annotation_colors);
+        if let Some(id) = self.selected
+            && !self.selectable(id)
+        {
+            self.selected = None;
+        }
         let mut open_clicked = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -277,9 +413,12 @@ impl Viewer {
                             &self.document,
                             &self.summary,
                             &mut self.view,
-                            &mut self.legend,
                             &self.type_colors,
-                            annotation_colors,
+                            AnnotationPanel {
+                                legend: &mut self.legend,
+                                colors: annotation_colors,
+                                description: self.editing.then_some(&mut self.description),
+                            },
                         )
                     });
                 });
@@ -342,11 +481,26 @@ impl Viewer {
                 )
             })
             .unwrap_or_default();
-        let left = if self.pointed.is_empty() {
-            left
-        } else {
-            format!("{left} · {}", self.pointed)
-        };
+        let mode = self.editing.then(|| {
+            match self
+                .selected
+                .and_then(|id| self.document.annotations.get(id))
+            {
+                Some(a) => status::selection_text(
+                    &a.data.description,
+                    a.data.onset,
+                    a.data.duration,
+                    status::time_decimals(rec.sfreq()),
+                    Clock::for_end(self.view.duration()),
+                ),
+                None => "Editing annotations".to_owned(),
+            }
+        });
+        let left = [mode.unwrap_or_default(), left, self.pointed.clone()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
         let mut right = status::memory_text(service.cache().bytes(), gpu.bytes());
         if let Some(build) = status::build_text(&service.progress()) {
             right = format!("{build} · {right}");
@@ -404,7 +558,7 @@ impl Viewer {
             height: f64::from(traces.height()),
         };
 
-        self.handle_input(ui, id, keymap, traces, names, axis_rect, area);
+        self.handle_input(ui, id, keymap, traces, names, axis_rect, size_px[0]);
         if let Some(start) = scrollbar::show(
             ui,
             id.with("time"),
@@ -522,6 +676,28 @@ impl Viewer {
             overlay.rect_filled(rect_of(line), 0.0, annotation_color(line.color, visuals));
         }
 
+        // The selection's outline, in its annotation's color.
+        self.outline = self
+            .selected
+            .and_then(|id| self.document.annotations.get(id))
+            .and_then(|a| {
+                let columns = annotations::extent(&self.view, &a.data, size_px[0])?;
+                let color = self.legend.entry(&a.data.description)?.color;
+                let x = Rangef::new(x_of(columns.start), x_of(columns.end));
+                let mut rect = Rect::from_x_y_ranges(x, traces.y_range());
+                if columns.len() == 1 {
+                    // A line: the outline goes around it.
+                    rect = rect.expand2(vec2(OUTLINE_WIDTH, 0.0));
+                }
+                overlay.rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(OUTLINE_WIDTH, annotation_color(color, visuals)),
+                    StrokeKind::Inside,
+                );
+                Some(rect)
+            });
+
         let query = query(rec, &self.view.tile_view(size_px[0]), service.cache());
         self.missing = query.missing.len();
         if self.auto_scale && query.missing.is_empty() {
@@ -594,7 +770,8 @@ impl Viewer {
         }
     }
 
-    /// Dragging, scrolling and pinching over the trace region, and clicks on names.
+    /// Dragging, scrolling and pinching over the trace region, and clicks on names. The
+    /// trace area is `width_px` physical pixels wide.
     #[expect(clippy::too_many_arguments)]
     fn handle_input(
         &mut self,
@@ -604,10 +781,21 @@ impl Viewer {
         traces: Rect,
         names: Rect,
         axis_rect: Rect,
-        area: Area,
+        width_px: u32,
     ) {
+        let area = Area {
+            width: f64::from(traces.width()),
+            height: f64::from(traces.height()),
+        };
         let response = ui.interact(traces, id.with("drag"), Sense::click_and_drag());
-        if response.dragged() {
+        // A press in the traces takes the keyboard from a text field (the description),
+        // so keys act on the traces again: ⌫ deletes the annotation just made.
+        if response.is_pointer_button_down_on() {
+            ui.memory_mut(|m| m.stop_text_input());
+        }
+        if self.editing {
+            self.edit_input(ui, &response, traces, width_px);
+        } else if response.dragged() {
             self.view
                 .pan_points(f64::from(response.drag_delta().x), area.width);
         }
@@ -644,6 +832,72 @@ impl Viewer {
             for gesture in gestures {
                 self.view.gesture(gesture, area, pointer_x);
             }
+        }
+    }
+
+    /// Annotation mode's gestures on the traces: a drag creates an annotation of all
+    /// channels with the current description, a click selects the annotation under the
+    /// pointer (see [`annotations::pick`]) or, away from one, deselects.
+    fn edit_input(&mut self, ui: &Ui, response: &egui::Response, traces: Rect, width_px: u32) {
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        }
+        let width = f64::from(traces.width());
+        let duration = self.view.duration();
+        let x_of = |p: Pos2| f64::from(p.x - traces.left());
+        if response.drag_started()
+            && !self.description.is_empty()
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        {
+            self.finish_creating();
+            self.creating = Some(Creating {
+                // The window lies within the recording.
+                anchor: self.view.time_at(x_of(origin), width),
+                id: None,
+            });
+        }
+        if response.dragged()
+            && let Some(creating) = &mut self.creating
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let anchor = creating.anchor;
+            let time = self.view.time_at(x_of(p), width).clamp(0.0, duration);
+            let reach = self.view.x_at(time, width) - self.view.x_at(anchor, width);
+            // Too short a drag makes nothing, or takes back what it made.
+            let data = (reach.abs() >= f64::from(MIN_DRAG)).then(|| AnnotationData {
+                onset: anchor.min(time),
+                duration: (time - anchor).abs(),
+                description: self.description.clone(),
+                channels: Vec::new(),
+                origin: Origin::Viewer,
+            });
+            let store = &mut self.document.annotations;
+            if data.is_some() || creating.id.is_some() {
+                let id = *creating.id.get_or_insert_with(|| store.new_id());
+                history::set(store, id, data).expect("times within the recording are valid");
+                self.legend.sync(store);
+                self.legend.set_shown(&self.description, true);
+            }
+        }
+        if response.drag_stopped() {
+            self.finish_creating();
+        }
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let ppp = ui.pixels_per_point();
+            let channel = self
+                .view
+                .channel_at(f64::from(p.y - traces.top()), f64::from(traces.height()));
+            self.selected = annotations::pick(
+                &self.view,
+                &self.document.annotations,
+                &self.legend,
+                width_px,
+                f64::from((p.x - traces.left()) * ppp),
+                (POINTER_SLACK * ppp).round() as u32,
+                channel,
+            );
         }
     }
 

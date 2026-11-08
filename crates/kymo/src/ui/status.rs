@@ -97,6 +97,23 @@ pub fn pointer_text(
     text
 }
 
+/// The selected annotation: "BAD at 0:12.345 for 1.500 s", or "spike at 0:12.345" for an
+/// event.
+pub fn selection_text(
+    description: &str,
+    onset: f64,
+    duration: f64,
+    decimals: usize,
+    clock: Clock,
+) -> String {
+    let start = format_time(onset, decimals, clock);
+    if duration > 0.0 {
+        format!("{description} at {start} for {duration:.decimals$} s")
+    } else {
+        format!("{description} at {start}")
+    }
+}
+
 /// Descriptions named in [`annotations_text`] before the rest are counted.
 const DESCRIPTIONS: usize = 3;
 

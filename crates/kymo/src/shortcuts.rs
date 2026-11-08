@@ -90,6 +90,11 @@ fn gestures(platform: Platform) -> Vec<Row> {
             "Scale amplitudes",
         ),
         row("Drag the traces".into(), "Pan time"),
+        row(
+            "Drag the traces in annotation mode".into(),
+            "Create an annotation",
+        ),
+        row("Click an annotation in annotation mode".into(), "Select it"),
         row("Click a channel name".into(), "Toggle bad channel"),
     ]
 }
