@@ -1,13 +1,10 @@
 //! Kymo viewer: `kymo file.bdf` opens a window, `kymo` alone a file dialog.
 
-mod cli;
-
 use std::process::ExitCode;
 
 use anyhow::Result;
+use kymo::cli::{self, Command, USAGE};
 use kymo::{app, document};
-
-use crate::cli::{Command, USAGE};
 
 fn main() -> ExitCode {
     match run() {

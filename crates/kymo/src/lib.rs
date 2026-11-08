@@ -1,11 +1,12 @@
-//! The viewer: what is shown and how it moves, the annotation overlay and stim annotations, the key
-//! bindings, the
-//! menu bar as data, the trace renderer, the settings, and the window built from them. The
-//! binary (`main.rs`) parses the command line and opens the window.
+//! The viewer: what is shown and how it moves, the annotation overlay and stim annotations,
+//! the key bindings, the menu bar as data, the trace renderer, the settings, the command
+//! line, and the window built from them. The binary (`main.rs`) only dispatches the
+//! command.
 
 pub mod action;
 pub mod annotations;
 pub mod app;
+pub mod cli;
 pub mod document;
 pub mod keymap;
 pub mod menu;
