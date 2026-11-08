@@ -25,9 +25,6 @@
 //! Without `--fresh` the sidecar in the user's cache directory is used, built first (and
 //! then the benchmark started again, so the build doesn't count towards peak memory); with
 //! `--fresh` the pyramid builds into an empty directory during the run, as on a first open.
-//! `--views OUT` writes the views drawn to OUT, for `scripts/bench_mne_qt.py` to replay.
-//!
-//! `scripts/bench_mne_qt.py` replays the same views in mne-qt-browser.
 
 // A measuring tool: panicking on a broken input is the point.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -61,28 +58,18 @@ fn main() {
         .skip(1)
         .filter(|a| a != "--bench")
         .collect();
-    let mut fresh = false;
-    let mut views = None;
-    let mut files = Vec::new();
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--fresh" => fresh = true,
-            "--views" => views = rest.next().map(PathBuf::from),
-            _ => files.push(PathBuf::from(arg)),
-        }
-    }
-    let ([path], false) = (
-        &files[..],
-        views.is_none() && args.iter().any(|a| a == "--views"),
-    ) else {
-        if files.is_empty() && args.is_empty() {
-            eprintln!(
-                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--views OUT]`"
-            );
+    let fresh = args.iter().any(|a| a == "--fresh");
+    let files: Vec<PathBuf> = args
+        .iter()
+        .filter(|a| *a != "--fresh")
+        .map(PathBuf::from)
+        .collect();
+    let [path] = &files[..] else {
+        if args.is_empty() {
+            eprintln!("skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh]`");
             return;
         }
-        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--views OUT]");
+        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh]");
         std::process::exit(2);
     };
 
@@ -122,10 +109,6 @@ fn main() {
         }
     );
     report.print();
-    if let Some(out) = views {
-        std::fs::write(&out, report.views_tsv()).unwrap();
-        println!("views written to {}", out.display());
-    }
     match peak_resident_bytes() {
         Some(bytes) => println!("peak resident memory: {:.0} MB", bytes as f64 / 1e6),
         None => println!("peak resident memory: not measured on this platform"),
@@ -310,36 +293,9 @@ struct Report {
     /// phases drawn partly from coarser tiles.
     incomplete: Vec<Phase>,
     opening: Option<f64>,
-    /// Each view drawn at the end of a step, and in every frame of the continuous phases.
-    views: Vec<(Phase, Drawn)>,
-}
-
-/// A view as drawn: its time window and channel rows.
-#[derive(Clone, Copy, Debug)]
-struct Drawn {
-    start: f64,
-    span: f64,
-    top: f64,
-    rows: usize,
 }
 
 impl Report {
-    /// The views drawn, one per line: phase, start (s), span (s), first row, rows.
-    fn views_tsv(&self) -> String {
-        let mut out = String::from("phase\tstart\tspan\ttop\trows\n");
-        for (phase, v) in &self.views {
-            out += &format!(
-                "{}\t{}\t{}\t{}\t{}\n",
-                phase.name(),
-                v.start,
-                v.span,
-                v.top,
-                v.rows
-            );
-        }
-        out
-    }
-
     fn print(&self) {
         match self.opening {
             Some(s) => println!("first complete view after {}", ms(s)),
@@ -506,16 +462,8 @@ impl eframe::App for Bench {
         if let Some(error) = self.app.error() {
             panic!("cannot open the recording: {error}");
         }
-        let Some(viewer) = self.app.viewer() else {
+        let Some(complete) = self.app.viewer().map(|v| v.complete()) else {
             return;
-        };
-        let complete = viewer.complete();
-        let view = viewer.view();
-        let drawn = Drawn {
-            start: view.start(),
-            span: view.span(),
-            top: view.top(),
-            rows: view.rows(),
         };
         let end = Instant::now();
         let mut report = self.report.borrow_mut();
@@ -543,8 +491,6 @@ impl eframe::App for Bench {
                 }
             }
         }
-        let phase = self.step.map_or(Phase::Opening, |(phase, _)| phase);
-        report.views.push((phase, drawn));
         drop(report);
         self.advance(&ctx);
     }

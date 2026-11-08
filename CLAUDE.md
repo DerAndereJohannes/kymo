@@ -64,8 +64,7 @@ cargo run -p kymo --release -- file.bdf
 cargo bench -p kymo-core                   # build and decode benches on generated files
 KYMO_BENCH_BDF=big.bdf cargo bench -p kymo-core --bench query   # big.bdf from `kymo-testgen bdf-256ch-8h`
 cargo run --release -p kymo-core --example pyramid -- file.bdf [--sidecar DIR]   # build speed
-cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--views views.tsv]   # viewer frame times, memory
-uv run --no-project --with mne --with mne-qt-browser --with pyqt6 python scripts/bench_mne_qt.py file.bdf views.tsv   # the same views in mne-qt-browser
+cargo bench -p kymo --bench frames -- file.bdf [--fresh]   # viewer frame times and memory
 python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
 python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne
