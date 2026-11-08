@@ -3107,6 +3107,257 @@ fn the_field_changes_the_selected_annotations_description() {
     assert_eq!(harness.state().title(), format!("{name} (edited) – Kymo"));
     // Closed, the title is the app's.
     press(&mut harness, command(), Key::W);
+    harness.get_by_label("Don't Save").click();
+    harness.run_steps(2);
     assert_eq!(harness.state().title(), "Kymo");
     assert_eq!(harness.state().window_title(), "Kymo");
+}
+
+/// The viewer's annotations (not the file's or stim ones) as onset, end and description.
+fn viewer_spans(harness: &Harness<'_, KymoApp>) -> Vec<(f64, f64, String)> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::Viewer)
+        .map(|a| (a.data.onset, a.data.end(), a.data.description.clone()))
+        .collect()
+}
+
+#[test]
+fn saved_annotations_load_into_another_window() {
+    // 12 file annotations, "trigger 0" to "trigger 11"; the recording starts at
+    // 2024-01-02 03:04:05, its first sample at 0.
+    let file = without_triggers("bdf+c-small");
+    let dir = TempDir::new();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let (a, b) = (at_time(&harness, 2.0, 40.0), at_time(&harness, 4.0, 40.0));
+    drag(&mut harness, a, b);
+    let made = viewer_spans(&harness);
+    // The dialog's name gets `.tsv`: nothing reads it as another format.
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(dir.path().join("saved"))]);
+    press(&mut harness, command() | Modifiers::SHIFT, Key::S);
+    let saved = dir.path().join("saved.tsv");
+    let text = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(text.lines().next(), Some("onset\tduration\ttrial_type"));
+    assert_eq!(text.lines().count(), 1 + 13);
+    assert!(
+        text.contains("\ntrigger 3\t") || text.contains("\ttrigger 3\n"),
+        "{text}"
+    );
+    assert!(!harness.state().title().contains("(edited)"));
+    // Saving again suggests the same file.
+    assert_eq!(viewer(&harness).save_path(), saved);
+    drop(harness);
+
+    // In a new window, loaded as the viewer's, as one step.
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(saved.clone())]);
+    choose(&mut harness, "File", "Load Annotations…");
+    assert!(harness.state().notice().is_none());
+    let loaded = viewer_spans(&harness);
+    assert_eq!(loaded.len(), 13);
+    assert!(loaded.contains(&made[0]), "{loaded:?}");
+    assert!(harness.state().title().contains("(edited)"));
+    // The legend counts them.
+    assert_eq!(viewer(&harness).legend().entry("BAD").unwrap().count, 1);
+    assert_eq!(
+        viewer(&harness).legend().entry("trigger 3").unwrap().count,
+        2
+    );
+    press(&mut harness, command(), Key::Z);
+    assert!(viewer_spans(&harness).is_empty());
+    assert!(
+        viewer(&harness)
+            .legend()
+            .entries()
+            .all(|e| e.description != "BAD")
+    );
+    assert!(!harness.state().title().contains("(edited)"));
+
+    // MNE's CSV: dates and times; another day's annotation is skipped, and said so.
+    let csv = dir.path().join("mne.csv");
+    std::fs::write(
+        &csv,
+        "onset,duration,description\n\
+         2024-01-02 03:04:15.500,1.0,from MNE\n\
+         2024-01-03 00:00:00.000,1.0,elsewhere\n",
+    )
+    .unwrap();
+    assert!(harness.state_mut().load_annotations_from(&csv));
+    assert_eq!(viewer_spans(&harness), [(10.5, 11.5, "from MNE".into())]);
+    let (title, text) = harness.state().notice().unwrap();
+    assert_eq!(title, "Annotations loaded");
+    assert!(
+        text.contains("Loaded 1 annotation from mne.csv. Skipped 1 outside"),
+        "{text}"
+    );
+    harness.run_steps(2);
+    harness.get_by_label("OK").click();
+    harness.run_steps(2);
+    assert!(harness.state().notice().is_none());
+
+    // A broken file adds nothing, and says where it broke.
+    let broken = dir.path().join("broken.tsv");
+    std::fs::write(&broken, "onset\tduration\ttrial_type\n1\tlong\tx\n").unwrap();
+    assert!(!harness.state_mut().load_annotations_from(&broken));
+    let (_, text) = harness.state().notice().unwrap();
+    assert!(
+        text.contains("broken.tsv: line 2: duration \"long\""),
+        "{text}"
+    );
+    assert_eq!(viewer_spans(&harness).len(), 1);
+    // As does another kind of file; Esc dismisses the notice, and nothing else.
+    harness.run_steps(2);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(harness.state().notice().is_none());
+    assert!(!harness.state_mut().load_annotations_from(file.path()));
+    assert!(
+        harness
+            .state()
+            .notice()
+            .unwrap()
+            .1
+            .contains("not a .tsv or .csv file")
+    );
+}
+
+#[test]
+fn export_writes_the_descriptions_shown() {
+    // File annotations "trigger 0" to "trigger 11", and stim annotations.
+    let file = TempFile::preset("bdf+c-small");
+    let dir = TempDir::new();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let stim = viewer(&harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::Stim)
+        .count();
+    assert!(stim > 0);
+    press(&mut harness, command(), Key::E);
+    let (a, b) = (at_time(&harness, 2.0, 40.0), at_time(&harness, 4.0, 40.0));
+    drag(&mut harness, a, b);
+    click_in_list(
+        &mut harness,
+        egui::accesskit::Role::CheckBox,
+        "Show trigger 3",
+    );
+    let export = dir.path().join("shown.tsv");
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(export.clone())]);
+    choose(&mut harness, "File", "Export Shown Annotations…");
+    let text = std::fs::read_to_string(&export).unwrap();
+    // 11 of the file's, the new one, and the stim ones.
+    assert_eq!(text.lines().count(), 1 + 11 + 1 + stim, "{text}");
+    assert!(!text.contains("trigger 3"));
+    assert!(text.contains("\tBAD"));
+    // Not a save.
+    assert!(harness.state().title().contains("(edited)"));
+    // Saving writes them all, stim ones apart.
+    let saved = dir.path().join("all.tsv");
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(saved.clone())]);
+    choose(&mut harness, "File", "Save Annotations…");
+    let text = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(text.lines().count(), 1 + 12 + 1, "{text}");
+}
+
+#[test]
+fn unsaved_changes_are_asked_about() {
+    let file = without_triggers("bdf+c-small");
+    let other = TempFile::preset("bdf+c-small");
+    let dir = TempDir::new();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // Without changes, Close closes.
+    press(&mut harness, command(), Key::W);
+    assert_eq!(harness.state().title(), "Kymo");
+
+    let edit = |harness: &mut Harness<'_, KymoApp>| {
+        harness
+            .state_mut()
+            .answer_file_dialogs([Some(file.path().to_owned())]);
+        press(harness, command(), Key::O);
+        ready(harness);
+        press(harness, command(), Key::E);
+        let (a, b) = (at_time(harness, 2.0, 40.0), at_time(harness, 4.0, 40.0));
+        drag(harness, a, b);
+        assert!(harness.state().title().contains("(edited)"));
+    };
+    let answer = |harness: &mut Harness<'_, KymoApp>, button: &str| {
+        harness.step();
+        harness.get_by_label(button).click();
+        harness.run_steps(2);
+    };
+    edit(&mut harness);
+    // Cancel, and Esc, keep it open; keys wait for the answer.
+    press(&mut harness, command(), Key::W);
+    assert_eq!(harness.state().leaving(), Some(kymo::app::Leave::Close));
+    harness.get_by_label_contains("Save the changes to the annotations of");
+    answer(&mut harness, "Cancel");
+    assert_eq!(harness.state().leaving(), None);
+    assert!(harness.state().title().contains("(edited)"));
+    press(&mut harness, command(), Key::W);
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(viewer_spans(&harness).len(), 1);
+    harness.step();
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.state().leaving(), None);
+    assert!(viewer(&harness).selected().is_some());
+    // Save… with the save dialog canceled stays; saved, it closes.
+    press(&mut harness, command(), Key::W);
+    harness.state_mut().answer_file_dialogs([None]);
+    answer(&mut harness, "Save…");
+    assert!(harness.state().title().contains("(edited)"));
+    let saved = dir.path().join("kept.tsv");
+    press(&mut harness, command(), Key::W);
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(saved.clone())]);
+    answer(&mut harness, "Save…");
+    assert_eq!(harness.state().title(), "Kymo");
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap().lines().count(),
+        1 + 13
+    );
+
+    // Opening another: Don't Save goes on to the dialog.
+    edit(&mut harness);
+    press(&mut harness, command(), Key::O);
+    assert_eq!(harness.state().leaving(), Some(kymo::app::Leave::Open));
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(other.path().to_owned())]);
+    answer(&mut harness, "Don't Save");
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).document().path, other.path());
+
+    // Quitting, from the menu or the window's close button.
+    edit(&mut harness);
+    press(&mut harness, command(), Key::Q);
+    assert_eq!(harness.state().leaving(), Some(kymo::app::Leave::Quit));
+    assert!(!harness.state().closing());
+    answer(&mut harness, "Cancel");
+    harness
+        .input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    harness.step();
+    assert_eq!(harness.state().leaving(), Some(kymo::app::Leave::Quit));
+    answer(&mut harness, "Don't Save");
+    assert!(harness.state().closing());
 }

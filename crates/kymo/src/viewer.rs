@@ -8,6 +8,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
     StrokeKind, TextStyle, Ui, pos2, vec2,
 };
+use kymo_core::annotation_file;
 use kymo_core::service::TileService;
 use kymo_core::stim::EventOptions;
 use kymo_core::tile::query;
@@ -184,6 +185,8 @@ pub struct Viewer {
     /// Whether the description field had the keyboard at the last frame.
     typing: bool,
     history: History,
+    /// Where the annotations were saved last.
+    saved_to: Option<std::path::PathBuf>,
 }
 
 impl Viewer {
@@ -227,6 +230,7 @@ impl Viewer {
             description: DEFAULT_DESCRIPTION.to_owned(),
             draft: None,
             typing: false,
+            saved_to: None,
             history: History::default(),
         }
     }
@@ -277,9 +281,64 @@ impl Viewer {
         &self.description
     }
 
-    /// Whether the annotations differ from the opened ones.
+    /// Whether the annotations differ from the opened or last saved ones.
     pub fn edited(&self) -> bool {
         self.history.edited()
+    }
+
+    /// Writes the file's and the viewer's annotations as an events table, or with
+    /// `shown_only` those of the descriptions shown, stim annotations included (see
+    /// [`kymo_core::annotation_file`]).
+    pub fn write_annotations(
+        &self,
+        out: impl std::io::Write,
+        shown_only: bool,
+    ) -> std::io::Result<()> {
+        let annotations = self
+            .document
+            .annotations
+            .iter()
+            .map(|a| &a.data)
+            .filter(|a| {
+                if shown_only {
+                    self.legend.entry(&a.description).is_some_and(|e| e.shown)
+                } else {
+                    a.origin != Origin::Stim
+                }
+            });
+        let context = annotation_file::Context::of(&self.document.recording);
+        annotation_file::write_table(out, &context, annotations)
+    }
+
+    /// Marks the annotations as saved, to `path`: the title loses "(edited)", and the next
+    /// save suggests it.
+    pub fn mark_saved(&mut self, path: std::path::PathBuf) {
+        self.history.mark_saved();
+        self.saved_to = Some(path);
+    }
+
+    /// Where to suggest saving the annotations: where they were saved last, or
+    /// `<recording>-annot.tsv` next to the recording.
+    pub fn save_path(&self) -> std::path::PathBuf {
+        self.saved_to.clone().unwrap_or_else(|| {
+            let path = &self.document.path;
+            let stem = path
+                .file_stem()
+                .map_or("annotations".into(), |s| s.to_string_lossy());
+            path.with_file_name(format!("{stem}-annot.tsv"))
+        })
+    }
+
+    /// Adds `annotations` (read from a file) as one step, as they are: no merging.
+    pub fn add_annotations(&mut self, annotations: Vec<AnnotationData>) {
+        let store = &mut self.document.annotations;
+        let changes = annotations
+            .into_iter()
+            .map(|a| (store.new_id(), Some(a)))
+            .collect();
+        // Read files hold valid annotations only.
+        let _ = self.history.edit(store, changes);
+        self.legend.sync(&self.document.annotations);
     }
 
     /// The annotation edits that can be undone and redone.

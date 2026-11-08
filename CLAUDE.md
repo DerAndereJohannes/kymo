@@ -69,6 +69,7 @@ cargo run --release -p kymo-core --example pyramid -- file.bdf [--sidecar DIR]  
 cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--antialias] [--edit]   # viewer frame times and memory; --edit adds annotation editing (on `kymo-testgen edf+c-annotations`)
 python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
 python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
+python scripts/compare_mne.py --annotations ...   # also annotation files both ways (needs pandas)
 uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne
 ```
 

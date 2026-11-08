@@ -147,7 +147,14 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             ],
         });
     }
-    let mut file = vec![a(Action::Open), a(Action::Close)];
+    let mut file = vec![
+        a(Action::Open),
+        a(Action::Close),
+        Item::Separator,
+        a(Action::LoadAnnotations),
+        a(Action::SaveAnnotations),
+        a(Action::ExportShownAnnotations),
+    ];
     if !mac {
         file.extend([Item::Separator, a(Action::Quit)]);
     }

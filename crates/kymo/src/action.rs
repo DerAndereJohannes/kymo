@@ -9,6 +9,12 @@ pub enum Action {
     Open,
     Close,
     Quit,
+    /// Adds the annotations of a file (an events table or MNE's CSV).
+    LoadAnnotations,
+    /// Saves the file's and the viewer's annotations as an events table.
+    SaveAnnotations,
+    /// Saves the annotations of the descriptions shown, stim ones included.
+    ExportShownAnnotations,
     Settings,
     Shortcuts,
     /// An About window; macOS uses the system's About panel instead.
@@ -72,10 +78,13 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 41] = [
+    pub const ALL: [Action; 44] = [
         Action::Open,
         Action::Close,
         Action::Quit,
+        Action::LoadAnnotations,
+        Action::SaveAnnotations,
+        Action::ExportShownAnnotations,
         Action::Settings,
         Action::Shortcuts,
         Action::About,
@@ -122,6 +131,9 @@ impl Action {
             Action::Open => "Open…",
             Action::Close => "Close",
             Action::Quit => "Quit",
+            Action::LoadAnnotations => "Load Annotations…",
+            Action::SaveAnnotations => "Save Annotations…",
+            Action::ExportShownAnnotations => "Export Shown Annotations…",
             Action::Settings => "Settings…",
             Action::Shortcuts => "Keyboard Shortcuts",
             Action::About => "About Kymo",

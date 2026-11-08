@@ -50,6 +50,9 @@ fn every_item_has_a_label_and_appears_once() {
             Action::Quit,
             Action::Settings,
             Action::Shortcuts,
+            Action::LoadAnnotations,
+            Action::SaveAnnotations,
+            Action::ExportShownAnnotations,
         ] {
             assert!(seen.contains(&action), "{platform:?}: no {action:?}");
         }

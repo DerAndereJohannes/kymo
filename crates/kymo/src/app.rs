@@ -1,9 +1,13 @@
 //! The window: no recording, one being opened, one on screen, or why it couldn't open.
 
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use eframe::egui::{self, Align, Color32, Event, Layout, RichText, Ui};
+use kymo_core::annotation_file::{self, Format};
 use kymo_core::pyramid::Sidecar;
 use kymo_core::service::{PyramidStore, ServiceOptions, TileService};
 use kymo_core::stim::EventOptions;
@@ -79,6 +83,33 @@ pub struct KymoApp {
     shown: bool,
     /// The window title last set.
     title: String,
+    /// Answers to the next file dialogs, in order, instead of the system's (`None` cancels),
+    /// for tests.
+    dialog_answers: Option<VecDeque<Option<PathBuf>>>,
+    /// What waits for the answer to "Save the changes?".
+    leaving: Option<Leave>,
+    /// A message in a window: its title and text.
+    notice: Option<(String, String)>,
+    /// The window may close: its unsaved changes were saved or given up.
+    closing: bool,
+}
+
+/// What the unsaved changes question holds up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leave {
+    Close,
+    Open,
+    Quit,
+}
+
+/// A file dialog.
+enum Dialog {
+    Open,
+    /// Where to save the annotations, suggesting a path.
+    Save(PathBuf),
+    /// Where to export the shown annotations, suggesting a path.
+    Export(PathBuf),
+    Load,
 }
 
 /// A recording ready to show, as the loading thread hands it over.
@@ -114,6 +145,10 @@ impl KymoApp {
             shown: false,
             // As the window opens.
             title: APP_NAME.to_owned(),
+            dialog_answers: None,
+            leaving: None,
+            notice: None,
+            closing: false,
         };
         if let Some(path) = path {
             app.open(ctx, path);
@@ -282,6 +317,14 @@ impl KymoApp {
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll_loading();
+        // The window's close button, or Quit's own request: unsaved changes are asked about.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.closing
+            && self.viewer().is_some_and(Viewer::edited)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.leaving = Some(Leave::Quit);
+        }
         // The startup dialog is modal: show it once the window has been drawn and has focus.
         // On macOS a panel opened before the app is active is canceled at once; gaining
         // focus repaints, which brings us back here.
@@ -364,8 +407,10 @@ impl KymoApp {
             }
         }
         if open_clicked {
-            self.pick_and_open(&ctx);
+            self.leave(&ctx, Leave::Open);
         }
+        self.unsaved_question(&ctx);
+        self.notice_window(&ctx);
         let title = self.title();
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -387,11 +432,24 @@ impl KymoApp {
                     ctx.input_mut(|i| i.events.push(event));
                 }
             }
-            Action::Open => self.pick_and_open(ctx),
-            Action::Close => {
-                self.state = State::Empty;
+            Action::Open => self.leave(ctx, Leave::Open),
+            Action::Close => self.leave(ctx, Leave::Close),
+            Action::SaveAnnotations => {
+                self.save_annotations();
             }
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::ExportShownAnnotations => {
+                if let Some(path) = self.viewer().map(|v| export_path(&v.save_path()))
+                    && let Some(path) = self.ask(Dialog::Export(path))
+                {
+                    self.export_shown_to(&path);
+                }
+            }
+            Action::LoadAnnotations => {
+                if let Some(path) = self.ask(Dialog::Load) {
+                    self.load_annotations_from(&path);
+                }
+            }
+            Action::Quit => self.leave(ctx, Leave::Quit),
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
@@ -416,7 +474,8 @@ impl KymoApp {
     /// The actions of this frame's key presses, unless a text field has the keyboard. Esc
     /// with a menu or popup open only closes it.
     fn key_actions(&self, ctx: &egui::Context) -> Vec<Action> {
-        if ctx.egui_wants_keyboard_input() {
+        // A question or a notice holds the window until it is answered.
+        if ctx.egui_wants_keyboard_input() || self.leaving.is_some() || self.notice.is_some() {
             return Vec::new();
         }
         // Esc in a text field: egui took the keyboard back before this frame's widgets.
@@ -448,16 +507,252 @@ impl KymoApp {
     }
 
     fn pick_and_open(&mut self, ctx: &egui::Context) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Open a recording")
-            .add_filter("EDF and BDF", &["edf", "bdf", "EDF", "BDF"])
-            .add_filter("All files", &["*"]);
-        if let Some(dir) = self.current_path().and_then(|p| p.parent()) {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(path) = dialog.pick_file() {
+        if let Some(path) = self.ask(Dialog::Open) {
             self.open(ctx, path);
         }
+    }
+
+    /// Answers the next file dialogs with `answers`, in order, instead of showing the
+    /// system's; `None` cancels one. For tests.
+    pub fn answer_file_dialogs(&mut self, answers: impl IntoIterator<Item = Option<PathBuf>>) {
+        self.dialog_answers = Some(answers.into_iter().collect());
+    }
+
+    /// The path a file dialog picks, or `None` if it was canceled.
+    fn ask(&mut self, dialog: Dialog) -> Option<PathBuf> {
+        if let Some(answers) = &mut self.dialog_answers {
+            return answers.pop_front().flatten();
+        }
+        let mut files = rfd::FileDialog::new();
+        if let Some(dir) = self.current_path().and_then(Path::parent) {
+            files = files.set_directory(dir);
+        }
+        let save = |files: rfd::FileDialog, title: &str, suggested: &Path| {
+            let mut files = files.set_title(title).add_filter("Events table", &["tsv"]);
+            if let Some(dir) = suggested.parent() {
+                files = files.set_directory(dir);
+            }
+            if let Some(name) = suggested.file_name() {
+                files = files.set_file_name(name.to_string_lossy());
+            }
+            files.save_file()
+        };
+        match dialog {
+            Dialog::Open => files
+                .set_title("Open a recording")
+                .add_filter("EDF and BDF", &["edf", "bdf", "EDF", "BDF"])
+                .add_filter("All files", &["*"])
+                .pick_file(),
+            Dialog::Save(suggested) => save(files, "Save annotations", &suggested),
+            Dialog::Export(suggested) => save(files, "Export shown annotations", &suggested),
+            Dialog::Load => files
+                .set_title("Load annotations")
+                .add_filter("Events table or MNE CSV", &["tsv", "csv", "TSV", "CSV"])
+                .pick_file(),
+        }
+    }
+
+    /// Closes the recording, opens another, or quits, after asking what to do with unsaved
+    /// changes to the annotations.
+    fn leave(&mut self, ctx: &egui::Context, leave: Leave) {
+        if self.viewer().is_some_and(Viewer::edited) && !self.closing {
+            self.leaving = Some(leave);
+        } else {
+            self.go(ctx, leave);
+        }
+    }
+
+    /// Closes the recording, opens another, or quits, without asking.
+    fn go(&mut self, ctx: &egui::Context, leave: Leave) {
+        match leave {
+            Leave::Close => self.state = State::Empty,
+            Leave::Open => self.pick_and_open(ctx),
+            Leave::Quit => {
+                self.closing = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    /// What waits for the answer to "Save the changes?", while it is asked.
+    pub fn leaving(&self) -> Option<Leave> {
+        self.leaving
+    }
+
+    /// The message shown in a window, if there is one: its title and text.
+    pub fn notice(&self) -> Option<(&str, &str)> {
+        self.notice.as_ref().map(|(t, s)| (t.as_str(), s.as_str()))
+    }
+
+    /// Whether the window may close now.
+    pub fn closing(&self) -> bool {
+        self.closing
+    }
+
+    /// Asks "Save the changes?" while something waits for the answer: Save… saves (and
+    /// goes on unless the save dialog was canceled), Don't Save goes on, Cancel stays.
+    fn unsaved_question(&mut self, ctx: &egui::Context) {
+        let Some(leave) = self.leaving else {
+            return;
+        };
+        let name = self
+            .viewer()
+            .map_or_else(String::new, |v| v.document().name());
+        #[derive(PartialEq)]
+        enum Answer {
+            Save,
+            DontSave,
+            Cancel,
+        }
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::unique("kymo unsaved changes")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.heading(format!("Save the changes to the annotations of {name}?"));
+            ui.label("They are lost if you don't save them.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save…").clicked() {
+                    answer = Some(Answer::Save);
+                }
+                if ui.button("Don't Save").clicked() {
+                    answer = Some(Answer::DontSave);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(Answer::Cancel);
+                }
+            });
+        });
+        if answer.is_none() && modal.should_close() {
+            answer = Some(Answer::Cancel);
+        }
+        let Some(answer) = answer else {
+            return;
+        };
+        self.leaving = None;
+        let go_on = match answer {
+            Answer::Save => self.save_annotations(),
+            Answer::DontSave => true,
+            Answer::Cancel => false,
+        };
+        if go_on {
+            self.go(ctx, leave);
+        }
+    }
+
+    /// Shows the notice, if there is one, until it is dismissed.
+    fn notice_window(&mut self, ctx: &egui::Context) {
+        let Some((title, text)) = &self.notice else {
+            return;
+        };
+        let mut ok = false;
+        let modal = egui::Modal::new(egui::Id::unique("kymo notice")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(title.as_str());
+            ui.label(text.as_str());
+            ui.add_space(8.0);
+            ok = ui.button("OK").clicked();
+        });
+        if ok || modal.should_close() {
+            self.notice = None;
+        }
+    }
+
+    /// Asks where to save the annotations and saves them there; whether it did.
+    fn save_annotations(&mut self) -> bool {
+        let Some(suggested) = self.viewer().map(Viewer::save_path) else {
+            return false;
+        };
+        let Some(path) = self.ask(Dialog::Save(suggested)) else {
+            return false;
+        };
+        self.save_annotations_to(&path)
+    }
+
+    /// Saves the file's and the viewer's annotations to `path`, as an events table with
+    /// the extension `.tsv` (so nothing reads it as another format, and the recording is
+    /// never overwritten); whether it did. An error shows in a notice.
+    pub fn save_annotations_to(&mut self, path: &Path) -> bool {
+        let path = with_tsv(path);
+        let State::Ready(viewer) = &mut self.state else {
+            return false;
+        };
+        match write_file(&path, |out| viewer.write_annotations(out, false)) {
+            Ok(()) => {
+                viewer.mark_saved(path);
+                true
+            }
+            Err(error) => {
+                self.notice = Some((
+                    "Could not save the annotations".into(),
+                    format!("{}: {error}", path.display()),
+                ));
+                false
+            }
+        }
+    }
+
+    /// Exports the annotations of the descriptions shown to `path`, as
+    /// [`save_annotations_to`](Self::save_annotations_to) does, without marking them saved.
+    pub fn export_shown_to(&mut self, path: &Path) -> bool {
+        let path = with_tsv(path);
+        let Some(viewer) = self.viewer() else {
+            return false;
+        };
+        match write_file(&path, |out| viewer.write_annotations(out, true)) {
+            Ok(()) => true,
+            Err(error) => {
+                self.notice = Some((
+                    "Could not export the annotations".into(),
+                    format!("{}: {error}", path.display()),
+                ));
+                false
+            }
+        }
+    }
+
+    /// Adds the annotations of the file at `path` (an events table or MNE's CSV) as one
+    /// step; whether it did. A notice tells of an error, and of annotations skipped.
+    pub fn load_annotations_from(&mut self, path: &Path) -> bool {
+        let State::Ready(viewer) = &mut self.state else {
+            return false;
+        };
+        let name = file_name(path);
+        let fail = |text: String| Some(("Could not load the annotations".to_owned(), text));
+        let Some(format) = Format::of(path) else {
+            self.notice = fail(format!("{name} is not a .tsv or .csv file."));
+            return false;
+        };
+        let context = annotation_file::Context::of(&viewer.document().recording);
+        let read = File::open(path)
+            .map_err(annotation_file::FileError::from)
+            .and_then(|f| annotation_file::read(BufReader::new(f), format, &context));
+        let loaded = match read {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.notice = fail(format!("{name}: {error}"));
+                return false;
+            }
+        };
+        let count = loaded.annotations.len();
+        viewer.add_annotations(loaded.annotations);
+        let mut skipped = Vec::new();
+        if loaded.outside > 0 {
+            skipped.push(format!("{} outside the recording", loaded.outside));
+        }
+        if loaded.unknown_channels > 0 {
+            skipped.push(format!(
+                "{} naming channels it doesn't have",
+                loaded.unknown_channels
+            ));
+        }
+        if !skipped.is_empty() || count == 0 {
+            let mut text = format!("Loaded {count} annotation{} from {name}.", plural(count));
+            if !skipped.is_empty() {
+                text += &format!(" Skipped {}.", skipped.join(" and "));
+            }
+            self.notice = Some(("Annotations loaded".into(), text));
+        }
+        true
     }
 
     fn current_path(&self) -> Option<&Path> {
@@ -581,6 +876,39 @@ pub fn text_field_key(action: Action) -> Option<Event> {
         repeat: false,
         modifiers,
     })
+}
+
+/// `path` with the extension `.tsv`, unless it has it (in any case).
+fn with_tsv(path: &Path) -> PathBuf {
+    if Format::of(path) == Some(Format::Table) {
+        path.to_owned()
+    } else {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".tsv");
+        PathBuf::from(name)
+    }
+}
+
+/// Where to suggest exporting the shown annotations, next to `saved`.
+fn export_path(saved: &Path) -> PathBuf {
+    let stem = saved
+        .file_stem()
+        .map_or("annotations".into(), |s| s.to_string_lossy());
+    saved.with_file_name(format!("{stem}-shown.tsv"))
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Writes a file with `write`, then flushes it.
+fn write_file(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut out = BufWriter::new(File::create(path)?);
+    write(&mut out)?;
+    out.flush()
 }
 
 /// A message with an optional detail and an Open button, centered. Returns whether the
