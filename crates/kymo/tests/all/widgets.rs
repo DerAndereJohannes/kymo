@@ -37,9 +37,13 @@ proptest! {
         if natural >= MIN_THUMB {
             prop_assert!((t.span() - natural).abs() < 1e-2 * natural.max(1.0));
         }
-        // Moving the thumb to where it is gives the same start back.
+        // Moving the thumb to where it is gives the same start back, as exactly as an f32
+        // position can say where on its travel the thumb is.
         let back = start_at(track, total, len, t.min);
-        prop_assert!((back - start).abs() <= (total - len) * 1e-4 + 1e-9, "{back} vs {start}");
+        let travel = f64::from(track.span() - t.span());
+        let precision = 4.0 * f64::from(f32::EPSILON * track.min.abs().max(track.max.abs()));
+        let share = if travel > 0.0 { (precision / travel).max(1e-4) } else { 1.0 };
+        prop_assert!((back - start).abs() <= (total - len) * share + 1e-9, "{back} vs {start}");
         // Its ends are the ends of the range.
         prop_assert_eq!(start_at(track, total, len, track.min - 50.0), 0.0);
         let end = start_at(track, total, len, track.max + 50.0);
