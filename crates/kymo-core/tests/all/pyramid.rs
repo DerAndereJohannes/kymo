@@ -179,13 +179,16 @@ proptest! {
         threads in 1..=5usize,
         seed in any::<u64>(),
     ) {
+        // Chunks of a few samples on short grids; long ones in at most 1000 steps, which
+        // still split buckets at every level.
+        let chunk = chunk.max(len / 1000);
         let (rec, _) = mem_recording(sample_type, n, len, segments, seed);
         let mut builder = PyramidBuilder::new(&rec, GridId(0))
             .unwrap()
             .with_chunk_len(chunk)
             .with_threads(threads);
         prop_assert_eq!(builder.len(), len);
-        // Count steps on small builds only; chunk 1 over long grids is many steps.
+        // Count steps on small builds only.
         if len <= 5000 {
             let mut steps = 0;
             while !builder.step().unwrap() {
