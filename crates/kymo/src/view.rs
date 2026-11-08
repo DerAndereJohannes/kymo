@@ -258,8 +258,10 @@ impl ViewState {
             Action::PageRight => self.pan(self.span),
             Action::ToStart => self.pan(-self.duration),
             Action::ToEnd => self.pan(self.duration),
-            Action::ZoomIn => self.zoom(ZOOM_STEP, 0.5),
-            Action::ZoomOut => self.zoom(1.0 / ZOOM_STEP, 0.5),
+            // From the window's start, as Default Window keeps it, so zooming in and out
+            // returns to the same window unless the end of the recording moved it.
+            Action::ZoomIn => self.zoom(ZOOM_STEP, 0.0),
+            Action::ZoomOut => self.zoom(1.0 / ZOOM_STEP, 0.0),
             Action::DefaultWindow => {
                 self.span = self.default_span;
                 self.clamp();

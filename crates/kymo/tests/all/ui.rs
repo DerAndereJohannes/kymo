@@ -426,7 +426,7 @@ fn menu_items_act_and_disabled_ones_dont() {
     let mut harness = window(file.path());
     ready(&mut harness);
     choose(&mut harness, "View", "Zoom In");
-    assert_eq!(viewer(&harness).view().time(), 5.0..15.0);
+    assert_eq!(viewer(&harness).view().time(), 0.0..10.0);
     choose(&mut harness, "Go", "End of Recording");
     assert_eq!(viewer(&harness).view().time(), 50.0..60.0);
     choose(&mut harness, "View", "Remove DC");

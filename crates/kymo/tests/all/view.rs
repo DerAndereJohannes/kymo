@@ -173,24 +173,53 @@ fn pans_by_quarters_and_windows_within_the_recording() {
 }
 
 #[test]
-fn zooms_around_the_center_down_to_ten_samples() {
+fn zooms_from_the_start_down_to_ten_samples() {
     let (_, mut view) = state();
     act(&mut view, Action::PageRight);
     act(&mut view, Action::ZoomIn);
-    assert_time(&view, 25.0..35.0);
+    assert_time(&view, 20.0..30.0);
     act(&mut view, Action::ZoomOut);
     act(&mut view, Action::ZoomOut);
-    assert_time(&view, 10.0..50.0);
+    assert_time(&view, 20.0..60.0);
+    act(&mut view, Action::ZoomIn);
+    assert_time(&view, 20.0..40.0);
     for _ in 0..30 {
         act(&mut view, Action::ZoomIn);
     }
     // Ten samples of the 1000 Hz grid, the fastest.
     assert!(close(view.span(), 0.01), "{}", view.span());
-    assert!(close(view.start() + view.span() / 2.0, 30.0));
+    assert!(close(view.start(), 20.0));
     for _ in 0..30 {
         act(&mut view, Action::ZoomOut);
     }
     assert_time(&view, 0.0..600.0);
+}
+
+#[test]
+fn zooming_in_and_out_returns_to_the_same_window() {
+    let (_, mut view) = state();
+    // At the start, where zooming around the center would drift later.
+    for _ in 0..3 {
+        act(&mut view, Action::ZoomOut);
+        act(&mut view, Action::ZoomIn);
+        act(&mut view, Action::ZoomIn);
+        act(&mut view, Action::ZoomOut);
+    }
+    assert_time(&view, 0.0..20.0);
+    view.pan(100.0);
+    for _ in 0..3 {
+        act(&mut view, Action::ZoomOut);
+    }
+    for _ in 0..3 {
+        act(&mut view, Action::ZoomIn);
+    }
+    assert_time(&view, 100.0..120.0);
+    // At the end, zooming out has to move the start back, and zooming in keeps it.
+    act(&mut view, Action::ToEnd);
+    act(&mut view, Action::ZoomOut);
+    assert_time(&view, 560.0..600.0);
+    act(&mut view, Action::ZoomIn);
+    assert_time(&view, 560.0..580.0);
 }
 
 #[test]
@@ -199,9 +228,9 @@ fn default_window_keeps_the_start_and_fit_shows_everything() {
     view.pan(100.0);
     act(&mut view, Action::ZoomOut);
     act(&mut view, Action::ZoomOut);
-    assert_time(&view, 70.0..150.0);
+    assert_time(&view, 100.0..180.0);
     act(&mut view, Action::DefaultWindow);
-    assert_time(&view, 70.0..90.0);
+    assert_time(&view, 100.0..120.0);
     act(&mut view, Action::Fit);
     assert_time(&view, 0.0..600.0);
     // From a wider window at the end: 20 s from its start.
@@ -421,9 +450,9 @@ fn the_default_window_can_be_set() {
     act(&mut view, Action::ZoomOut);
     // A new default leaves the window alone until Default Window.
     view.set_default_span(30.0);
-    assert_time(&view, 96.25..111.25);
+    assert_time(&view, 100.0..115.0);
     act(&mut view, Action::DefaultWindow);
-    assert_time(&view, 96.25..126.25);
+    assert_time(&view, 100.0..130.0);
     for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         view.set_default_span(bad);
         assert_eq!(view.default_span(), 30.0, "{bad}");
