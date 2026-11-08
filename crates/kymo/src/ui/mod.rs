@@ -1,7 +1,8 @@
 //! Pieces of the window: the time axis, scrollbars, the status line, the sidebar, trace
-//! colors, the egui-drawn menus and windows, the Settings window, and the renderer inside egui.
+//! colors and the color picker, the egui-drawn menus and windows, the Settings window, and the renderer inside egui.
 
 pub mod axis;
+pub mod color;
 pub mod gpu;
 pub mod header;
 pub mod menus;

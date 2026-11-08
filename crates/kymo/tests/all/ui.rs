@@ -9,9 +9,10 @@ use eframe::egui_wgpu;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use kymo::action::Action;
+use kymo::annotations::{AnnotationColor, AnnotationColors};
 use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
-use kymo::settings::Settings;
+use kymo::settings::{Settings, load_annotation_colors};
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
 use kymo::view::{KINDS, kind_index};
@@ -40,6 +41,7 @@ fn options() -> Options {
         sidecar_dir: None,
         menus: Menus::Egui(Platform::Linux),
         settings: Settings::default(),
+        annotation_colors: Default::default(),
     }
 }
 
@@ -837,13 +839,21 @@ fn the_legend_shows_and_hides_annotations() {
     assert_eq!(viewer(&harness).legend().shown_count(), (30, 30));
     let colors = |harness: &Harness<'_, KymoApp>| {
         let marks = viewer(harness).marks();
-        let mut bands: Vec<usize> = marks.bands.iter().map(|m| m.color).collect();
-        let mut lines: Vec<usize> = marks.lines.iter().map(|m| m.color).collect();
+        let mut bands: Vec<_> = marks.bands.iter().map(|m| m.color).collect();
+        let mut lines: Vec<_> = marks.lines.iter().map(|m| m.color).collect();
         bands.sort();
         lines.sort();
         (bands, lines, marks.labels.len())
     };
-    assert_eq!(colors(&harness), (vec![1], vec![0, 2, 3], 3));
+    use AnnotationColor::Palette;
+    assert_eq!(
+        colors(&harness),
+        (
+            vec![Palette(1)],
+            vec![Palette(0), Palette(2), Palette(3)],
+            3
+        )
+    );
 
     // The legend is at the bottom of the sidebar, below the types and channels, and shows
     // 8 rows before it scrolls.
@@ -911,7 +921,10 @@ fn the_legend_shows_and_hides_annotations() {
     );
 
     click_in_list(&mut harness, Role::CheckBox, "Show sleep stage N2");
-    assert_eq!(colors(&harness), (vec![], vec![0, 2, 3], 2));
+    assert_eq!(
+        colors(&harness),
+        (vec![], vec![Palette(0), Palette(2), Palette(3)], 2)
+    );
     assert_eq!(viewer(&harness).legend().shown_count(), (29, 30));
     assert_eq!(
         toggled(&harness, Role::CheckBox, "Annotations"),
@@ -920,7 +933,14 @@ fn the_legend_shows_and_hides_annotations() {
 
     // A mixed box shows them all; then it hides them all.
     click_in_list(&mut harness, Role::CheckBox, "Annotations");
-    assert_eq!(colors(&harness), (vec![1], vec![0, 2, 3], 3));
+    assert_eq!(
+        colors(&harness),
+        (
+            vec![Palette(1)],
+            vec![Palette(0), Palette(2), Palette(3)],
+            3
+        )
+    );
     click_in_list(&mut harness, Role::CheckBox, "Annotations");
     assert_eq!(colors(&harness), (vec![], vec![], 0));
     assert_eq!(
@@ -1477,23 +1497,143 @@ fn auto_scale_ignores_a_dc_offset() {
     );
 }
 
+/// eframe's storage, in memory.
+#[derive(Default)]
+struct Memory(std::collections::HashMap<String, String>);
+
+impl eframe::Storage for Memory {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    fn flush(&mut self) {}
+}
+
+/// The window opening `path` with `options`, with the system fonts the app has: egui's
+/// color picker draws a 📋.
+fn fonts_window(path: &Path, options: Options) -> Harness<'static, KymoApp> {
+    let path = path.to_owned();
+    Harness::builder()
+        .with_size(SIZE)
+        .with_context_setup(system_fonts)
+        .build_eframe(move |cc| {
+            KymoApp::new(
+                &cc.egui_ctx,
+                Gpu::none("no GPU in this test"),
+                options,
+                Some(path),
+            )
+        })
+}
+
+/// Opens the color picker of the swatch labeled `label` and picks `rgb` in it.
+fn pick(harness: &mut Harness<'_, KymoApp>, label: &str, rgb: [u8; 3]) {
+    if harness.query_by_label("Reset").is_none() {
+        harness.get_by_label(label).click();
+        harness.run_steps(2);
+    }
+    for (channel, value) in ["R", "G", "B"].into_iter().zip(rgb) {
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::SpinButton, channel)
+            .set_value_accesskit(f64::from(value));
+        harness.run_steps(2);
+    }
+}
+
+#[test]
+fn channel_type_colors_are_picked_and_reset() {
+    let file = typed_preset();
+    let mut harness = fonts_window(file.path(), options());
+    ready(&mut harness);
+    let picked = |h: &Harness<'_, KymoApp>| h.state().settings().type_colors;
+    let eog = kind_index(ChannelKind::Eog);
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+
+    // The picker starts at the type's color; Reset is off while it is the default.
+    harness.get_by_label("Color of EOG").click();
+    harness.run_steps(2);
+    let visuals = harness.ctx.global_style().visuals.clone();
+    let default = trace_color(ChannelKind::Eog, &visuals);
+    let value = |h: &Harness<'_, KymoApp>, channel: &str| {
+        h.get_by_role_and_label(egui::accesskit::Role::SpinButton, channel)
+            .accesskit_node()
+            .numeric_value()
+    };
+    assert_eq!(value(&harness, "B"), Some(f64::from(default.b())));
+    assert!(harness.get_by_label("Reset").accesskit_node().is_disabled());
+
+    pick(&mut harness, "Color of EOG", [10, 200, 30]);
+    let mut want = [None; KINDS.len()];
+    want[eog] = Some(egui::Color32::from_rgb(10, 200, 30));
+    assert_eq!(picked(&harness), want);
+    harness.get_by_label("Reset").click();
+    harness.run_steps(2);
+    assert_eq!(picked(&harness), [None; KINDS.len()]);
+
+    // Restore Defaults resets them too.
+    pick(&mut harness, "Color of EOG", [10, 200, 30]);
+    assert_eq!(picked(&harness), want);
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.get_by_label("Restore Defaults").click();
+    harness.run_steps(2);
+    assert_eq!(picked(&harness), [None; KINDS.len()]);
+}
+
+#[test]
+fn annotation_colors_are_picked_per_description_and_kept() {
+    use AnnotationColor::{Custom, Palette};
+    let file = without_triggers("edf+d-mixed");
+    let mut harness = fonts_window(file.path(), options());
+    ready(&mut harness);
+    let color = |h: &Harness<'_, KymoApp>, d: &str| viewer(h).legend().entry(d).unwrap().color;
+    let line_colors = |h: &Harness<'_, KymoApp>| {
+        let mut colors: Vec<_> = viewer(h).marks().lines.iter().map(|m| m.color).collect();
+        colors.sort();
+        colors
+    };
+    let green = Custom([10, 200, 30]);
+    assert_eq!(line_colors(&harness), [Palette(0), Palette(2), Palette(3)]);
+
+    // "event 0" (an event at the start) turns green; the others keep their colors.
+    pick(&mut harness, "Color of event 0", [10, 200, 30]);
+    assert_eq!(
+        harness.state().annotation_colors(),
+        &AnnotationColors::from([("event 0".to_owned(), [10, 200, 30])])
+    );
+    assert_eq!(color(&harness, "event 0"), green);
+    assert_eq!(color(&harness, "sleep stage N2"), Palette(1));
+    assert_eq!(line_colors(&harness), [Palette(2), Palette(3), green]);
+
+    // Reset: the palette color again.
+    harness.get_by_label("Reset").click();
+    harness.run_steps(2);
+    assert!(harness.state().annotation_colors().is_empty());
+    assert_eq!(color(&harness, "event 0"), Palette(0));
+    assert_eq!(line_colors(&harness), [Palette(0), Palette(2), Palette(3)]);
+
+    // Kept for the next run, and for every recording with the description.
+    pick(&mut harness, "Color of event 0", [10, 200, 30]);
+    let mut storage = Memory::default();
+    eframe::App::save(harness.state_mut(), &mut storage);
+    let other = TempFile::preset("edf+d-mixed");
+    let options = Options {
+        annotation_colors: load_annotation_colors(Some(&storage)),
+        ..options()
+    };
+    let mut harness = fonts_window(other.path(), options);
+    ready(&mut harness);
+    assert_eq!(color(&harness, "event 0"), green);
+}
+
 #[test]
 fn settings_are_kept_between_runs() {
-    #[derive(Default)]
-    struct Memory(std::collections::HashMap<String, String>);
-    impl eframe::Storage for Memory {
-        fn get_string(&self, key: &str) -> Option<String> {
-            self.0.get(key).cloned()
-        }
-        fn set_string(&mut self, key: &str, value: String) {
-            self.0.insert(key.to_owned(), value);
-        }
-        fn remove_string(&mut self, key: &str) {
-            self.0.remove(key);
-        }
-        fn flush(&mut self) {}
-    }
-
     let file = TempFile::preset("bdf+c-small");
     let mut storage = Memory::default();
     {
@@ -1762,6 +1902,69 @@ fn traces_take_their_types_colors() {
 }
 
 #[test]
+fn traces_take_picked_type_colors() {
+    let Some(setup) = gpu_setup() else { return };
+    // Rows A1, A2 (EEG), "EOG L", ECG, Status.
+    let file = typed_preset();
+    let mut harness = gpu_window(file.path(), setup);
+    ready(&mut harness);
+    whole_pixels(&mut harness);
+    let green = egui::Color32::from_rgb(10, 200, 30);
+    let visuals = harness.ctx.global_style().visuals.clone();
+    let blue = trace_color(ChannelKind::Eog, &visuals);
+    // Pixels of the EOG row near `color`.
+    let count = |harness: &mut Harness<'_, KymoApp>, color: egui::Color32| {
+        let traces = viewer(harness).layout().unwrap().traces;
+        let width = traces.width() as usize;
+        let row_height = traces.height() as usize / 5;
+        let image = traces_image(harness);
+        image[2 * row_height * width..3 * row_height * width]
+            .iter()
+            .filter(|p| near(p, color))
+            .count()
+    };
+    // Green pixels of the sidebar's EOG type row and channel name.
+    let sidebar = |harness: &mut Harness<'_, KymoApp>| {
+        let rects = [
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::CheckBox, "EOG")
+                .rect(),
+            harness.get_by_label("EOG L").rect(),
+        ];
+        let image = harness.render().unwrap();
+        rects.map(|r| {
+            (r.left() as u32..r.right() as u32)
+                .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
+                .filter(|&(x, y)| near(&image.get_pixel(x, y).0, green))
+                .count()
+        })
+    };
+    let before = (count(&mut harness, blue), count(&mut harness, green));
+    assert!(before.0 > 200 && before.1 == 0, "{before:?}");
+    assert_eq!(sidebar(&mut harness), [0, 0]);
+
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    pick(&mut harness, "Color of EOG", [10, 200, 30]);
+    harness.key_press(Key::Escape);
+    harness.get_by_label("Close window").click();
+    harness.run_steps(3);
+    let after = (count(&mut harness, blue), count(&mut harness, green));
+    assert!(
+        after.0 < before.0 / 20 && after.1 > before.0 / 2,
+        "{after:?}"
+    );
+    let named = sidebar(&mut harness);
+    assert!(named.iter().all(|&n| n > 5), "{named:?}");
+
+    // A bad channel stays gray.
+    harness.get_by_label("EOG L bad").click();
+    harness.run_steps(2);
+    let bad = count(&mut harness, green);
+    assert!(bad < after.1 / 20, "{bad}");
+}
+
+#[test]
 fn stim_traces_stay_in_their_row() {
     let Some(setup) = gpu_setup() else { return };
     // Status, the last row, holds codes up to 255 under status bits around 2^20; at a stim
@@ -1847,7 +2050,12 @@ fn annotations_lie_behind_the_traces() {
         d(p[0], c.r()) + d(p[1], c.g()) + d(p[2], c.b())
     };
 
-    let band = marks.bands.iter().find(|b| b.color == 1).unwrap().clone();
+    let band = marks
+        .bands
+        .iter()
+        .find(|b| b.color == AnnotationColor::Palette(1))
+        .unwrap()
+        .clone();
     assert!(band.columns.len() > 10, "{band:?}");
     let marked = |c: u32| {
         marks
@@ -1859,7 +2067,7 @@ fn annotations_lie_behind_the_traces() {
     let plain = (0..width as u32).find(|&c| !marked(c)).unwrap();
     let background = mode(&column(plain));
     let tinted = mode(&column((band.columns.start + band.columns.end) / 2));
-    let band_color = annotation_color(1, &visuals);
+    let band_color = annotation_color(AnnotationColor::Palette(1), &visuals);
     assert!(
         tinted != background && distance(tinted, band_color) < distance(background, band_color),
         "band {tinted:?}, background {background:?}"
@@ -1874,10 +2082,17 @@ fn annotations_lie_behind_the_traces() {
         .count();
     assert!(on_top > 20, "{on_top} trace pixels in the band");
 
-    let line = marks.lines.iter().find(|l| l.color == 0).unwrap();
+    let line = marks
+        .lines
+        .iter()
+        .find(|l| l.color == AnnotationColor::Palette(0))
+        .unwrap();
     let solid = mode(&column(line.columns.start));
     assert!(
-        distance(solid, annotation_color(0, &visuals)) < 12,
+        distance(
+            solid,
+            annotation_color(AnnotationColor::Palette(0), &visuals)
+        ) < 12,
         "line {solid:?}"
     );
 }

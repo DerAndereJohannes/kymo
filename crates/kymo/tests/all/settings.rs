@@ -3,7 +3,12 @@
 use std::collections::HashMap;
 
 use eframe::Storage;
+use eframe::egui::Color32;
+use kymo::annotations::AnnotationColors;
 use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB};
+use kymo::settings::{load_annotation_colors, save_annotation_colors};
+use kymo::view::KINDS;
+use proptest::prelude::*;
 
 /// Storage in memory.
 #[derive(Default)]
@@ -45,6 +50,14 @@ fn saved_settings_read_back() {
         default_window_s: 7.5,
         antialias: true,
         auto_scale_on_open: true,
+        type_colors: [
+            None,
+            Some(Color32::from_rgb(10, 200, 30)),
+            None,
+            None,
+            None,
+            Some(Color32::from_rgb(0, 0, 0)),
+        ],
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
@@ -61,6 +74,14 @@ fn unreadable_values_are_defaults_and_others_kept() {
         default_window_s: 5.0,
         antialias: true,
         auto_scale_on_open: true,
+        type_colors: [
+            None,
+            Some(Color32::from_rgb(255, 0, 128)),
+            None,
+            None,
+            None,
+            None,
+        ],
     };
     let defaults = Settings::default();
     let cases = [
@@ -99,9 +120,17 @@ fn unreadable_values_are_defaults_and_others_kept() {
                 ..saved
             },
         ),
+        (
+            "kymo.color.eog",
+            Settings {
+                type_colors: defaults.type_colors,
+                ..saved
+            },
+        ),
     ];
     for (key, want) in cases {
-        for value in ["lots", "", "-1.5e", "NaN"] {
+        let colors = ["#12345", "#12345g", "ff0080", "#+1+2+3", "#aé€"];
+        for value in ["lots", "", "-1.5e", "NaN"].into_iter().chain(colors) {
             let mut storage = Memory::default();
             saved.save(&mut storage);
             assert!(storage.0.contains_key(key), "{key} not saved");
@@ -120,6 +149,7 @@ fn values_out_of_range_are_clamped() {
         default_window_s: 1e9,
         antialias: false,
         auto_scale_on_open: false,
+        type_colors: [None; KINDS.len()],
     }
     .save(&mut storage);
     let loaded = Settings::load(Some(&storage));
@@ -131,4 +161,68 @@ fn values_out_of_range_are_clamped() {
         Settings::load(Some(&storage)).default_window_s,
         *DEFAULT_WINDOW_S.start()
     );
+}
+
+proptest! {
+    /// Any descriptions (line breaks, tabs, backslashes, `#`, non-ASCII) and colors read
+    /// back exactly.
+    #[test]
+    fn annotation_colors_read_back(
+        colors in proptest::collection::btree_map(any::<String>(), any::<[u8; 3]>(), 0..12),
+    ) {
+        let mut storage = Memory::default();
+        save_annotation_colors(&colors, &mut storage);
+        prop_assert_eq!(load_annotation_colors(Some(&storage)), colors);
+    }
+}
+
+#[test]
+fn annotation_colors_skip_unreadable_lines() {
+    assert_eq!(load_annotation_colors(None), AnnotationColors::new());
+    let mut storage = Memory::default();
+    storage.set_string(
+        "kymo.annotation_colors",
+        "garbage\n#00ff00\tgood\n#zzzzzz\tbad color\n#00ff00\tbad \\x escape\n\
+         #0000ff\tline\\nbreak \\\\ and\ttab\n#00ff0\tshort\n"
+            .into(),
+    );
+    let want = AnnotationColors::from([
+        ("good".to_owned(), [0, 255, 0]),
+        ("line\nbreak \\ and\ttab".to_owned(), [0, 0, 255]),
+    ]);
+    assert_eq!(load_annotation_colors(Some(&storage)), want);
+}
+
+#[test]
+fn a_reset_type_color_is_not_read_back() {
+    let mut picked = Settings::default();
+    picked.type_colors[0] = Some(Color32::from_rgb(1, 2, 3));
+    let mut storage = Memory::default();
+    picked.save(&mut storage);
+    Settings::default().save(&mut storage);
+    assert_eq!(Settings::load(Some(&storage)), Settings::default());
+}
+
+#[test]
+fn awkward_descriptions_read_back() {
+    let colors: AnnotationColors = [
+        "",
+        "#",
+        "\r",
+        "a\r",
+        "\r\n",
+        "\n",
+        "x\\",
+        "\\n",
+        "tab\there",
+        "\t",
+        "ü€😀",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, d)| (d.to_owned(), [i as u8, 0, 255]))
+    .collect();
+    let mut storage = Memory::default();
+    save_annotation_colors(&colors, &mut storage);
+    assert_eq!(load_annotation_colors(Some(&storage)), colors);
 }

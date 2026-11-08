@@ -3,11 +3,22 @@
 
 use eframe::egui::{Color32, Visuals};
 
-use crate::annotations::COLORS;
+use crate::annotations::{AnnotationColor, COLORS};
+use crate::view::{KINDS, kind_index};
 use kymo_core::ChannelKind;
 
-/// The color of a channel type's traces and names: EEG, EMG and misc in the theme's text
-/// color, EOG blue, ECG magenta and stim amber. Dark themes get lighter variants.
+/// Colors picked per channel type, in [`KINDS`] order; `None` keeps the default.
+pub type TypeColors = [Option<Color32>; KINDS.len()];
+
+/// The color of a channel type's traces and names: the one picked for it, used as it is
+/// in every theme, or the default ([`trace_color`]).
+pub fn type_color(kind: ChannelKind, picked: &TypeColors, visuals: &Visuals) -> Color32 {
+    picked[kind_index(kind)].unwrap_or_else(|| trace_color(kind, visuals))
+}
+
+/// The default color of a channel type's traces and names: EEG, EMG and misc in the
+/// theme's text color, EOG blue, ECG magenta and stim amber. Dark themes get lighter
+/// variants.
 pub fn trace_color(kind: ChannelKind, visuals: &Visuals) -> Color32 {
     let dark = visuals.dark_mode;
     match kind {
@@ -40,13 +51,18 @@ const ANNOTATION_COLORS: [Color32; COLORS] = [
     Color32::from_rgb(23, 190, 207),
 ];
 
-/// The color of annotation color `index` (taken modulo the number of colors), lighter
-/// in dark themes.
-pub fn annotation_color(index: usize, visuals: &Visuals) -> Color32 {
-    let color = ANNOTATION_COLORS[index % COLORS];
-    if visuals.dark_mode {
-        color.lerp_to_gamma(Color32::WHITE, 0.25)
-    } else {
-        color
+/// The color of an annotation color: a palette color (its index taken modulo the number
+/// of colors), lighter in dark themes, or a picked one as it is.
+pub fn annotation_color(color: AnnotationColor, visuals: &Visuals) -> Color32 {
+    match color {
+        AnnotationColor::Palette(index) => {
+            let color = ANNOTATION_COLORS[index % COLORS];
+            if visuals.dark_mode {
+                color.lerp_to_gamma(Color32::WHITE, 0.25)
+            } else {
+                color
+            }
+        }
+        AnnotationColor::Custom([r, g, b]) => Color32::from_rgb(r, g, b),
     }
 }

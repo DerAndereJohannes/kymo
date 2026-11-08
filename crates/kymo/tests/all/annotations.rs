@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use kymo::annotations::AnnotationColor::{self, Palette};
 use kymo::annotations::{COLORS, Legend, Mark, Marks, Span, marks, span_y, under};
 use kymo::view::ViewState;
 use kymo_core::testing::{MemData, single_grid};
@@ -37,7 +38,7 @@ fn insert(store: &mut AnnotationStore, data: AnnotationData) {
 fn colors(legend: &Legend) -> Vec<(String, usize, usize)> {
     legend
         .entries()
-        .map(|e| (e.description.clone(), e.color, e.count))
+        .map(|e| (e.description.clone(), e.slot, e.count))
         .collect()
 }
 
@@ -87,7 +88,7 @@ fn colors_follow_first_appearance_and_never_change() {
     );
     insert(&mut store, data(7.0, 0.0, "a", &[]));
     legend.sync(&store);
-    assert_eq!(legend.entry("a").unwrap().color, 0);
+    assert_eq!(legend.entry("a").unwrap().slot, 0);
 
     // Colors cycle: a, b, d and c take 0 to 3, x0 to x5 take 4 to 9, x6 takes 0 again.
     for k in 0..COLORS {
@@ -97,7 +98,7 @@ fn colors_follow_first_appearance_and_never_change() {
         );
     }
     legend.sync(&store);
-    assert_eq!(legend.entry("x6").unwrap().color, 0);
+    assert_eq!(legend.entry("x6").unwrap().slot, 0);
 }
 
 #[test]
@@ -120,7 +121,7 @@ fn descriptions_show_and_hide() {
 }
 
 /// Columns of each color and span, from bands and lines separately.
-type Coverage = HashMap<(usize, Span), (BTreeSet<u32>, BTreeSet<u32>)>;
+type Coverage = HashMap<(AnnotationColor, Span), (BTreeSet<u32>, BTreeSet<u32>)>;
 
 /// What `marks` must cover, from every annotation in turn.
 fn brute_force(view: &ViewState, store: &AnnotationStore, legend: &Legend, width: u32) -> Coverage {
@@ -164,7 +165,7 @@ fn brute_force(view: &ViewState, store: &AnnotationStore, legend: &Legend, width
 
 fn check(marks: &Marks, cover: &Coverage, width: u32) -> Result<(), TestCaseError> {
     let mut got = Coverage::new();
-    let mut by_key: HashMap<(usize, Span), Vec<&Mark>> = HashMap::new();
+    let mut by_key: HashMap<(AnnotationColor, Span), Vec<&Mark>> = HashMap::new();
     for band in &marks.bands {
         prop_assert!(
             !band.columns.is_empty() && band.columns.end <= width,
@@ -215,7 +216,7 @@ fn check_labels(
     let w = f64::from(width);
     let t = view.time();
     // Shown annotations in view on a visible row, by onset.
-    let candidates: Vec<(f64, &str, usize)> = store
+    let candidates: Vec<(f64, &str, AnnotationColor)> = store
         .iter()
         .filter(|a| a.data.onset < t.end && a.data.end() >= t.start)
         .filter(|a| legend.entry(&a.data.description).unwrap().shown)
@@ -413,13 +414,16 @@ fn channel_annotations_cover_their_rows() {
     ]);
     let legend = Legend::new(&store);
     let marks = marks(&view, &store, &legend, 200, label_width);
-    let spans = |marks: &[Mark]| -> Vec<(usize, Span)> {
+    let spans = |marks: &[Mark]| -> Vec<(AnnotationColor, Span)> {
         let mut s: Vec<_> = marks.iter().map(|m| (m.color, m.span)).collect();
         s.sort();
         s
     };
-    assert_eq!(spans(&marks.bands), [(0, Span::Row(1)), (0, Span::Row(3))]);
-    assert_eq!(spans(&marks.lines), [(2, Span::Row(0))]);
+    assert_eq!(
+        spans(&marks.bands),
+        [(Palette(0), Span::Row(1)), (Palette(0), Span::Row(3))]
+    );
+    assert_eq!(spans(&marks.lines), [(Palette(2), Span::Row(0))]);
     let texts: Vec<_> = marks.labels.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(texts, ["a", "c"]);
 

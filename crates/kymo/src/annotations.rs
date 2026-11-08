@@ -4,7 +4,7 @@
 //! Marks are in physical pixel columns of the trace area and in rows, so this module needs
 //! no GUI; `viewer` turns them into shapes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId, Origin};
@@ -14,12 +14,30 @@ use crate::view::ViewState;
 /// Colors annotations cycle through (see `ui::palette::annotation_color`).
 pub const COLORS: usize = 10;
 
+/// A color as red, green and blue (sRGB).
+pub type Rgb = [u8; 3];
+
+/// Colors picked for descriptions, remembered across recordings.
+pub type AnnotationColors = BTreeMap<String, Rgb>;
+
+/// The color of a description's marks: a palette color (lighter in dark themes), or one
+/// picked for it, used as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AnnotationColor {
+    /// Index into the annotation colors, `< COLORS`.
+    Palette(usize),
+    Custom(Rgb),
+}
+
 /// One description in the legend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub description: String,
-    /// Index into the annotation colors, `< COLORS`.
-    pub color: usize,
+    /// Its palette color, by first appearance, `< COLORS`; kept while a picked color
+    /// replaces it.
+    pub slot: usize,
+    /// The palette color, or the one picked for it (see [`Legend::apply_colors`]).
+    pub color: AnnotationColor,
     /// Annotations with this description in the store.
     pub count: usize,
     pub shown: bool,
@@ -58,7 +76,8 @@ impl Legend {
                     let i = self.entries.len();
                     self.entries.push(Entry {
                         description: description.clone(),
-                        color: i % COLORS,
+                        slot: i % COLORS,
+                        color: AnnotationColor::Palette(i % COLORS),
                         count: 0,
                         shown: true,
                     });
@@ -67,6 +86,17 @@ impl Legend {
                 }
             };
             self.entries[i].count += 1;
+        }
+    }
+
+    /// Colors each description as picked in `picked`, or with its palette color.
+    pub fn apply_colors(&mut self, picked: &AnnotationColors) {
+        for entry in &mut self.entries {
+            entry.color = picked
+                .get(&entry.description)
+                .map_or(AnnotationColor::Palette(entry.slot), |&rgb| {
+                    AnnotationColor::Custom(rgb)
+                });
         }
     }
 
@@ -124,7 +154,7 @@ pub struct Mark {
     /// Physical pixel columns of the trace area, never empty.
     pub columns: Range<u32>,
     pub span: Span,
-    pub color: usize,
+    pub color: AnnotationColor,
 }
 
 /// A description at the top of the trace area.
@@ -134,7 +164,7 @@ pub struct Label {
     /// if it starts before the view.
     pub x: f64,
     pub text: String,
-    pub color: usize,
+    pub color: AnnotationColor,
 }
 
 /// What to draw for the annotations in view.
@@ -175,8 +205,8 @@ pub fn marks(
     }
     let rows = view.visible_rows();
     // The band being extended and the last line, per color and span.
-    let mut open: HashMap<(usize, Span), Range<u32>> = HashMap::new();
-    let mut lines: HashMap<(usize, Span), u32> = HashMap::new();
+    let mut open: HashMap<(AnnotationColor, Span), Range<u32>> = HashMap::new();
+    let mut lines: HashMap<(AnnotationColor, Span), u32> = HashMap::new();
     let mut next_label = f64::NEG_INFINITY;
     let mut spans = Vec::new();
     // By onset, so marks of each color and span come from left to right.

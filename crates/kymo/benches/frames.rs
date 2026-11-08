@@ -172,6 +172,7 @@ fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings) -> Report {
                 sidecar_dir: Some(sidecar_dir),
                 menus: Menus::Egui(Platform::current()),
                 settings,
+                annotation_colors: Default::default(),
             };
             let app = KymoApp::new(&cc.egui_ctx, gpu, options, Some(path));
             Ok(Box::new(Bench::new(app, out)))

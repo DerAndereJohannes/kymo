@@ -3,6 +3,10 @@
 use eframe::egui::{self, DragValue, Label, RichText, Ui};
 
 use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB};
+use crate::ui::color::{Choice, swatch};
+use crate::ui::header::kind_name;
+use crate::ui::palette::type_color;
+use crate::view::KINDS;
 
 /// The Settings window, while `open`. Returns whether a setting changed; the caller applies
 /// it at once.
@@ -46,6 +50,13 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                         ui,
                         "Fit each channel type to the first window, as Auto Scale does.",
                     );
+                    ui.label("Colors");
+                    type_colors(ui, settings);
+                    ui.end_row();
+                    hint(
+                        ui,
+                        "Click a channel type's color to change it. Bad channels stay gray.",
+                    );
                     row(
                         ui,
                         "Default window",
@@ -64,6 +75,33 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
         });
     *settings = settings.clamped();
     *settings != before
+}
+
+/// A swatch and name per channel type, three to a row; a click on a swatch picks its color
+/// or resets it.
+fn type_colors(ui: &mut Ui, settings: &mut Settings) {
+    let side = ui.text_style_height(&egui::TextStyle::Body);
+    egui::Grid::new("type colors")
+        .num_columns(3)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            for (i, kind) in KINDS.into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let color = type_color(kind, &settings.type_colors, ui.visuals());
+                    let picked = settings.type_colors[i].is_some();
+                    let label = format!("Color of {}", kind_name(kind));
+                    match swatch(ui, &label, color, picked, egui::vec2(side, side)) {
+                        Some(Choice::Picked(c)) => settings.type_colors[i] = Some(c),
+                        Some(Choice::Reset) => settings.type_colors[i] = None,
+                        None => {}
+                    }
+                    ui.label(kind_name(kind));
+                });
+                if i % 3 == 2 {
+                    ui.end_row();
+                }
+            }
+        });
 }
 
 /// A label, its value, and a hint below in the value's column.

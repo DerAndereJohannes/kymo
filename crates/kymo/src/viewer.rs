@@ -13,6 +13,7 @@ use kymo_core::tile::query;
 use kymo_core::{ChannelId, ChannelKind, GridId};
 
 use crate::action::Action;
+use crate::annotations::AnnotationColors;
 use crate::annotations::{self, Legend, Marks};
 use crate::document::{Document, Summary};
 use crate::keymap::Keymap;
@@ -22,7 +23,7 @@ use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{header_panel, within_width};
-use crate::ui::palette::{annotation_color, bad_color, trace_color};
+use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{readout, scrollbar, status};
 use crate::view::{Area, ViewState};
 
@@ -103,6 +104,8 @@ pub struct Viewer {
     antialias: bool,
     /// Whether [`Action::AutoScale`] waits for a complete frame.
     auto_scale: bool,
+    /// Colors picked per channel type.
+    type_colors: TypeColors,
 }
 
 impl Viewer {
@@ -138,6 +141,7 @@ impl Viewer {
             pointed: String::new(),
             antialias: false,
             auto_scale: false,
+            type_colors: TypeColors::default(),
         }
     }
 
@@ -199,6 +203,11 @@ impl Viewer {
         self.antialias = on;
     }
 
+    /// Draws channel types in the colors picked for them, the others in their defaults.
+    pub fn set_type_colors(&mut self, colors: TypeColors) {
+        self.type_colors = colors;
+    }
+
     /// Seconds [`Action::DefaultWindow`] shows from now on.
     pub fn set_default_span(&mut self, seconds: f64) {
         self.view.set_default_span(seconds);
@@ -233,10 +242,19 @@ impl Viewer {
         self.view.apply(action, self.hover.channel)
     }
 
-    /// Shows the recording in `ui`, with the sidebar if `sidebar`. Returns whether the
+    /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
+    /// colors picked in `annotation_colors` (which the legend changes). Returns whether the
     /// sidebar's Open button was clicked.
-    pub fn show(&mut self, ui: &mut Ui, gpu: &Gpu, keymap: &Keymap, sidebar: bool) -> bool {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        gpu: &Gpu,
+        keymap: &Keymap,
+        sidebar: bool,
+        annotation_colors: &mut AnnotationColors,
+    ) -> bool {
         self.sync_stim(ui.ctx());
+        self.legend.apply_colors(annotation_colors);
         let mut open_clicked = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -260,6 +278,8 @@ impl Viewer {
                             &self.summary,
                             &mut self.view,
                             &mut self.legend,
+                            &self.type_colors,
+                            annotation_colors,
                         )
                     });
                 });
@@ -566,7 +586,11 @@ impl Viewer {
         if self.view.is_bad(channel) {
             bad_color(visuals)
         } else {
-            trace_color(self.document.recording.channel(channel).kind, visuals)
+            type_color(
+                self.document.recording.channel(channel).kind,
+                &self.type_colors,
+                visuals,
+            )
         }
     }
 

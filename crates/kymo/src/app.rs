@@ -9,11 +9,12 @@ use kymo_core::service::{PyramidStore, ServiceOptions, TileService};
 use kymo_core::stim::EventOptions;
 
 use crate::action::Action;
+use crate::annotations::AnnotationColors;
 use crate::document::{self, Document, Loading, error_text, file_name};
 use crate::keymap::{Keymap, Platform};
 #[cfg(any(target_os = "macos", windows))]
 use crate::native_menu::NativeMenu;
-use crate::settings::Settings;
+use crate::settings::{Settings, load_annotation_colors, save_annotation_colors};
 use crate::ui::gpu::Gpu;
 use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
@@ -28,6 +29,8 @@ pub struct Options {
     pub sidecar_dir: Option<PathBuf>,
     pub menus: Menus,
     pub settings: Settings,
+    /// Colors picked for annotation descriptions, as remembered from earlier runs.
+    pub annotation_colors: AnnotationColors,
 }
 
 /// Where the menu bar comes from.
@@ -41,7 +44,7 @@ pub enum Menus {
 
 impl Default for Options {
     /// Sidecars in the user's cache directory; native menus where the platform has them;
-    /// default settings.
+    /// default settings, no annotation colors picked.
     fn default() -> Self {
         let platform = Platform::current();
         Options {
@@ -52,6 +55,7 @@ impl Default for Options {
                 Menus::Egui(platform)
             },
             settings: Settings::default(),
+            annotation_colors: AnnotationColors::new(),
         }
     }
 }
@@ -175,7 +179,13 @@ impl KymoApp {
             viewer.cache().set_budget(settings.tile_cache_bytes());
             viewer.set_default_span(settings.default_window_s);
             viewer.set_antialias(settings.antialias);
+            viewer.set_type_colors(settings.type_colors);
         }
+    }
+
+    /// The colors picked for annotation descriptions.
+    pub fn annotation_colors(&self) -> &AnnotationColors {
+        &self.options.annotation_colors
     }
 
     /// Whether the About window is open.
@@ -291,7 +301,13 @@ impl KymoApp {
         let mut open_clicked = false;
         match &mut self.state {
             State::Ready(viewer) => {
-                open_clicked = viewer.show(ui, &self.gpu, &self.keymap, self.show_sidebar);
+                open_clicked = viewer.show(
+                    ui,
+                    &self.gpu,
+                    &self.keymap,
+                    self.show_sidebar,
+                    &mut self.options.annotation_colors,
+                );
             }
             State::Empty => {
                 egui::CentralPanel::default().show(ui, |ui| {
@@ -421,6 +437,7 @@ impl KymoApp {
                     self.stim_options,
                 );
                 viewer.set_antialias(self.options.settings.antialias);
+                viewer.set_type_colors(self.options.settings.type_colors);
                 if self.options.settings.auto_scale_on_open {
                     viewer.apply(Action::AutoScale);
                 }
@@ -439,9 +456,10 @@ impl eframe::App for KymoApp {
         self.frame(ui);
     }
 
-    /// Keeps the settings for the next run.
+    /// Keeps the settings and the annotation colors for the next run.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.options.settings.save(storage);
+        save_annotation_colors(&self.options.annotation_colors, storage);
     }
 }
 
@@ -548,6 +566,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
             let options = Options {
                 settings: Settings::load(cc.storage),
+                annotation_colors: load_annotation_colors(cc.storage),
                 ..Options::default()
             };
             let native = options.menus == Menus::Native;

@@ -3,10 +3,14 @@
 use std::ops::RangeInclusive;
 
 use eframe::Storage;
+use eframe::egui::Color32;
+use kymo_core::ChannelKind;
 use kymo_core::tile::DEFAULT_BUDGET;
 
+use crate::annotations::{AnnotationColors, Rgb};
 use crate::render::DEFAULT_GPU_BUDGET;
-use crate::view::DEFAULT_SPAN;
+use crate::ui::palette::TypeColors;
+use crate::view::{DEFAULT_SPAN, KINDS};
 
 /// Megabytes the tile cache may take.
 pub const TILE_CACHE_MB: RangeInclusive<u32> = 64..=65_536;
@@ -20,6 +24,20 @@ const GPU_MEMORY_KEY: &str = "kymo.gpu_memory_mb";
 const DEFAULT_WINDOW_KEY: &str = "kymo.default_window_s";
 const ANTIALIAS_KEY: &str = "kymo.antialias";
 const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
+const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
+
+/// The key of a channel type's color, e.g. `kymo.color.eeg`.
+fn type_color_key(kind: ChannelKind) -> String {
+    let name = match kind {
+        ChannelKind::Eeg => "eeg",
+        ChannelKind::Eog => "eog",
+        ChannelKind::Ecg => "ecg",
+        ChannelKind::Emg => "emg",
+        ChannelKind::Stim => "stim",
+        _ => "misc",
+    };
+    format!("kymo.color.{name}")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
@@ -33,6 +51,8 @@ pub struct Settings {
     pub antialias: bool,
     /// Whether a recording opens with Auto Scale instead of the default amplitudes.
     pub auto_scale_on_open: bool,
+    /// Colors picked per channel type; the others keep their defaults.
+    pub type_colors: TypeColors,
 }
 
 impl Default for Settings {
@@ -43,6 +63,7 @@ impl Default for Settings {
             default_window_s: DEFAULT_SPAN,
             antialias: false,
             auto_scale_on_open: false,
+            type_colors: [None; KINDS.len()],
         }
     }
 }
@@ -69,6 +90,11 @@ impl Settings {
             auto_scale_on_open: get(AUTO_SCALE_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.auto_scale_on_open),
+            type_colors: KINDS.map(|kind| {
+                get(&type_color_key(kind))
+                    .and_then(|v| parse_rgb(&v))
+                    .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+            }),
         }
         .clamped()
     }
@@ -80,6 +106,13 @@ impl Settings {
         storage.set_string(DEFAULT_WINDOW_KEY, self.default_window_s.to_string());
         storage.set_string(ANTIALIAS_KEY, self.antialias.to_string());
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
+        for (kind, color) in KINDS.into_iter().zip(self.type_colors) {
+            let key = type_color_key(kind);
+            match color {
+                Some(c) => storage.set_string(&key, format_rgb([c.r(), c.g(), c.b()])),
+                None => storage.remove_string(&key),
+            }
+        }
     }
 
     /// Every setting within its range; NaN seconds become the default.
@@ -96,6 +129,7 @@ impl Settings {
             default_window_s: seconds.clamp(*DEFAULT_WINDOW_S.start(), *DEFAULT_WINDOW_S.end()),
             antialias: self.antialias,
             auto_scale_on_open: self.auto_scale_on_open,
+            type_colors: self.type_colors,
         }
     }
 
@@ -106,4 +140,69 @@ impl Settings {
     pub fn gpu_memory_bytes(&self) -> usize {
         (self.gpu_memory_mb as usize) << 20
     }
+}
+
+/// The colors picked for annotation descriptions, kept in `storage`; empty without one.
+/// Unreadable lines are skipped.
+pub fn load_annotation_colors(storage: Option<&dyn Storage>) -> AnnotationColors {
+    let Some(text) = storage.and_then(|s| s.get_string(ANNOTATION_COLORS_KEY)) else {
+        return AnnotationColors::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let (rgb, description) = line.split_once('\t')?;
+            Some((unescape(description)?, parse_rgb(rgb)?))
+        })
+        .collect()
+}
+
+/// Keeps the colors picked for annotation descriptions in `storage`: a line per
+/// description, its color, a tab and the description, with backslashes and line breaks
+/// escaped.
+pub fn save_annotation_colors(colors: &AnnotationColors, storage: &mut dyn Storage) {
+    let text: String = colors
+        .iter()
+        .map(|(description, &rgb)| format!("{}\t{}\n", format_rgb(rgb), escape(description)))
+        .collect();
+    storage.set_string(ANNOTATION_COLORS_KEY, text);
+}
+
+/// `#rrggbb`.
+fn format_rgb([r, g, b]: Rgb) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// A color as `#rrggbb`; `None` for anything else.
+fn parse_rgb(text: &str) -> Option<Rgb> {
+    let hex = text.trim().strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
+
+fn escape(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+/// The inverse of [`escape`]; `None` for a backslash before anything else.
+fn unescape(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            out.push(match chars.next()? {
+                '\\' => '\\',
+                'n' => '\n',
+                'r' => '\r',
+                _ => return None,
+            });
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
 }

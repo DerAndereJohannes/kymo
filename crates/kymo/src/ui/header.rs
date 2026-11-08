@@ -6,9 +6,10 @@ use eframe::egui::{
 };
 use kymo_core::{ChannelId, ChannelKind};
 
-use crate::annotations::Legend;
+use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
 use crate::document::{Document, Summary, plural};
-use crate::ui::palette::{annotation_color, bad_color, trace_color};
+use crate::ui::color::{Choice, swatch};
+use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::view::{KINDS, ViewState};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
@@ -28,14 +29,18 @@ pub fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
 const LEGEND_ROWS: f32 = 8.0;
 
 /// File header, channel types and channels, and the annotation legend at the bottom. The
-/// channel list shows and hides channels and marks them bad in `view`; the legend shows and
-/// hides annotations by description in `legend`. Returns whether Open was clicked.
+/// channel list shows and hides channels and marks them bad in `view`, in their types'
+/// colors (`type_colors` where picked); the legend shows and hides annotations by
+/// description in `legend`, and picks their colors in `annotation_colors`. Returns whether
+/// Open was clicked.
 pub fn header_panel(
     ui: &mut Ui,
     document: &Document,
     summary: &Summary,
     view: &mut ViewState,
     legend: &mut Legend,
+    type_colors: &TypeColors,
+    annotation_colors: &mut AnnotationColors,
 ) -> bool {
     let mut open_clicked = false;
     ui.add_space(6.0);
@@ -97,17 +102,17 @@ pub fn header_panel(
         egui::Panel::bottom("legend")
             .resizable(false)
             .frame(Frame::NONE.inner_margin(Margin::symmetric(0, 6)))
-            .show(ui, |ui| legend_list(ui, legend));
+            .show(ui, |ui| legend_list(ui, legend, annotation_colors));
     }
-    kind_list(ui, view);
+    kind_list(ui, view, type_colors);
     ui.separator();
-    channel_list(ui, document, view);
+    channel_list(ui, document, view, type_colors);
     open_clicked
 }
 
 /// A row per channel type in the recording: a checkbox, in the type's trace color, that
 /// shows or hides all of its channels (mixed while some are shown), and how many are shown.
-fn kind_list(ui: &mut Ui, view: &mut ViewState) {
+fn kind_list(ui: &mut Ui, view: &mut ViewState, type_colors: &TypeColors) {
     egui::Grid::new("kinds")
         .num_columns(2)
         .spacing([12.0, 2.0])
@@ -119,7 +124,11 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
                 }
                 // A click on a mixed box shows them all.
                 let mut checked = shown == all;
-                let text = RichText::new(kind_name(kind)).color(trace_color(kind, ui.visuals()));
+                let text = RichText::new(kind_name(kind)).color(type_color(
+                    kind,
+                    type_colors,
+                    ui.visuals(),
+                ));
                 let checkbox =
                     Checkbox::new(&mut checked, text).indeterminate(0 < shown && shown < all);
                 if ui.add(checkbox).changed() {
@@ -133,10 +142,10 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
 }
 
 /// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how
-/// many there are; then a row per description: a checkbox, its color, the description and
-/// how many annotations have it. Counts are right-aligned. Scrolls beyond [`LEGEND_ROWS`]
-/// description rows.
-fn legend_list(ui: &mut Ui, legend: &mut Legend) {
+/// many there are; then a row per description: a checkbox, its color (a click picks
+/// another, kept in `picked`), the description and how many annotations have it. Counts
+/// are right-aligned. Scrolls beyond [`LEGEND_ROWS`] description rows.
+fn legend_list(ui: &mut Ui, legend: &mut Legend, picked: &mut AnnotationColors) {
     let (shown, all) = legend.shown_count();
     let row_height = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -154,7 +163,7 @@ fn legend_list(ui: &mut Ui, legend: &mut Legend) {
             legend.set_all_shown(checked);
         }
     });
-    let entries: Vec<(String, usize, usize, bool)> = legend
+    let entries: Vec<(String, AnnotationColor, usize, bool)> = legend
         .entries()
         .map(|e| (e.description.clone(), e.color, e.count, e.shown))
         .collect();
@@ -187,9 +196,20 @@ fn legend_list(ui: &mut Ui, legend: &mut Legend) {
                         legend.set_shown(&description, checked);
                     }
                     let side = ui.text_style_height(&TextStyle::Body) * 0.7;
-                    let (swatch, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
-                    let color = annotation_color(color, ui.visuals());
-                    ui.painter().rect_filled(swatch, 2.0, color);
+                    let shown_color = annotation_color(color, ui.visuals());
+                    let label = format!("Color of {description}");
+                    let is_picked = picked.contains_key(&description);
+                    match swatch(ui, &label, shown_color, is_picked, vec2(side, side)) {
+                        Some(Choice::Picked(c)) => {
+                            picked.insert(description.clone(), [c.r(), c.g(), c.b()]);
+                            legend.apply_colors(picked);
+                        }
+                        Some(Choice::Reset) => {
+                            picked.remove(&description);
+                            legend.apply_colors(picked);
+                        }
+                        None => {}
+                    }
                     let text = if shown {
                         RichText::new(&description)
                     } else {
@@ -272,7 +292,7 @@ fn rate_text(rate: f64) -> String {
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
 /// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
 /// it), whether it is bad, its type, unit and rate (right-aligned).
-fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
+fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_colors: &TypeColors) {
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
@@ -324,7 +344,7 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
                 } else if !shown {
                     ui.visuals().weak_text_color()
                 } else {
-                    trace_color(channel.kind, ui.visuals())
+                    type_color(channel.kind, type_colors, ui.visuals())
                 };
                 let label = Label::new(RichText::new(name).color(color))
                     .sense(Sense::click())
