@@ -4,6 +4,7 @@
 //! See `docs/design.md` for the architecture.
 
 mod annotation;
+pub mod annotation_file;
 mod channel;
 pub mod edf;
 mod error;

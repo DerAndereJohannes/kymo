@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3250a75e71f8f39476c2bbfac9acda8d7c04866db622c04ce5aabe1c3e5efda1 # shrinks to annotations = [AnnotationData { onset: 0.25, duration: 0.0, description: "", channels: [], origin: Viewer }], first_sample = 0.25
+cc 7ef6a68b133f75f79b62d5ee9d6357ae6f59a4344bad00a21e2b134446e12774 # shrinks to annotations = [], first_sample = 0.0

@@ -7,6 +7,7 @@
 
 mod common;
 
+mod annotation_file;
 mod annotations;
 mod edf_header;
 mod edf_plus;

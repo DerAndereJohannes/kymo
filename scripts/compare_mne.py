@@ -4,9 +4,10 @@
 Usage:
     python scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
     python scripts/compare_mne.py --testgen           # files generated from kymo-testgen presets
+    python scripts/compare_mne.py --annotations ...   # also annotation files, both ways
 
-Needs numpy and mne. Without installing them, run it through uv:
-    uv run --no-project --with mne python scripts/compare_mne.py ...
+Needs numpy and mne, and pandas with --annotations. Without installing them, run it through uv:
+    uv run --no-project --with mne --with pandas python scripts/compare_mne.py ...
 
 For each file this runs `cargo run --release -p kymo-core --example dump`, reads the same
 file with mne.io.read_raw_edf/read_raw_bdf (preload=False, so large files work), and
@@ -21,6 +22,8 @@ Known differences between the readers, which the comparison accounts for:
   must report NaN exactly in its gaps.
 - MNE counts annotation onsets from the first record's onset, kymo from the header's start
   time. MNE onsets are compared after adding the first record's onset back.
+- MNE crops annotations at the end of the data; kymo keeps them as the file has them.
+  kymo's durations are compared cropped the same way.
 - MNE makes duplicate channel names unique ("POL" -> "POL-0", "POL-1", ...); kymo keeps the
   labels as stored. kymo's names are compared after applying MNE's own renaming.
 - MNE treats channels named Status or Trigger as stim channels: in BDF it ignores their
@@ -30,6 +33,11 @@ Known differences between the readers, which the comparison accounts for:
   with mne.find_events(consecutive=True, shortest_event=1, mask=0xFFFF for BDF), at their
   position in MNE's joined data. MNE counts only positive codes there, so kymo's events with
   negative codes (possible in EDF only) are left out.
+
+With --annotations, annotation files are checked both ways (`kymo-core --example
+annotations`): the recording's annotations saved by kymo as an events table and read with
+`read_events_table` (the snippet in the docs) equal MNE's own reading of the file; and MNE's
+CSV of them (`Annotations.save`) loaded by kymo equals kymo's own reading.
 """
 
 import argparse
@@ -72,7 +80,69 @@ def dump(path, out, max_values):
     )
 
 
-def compare(path, max_values=None):
+def read_events_table(path):
+    """kymo's events table as mne.Annotations (the snippet in docs/phase3-plan.md, step 5)."""
+    import pandas as pd
+
+    events = pd.read_csv(path, sep="\t", keep_default_na=False, dtype={"trial_type": str})
+    channels = events["channels"] if "channels" in events else [""] * len(events)
+    return mne.Annotations(
+        onset=events["onset"],
+        duration=pd.to_numeric(events["duration"].replace("n/a", 0)),
+        description=events["trial_type"],
+        # Names joined by ";" (a name with ";" or "\\" in it is escaped with "\\").
+        ch_names=[c.split(";") if c else [] for c in channels],
+    )
+
+
+def compare_annotation_files(path, raw, annotations, first_onset, tmp):
+    """Problems with annotation files saved by one side and loaded by the other."""
+    problems = []
+    table = tmp / "kymo.tsv"
+    cargo("run", "-q", "--release", "-p", "kymo-core", "--example", "annotations", "--",
+          "save", str(path), str(table))
+    theirs = raw.annotations
+    ours = read_events_table(table)
+    copy = raw.copy().set_annotations(ours, verbose="error")
+    got = copy.annotations
+    if len(got) != len(theirs):
+        problems.append(f"kymo's table in MNE: {len(got)} annotations, MNE has {len(theirs)}")
+    else:
+        for k in range(len(got)):
+            if (
+                abs(got.onset[k] - theirs.onset[k]) > 1e-9
+                or abs(got.duration[k] - theirs.duration[k]) > 1e-9
+                or got.description[k] != theirs.description[k]
+            ):
+                problems.append(
+                    f"kymo's table in MNE, annotation {k}: {got[k]}, MNE has {theirs[k]}"
+                )
+                break
+
+    csv = tmp / "mne.csv"
+    theirs.save(csv, overwrite=True, verbose="error")
+    out = subprocess.run(
+        ["cargo", "run", "-q", "--release", "-p", "kymo-core", "--example", "annotations",
+         "--", "load", str(path), str(csv)],
+        check=True, cwd=REPO, capture_output=True, text=True,
+    ).stdout
+    loaded = json.loads(out)
+    if loaded["outside"] or loaded["unknown_channels"]:
+        problems.append(f"MNE's CSV in kymo skipped some: {loaded}")
+    got = sorted((a["onset"], a["duration"], a["description"]) for a in loaded["annotations"])
+    want = cropped(annotations, data_end(raw, first_onset))
+    if len(got) != len(want):
+        problems.append(f"MNE's CSV in kymo: {len(got)} annotations, kymo has {len(want)}")
+    else:
+        for a, b in zip(got, want):
+            # MNE writes onsets in milliseconds.
+            if abs(a[0] - b[0]) > 5e-4 or abs(a[1] - b[1]) > 1e-6 or a[2] != b[2]:
+                problems.append(f"MNE's CSV in kymo: {a}, kymo has {b}")
+                break
+    return problems
+
+
+def compare(path, max_values=None, annotation_files=False):
     """Returns a list of problems (empty if the readers agree) and prints a summary."""
     problems, notes = [], []
     with tempfile.TemporaryDirectory() as tmp:
@@ -138,6 +208,10 @@ def compare(path, max_values=None):
             compared += n
 
         problems += compare_annotations(raw, annotations, header["grids"][0]["start"])
+        if annotation_files:
+            problems += compare_annotation_files(
+                path, raw, annotations, header["grids"][0]["start"], tmp
+            )
         events = json.loads((tmp / "events.json").read_text())
         p, n = compare_events(raw, header, events, fmax, notes)
         problems += p
@@ -248,8 +322,21 @@ def compare_events(raw, header, events, fmax, notes):
     return problems, count
 
 
+def cropped(annotations, end):
+    """(onset, duration, description) of kymo's annotations, cropped at `end` as MNE does."""
+    return sorted(
+        (a["onset"], min(a["onset"] + a["duration"], end) - a["onset"], a["description"])
+        for a in annotations
+    )
+
+
+def data_end(raw, first_onset):
+    """The end of MNE's data, in kymo's time."""
+    return first_onset + raw.n_times / raw.info["sfreq"]
+
+
 def compare_annotations(raw, annotations, first_onset):
-    ours = sorted((a["onset"], a["duration"], a["description"]) for a in annotations)
+    ours = cropped(annotations, data_end(raw, first_onset))
     theirs = sorted(
         (o + first_onset, d, s)
         for o, d, s in zip(
@@ -295,6 +382,9 @@ def main():
     parser.add_argument("paths", nargs="*", help="EDF/BDF files or directories")
     parser.add_argument("--testgen", action="store_true", help="check kymo-testgen presets")
     parser.add_argument(
+        "--annotations", action="store_true", help="also check annotation files, both ways"
+    )
+    parser.add_argument(
         "--max-values",
         type=int,
         help="compare windows of at most this many values per grid (default: kymo's dump default)",
@@ -312,7 +402,7 @@ def main():
         if not files:
             sys.exit("no EDF/BDF files found")
         for path in files:
-            failed += bool(compare(path, args.max_values))
+            failed += bool(compare(path, args.max_values, args.annotations))
     print(f"{len(files) - failed} of {len(files)} file(s) agree")
     sys.exit(1 if failed else 0)
 
