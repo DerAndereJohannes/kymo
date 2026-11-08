@@ -316,9 +316,13 @@ pub fn under<'s>(
         .collect()
 }
 
-/// The annotation a click at pixel column `x` selects, as [`under`] finds them: the
-/// shortest that can be edited (stim annotations can't), so events and short annotations
-/// inside longer ones can be reached; of equally short ones, the first by onset.
+/// The annotation a click at pixel column `x` selects, of the ones [`under`] finds that can
+/// be edited (stim annotations can't): the shortest, so events and short annotations
+/// inside longer ones can be reached; on `current`, the one selected, the next longer one
+/// there, and after the longest the shortest again. So repeated clicks reach every
+/// annotation under the pointer, even one lying wholly over shorter ones. Equally long
+/// ones go by onset.
+#[expect(clippy::too_many_arguments)]
 pub fn pick(
     view: &ViewState,
     store: &AnnotationStore,
@@ -327,12 +331,18 @@ pub fn pick(
     x: f64,
     slack: u32,
     channel: Option<ChannelId>,
+    current: Option<AnnotationId>,
 ) -> Option<AnnotationId> {
-    under(view, store, legend, width_px, x, slack, channel)
+    let mut found: Vec<&Annotation> = under(view, store, legend, width_px, x, slack, channel)
         .into_iter()
         .filter(|a| a.data.origin != Origin::Stim)
-        .min_by(|a, b| a.data.duration.total_cmp(&b.data.duration))
-        .map(|a| a.id)
+        .collect();
+    // Stable, so equally long ones stay in `under`'s order.
+    found.sort_by(|a, b| a.data.duration.total_cmp(&b.data.duration));
+    let next = current
+        .and_then(|c| found.iter().position(|a| a.id == c))
+        .map_or(0, |i| (i + 1) % found.len());
+    found.get(next).map(|a| a.id)
 }
 
 /// The pixel columns `a`'s mark covers on a trace area `width_px` pixels wide, if it is in

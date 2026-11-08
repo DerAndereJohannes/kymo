@@ -837,7 +837,8 @@ impl Viewer {
 
     /// Annotation mode's gestures on the traces: a drag creates an annotation of all
     /// channels with the current description, a click selects the annotation under the
-    /// pointer (see [`annotations::pick`]) or, away from one, deselects.
+    /// pointer, the next one there on the selected one (see [`annotations::pick`]), or,
+    /// away from them, deselects.
     fn edit_input(&mut self, ui: &Ui, response: &egui::Response, traces: Rect, width_px: u32) {
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
@@ -897,6 +898,7 @@ impl Viewer {
                 f64::from((p.x - traces.left()) * ppp),
                 (POINTER_SLACK * ppp).round() as u32,
                 channel,
+                self.selected,
             );
         }
     }

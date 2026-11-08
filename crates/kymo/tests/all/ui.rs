@@ -1940,6 +1940,10 @@ fn clicks_select_the_shortest_editable_annotation() {
         selected_data(harness).map(|d| (d.description, d.duration.round(), d.origin))
     };
     use kymo_core::Origin::{File, Viewer};
+    // The new one is selected, so a click on it selects the next longer one there.
+    assert_eq!(selected_data(&harness).unwrap().duration.round(), 1.0);
+    assert_eq!(pick(&mut harness, 13.5), Some(("BAD".into(), 7.0, Viewer)));
+    press(&mut harness, Modifiers::NONE, Key::Escape);
     assert_eq!(pick(&mut harness, 13.5), Some(("BAD".into(), 1.0, Viewer)));
     assert_eq!(pick(&mut harness, 12.5), Some(("BAD".into(), 7.0, Viewer)));
     // A file annotation inside the long one is shorter.
@@ -1990,6 +1994,46 @@ fn clicks_select_the_shortest_editable_annotation() {
     let x = at_time(&harness, 10.5, 0.0).x;
     assert!(outline.width() >= 4.0, "{outline:?}");
     assert!(outline.x_range().contains(x), "{outline:?} {x}");
+}
+
+/// An annotation lying wholly over shorter ones, as over back-to-back trials, is reached
+/// by clicking again: each click on the selected one selects the next longer one there.
+#[test]
+fn repeated_clicks_reach_every_annotation_under_the_pointer() {
+    let file = without_triggers("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    // "a" from 2 to 4.1 s and "b" from 4 to 6 s, back to back; "long" from 3 to 5.5 s,
+    // longer than either and nowhere on its own.
+    let field = "Description of new annotations";
+    for (description, from, to) in [("a", 2.0, 4.1), ("b", 4.0, 6.0), ("long", 3.0, 5.5)] {
+        harness.get_by_label(field).focus();
+        harness.run_steps(2);
+        press(&mut harness, command(), Key::A);
+        harness.get_by_label(field).type_text(description);
+        harness.run_steps(2);
+        let (a, b) = (at_time(&harness, from, 40.0), at_time(&harness, to, 40.0));
+        drag(&mut harness, a, b);
+    }
+    assert_eq!(made(&harness).len(), 3);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    let pick = |harness: &mut Harness<'_, KymoApp>, t: f64| {
+        click_at_time(harness, t);
+        selected_data(harness).map(|d| d.description)
+    };
+    assert_eq!(pick(&mut harness, 4.6).as_deref(), Some("b"));
+    assert_eq!(pick(&mut harness, 4.6).as_deref(), Some("long"));
+    // After the longest, the shortest again.
+    assert_eq!(pick(&mut harness, 4.6).as_deref(), Some("b"));
+    // Elsewhere, the shortest there first, whatever was selected.
+    assert_eq!(pick(&mut harness, 3.5).as_deref(), Some("a"));
+    assert_eq!(pick(&mut harness, 3.5).as_deref(), Some("long"));
+    // Where three lie, all three in turn.
+    assert_eq!(pick(&mut harness, 4.05).as_deref(), Some("b"));
+    assert_eq!(pick(&mut harness, 4.05).as_deref(), Some("a"));
+    assert_eq!(pick(&mut harness, 4.05).as_deref(), Some("long"));
+    assert_eq!(pick(&mut harness, 4.05).as_deref(), Some("b"));
 }
 
 #[test]
