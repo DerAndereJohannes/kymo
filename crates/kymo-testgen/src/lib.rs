@@ -14,10 +14,12 @@
 
 mod header;
 mod signal;
+mod temp;
 mod write;
 
 use std::ops::Range;
 
+pub use temp::{TempDir, TempFile};
 pub use write::{write, write_to};
 
 /// File format to write.

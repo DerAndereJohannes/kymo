@@ -181,7 +181,6 @@ fn record_starts(onsets: &[f64], spr: u64, duration: f64) -> Result<Vec<u64>, Ed
             return Err(record_error(r as u64, "has an onset out of range"));
         }
         let start = start as u64;
-        // No let chains: they need Rust 1.88, the MSRV is 1.85.
         if starts.last().is_some_and(|&p| start < p + spr) {
             return Err(record_error(
                 r as u64,

@@ -152,14 +152,12 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
         if !a.onset.is_finite() {
             return Err(invalid(format!("annotation {i}: onset is not finite")));
         }
-        // No let chains: they need Rust 1.88, the MSRV is 1.85.
-        match a.duration {
-            Some(d) if !(d.is_finite() && d >= 0.0) => {
-                return Err(invalid(format!(
-                    "annotation {i}: duration {d} must be >= 0"
-                )));
-            }
-            _ => {}
+        if let Some(d) = a.duration
+            && !(d.is_finite() && d >= 0.0)
+        {
+            return Err(invalid(format!(
+                "annotation {i}: duration {d} must be >= 0"
+            )));
         }
         if a.texts.is_empty() {
             return Err(invalid(format!("annotation {i}: no text")));

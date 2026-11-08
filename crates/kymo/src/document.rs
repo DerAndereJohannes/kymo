@@ -262,36 +262,11 @@ impl<F: FnOnce()> Drop for OnDrop<F> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use kymo_testgen::TempFile;
+
     use super::*;
-
-    /// A file in the temp directory, deleted on drop. Declare it before anything that maps
-    /// it, so the mapping is gone first (Windows refuses to delete mapped files).
-    struct TempFile(PathBuf);
-
-    impl TempFile {
-        fn new(extension: &str) -> Self {
-            static COUNTER: AtomicUsize = AtomicUsize::new(0);
-            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let name = format!("kymo-viewer-test-{}-{n}.{extension}", std::process::id());
-            TempFile(std::env::temp_dir().join(name))
-        }
-
-        fn preset(name: &str) -> Self {
-            let spec = kymo_testgen::Spec::preset(name).unwrap();
-            let file = TempFile::new(spec.format.extension());
-            kymo_testgen::write(&spec, &file.0).unwrap();
-            file
-        }
-    }
-
-    impl Drop for TempFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
 
     /// Opens through the window's path: a background thread, then a notification.
     fn load(path: &Path) -> Result<Document> {
@@ -306,8 +281,8 @@ mod tests {
     #[test]
     fn opens_a_generated_file() {
         let file = TempFile::preset("bdf+c-small");
-        let doc = load(&file.0).unwrap();
-        assert_eq!(doc.path, file.0);
+        let doc = load(file.path()).unwrap();
+        assert_eq!(doc.path, file.path());
         let summary = doc.summary();
         assert_eq!(summary.format, "BDF+C");
         assert_eq!(summary.duration, 60.0);
@@ -327,7 +302,7 @@ mod tests {
     #[test]
     fn summarises_grids_and_gaps() {
         let file = TempFile::preset("edf+d-mixed");
-        let doc = load(&file.0).unwrap();
+        let doc = load(file.path()).unwrap();
         let summary = doc.summary();
         assert_eq!(summary.format, "EDF+D");
         let rates: Vec<f64> = summary.grids.iter().map(|g| g.rate).collect();
@@ -361,7 +336,7 @@ mod tests {
     #[test]
     fn sidebar_names_each_fact_once() {
         let file = TempFile::preset("bdf+c-small");
-        let summary = load(&file.0).unwrap().summary();
+        let summary = load(file.path()).unwrap().summary();
         let rows = summary.sidebar_rows();
         let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
@@ -378,21 +353,21 @@ mod tests {
     #[test]
     fn info_and_window_open_the_same_way() {
         let file = TempFile::preset("bdf+c-small");
-        let direct = open(&file.0).unwrap().summary();
-        let loaded = load(&file.0).unwrap().summary();
+        let direct = open(file.path()).unwrap().summary();
+        let loaded = load(file.path()).unwrap().summary();
         assert_eq!(direct, loaded);
     }
 
     #[test]
     fn a_missing_file_is_an_error_naming_it() {
         let file = TempFile::new("bdf");
-        let err = load(&file.0).err().unwrap();
+        let err = load(file.path()).err().unwrap();
         let msg = error_text(&err);
         assert!(msg.starts_with("cannot read "), "{msg}");
-        assert!(msg.contains(&file.0.display().to_string()), "{msg}");
+        assert!(msg.contains(&file.path().display().to_string()), "{msg}");
         assert_eq!(msg.matches("os error").count(), 1, "cause repeated: {msg}");
         assert_eq!(
-            open(&file.0).err().map(|e| error_text(&e)),
+            open(file.path()).err().map(|e| error_text(&e)),
             Some(msg),
             "--info reports the same error"
         );
@@ -401,8 +376,8 @@ mod tests {
     #[test]
     fn an_unsupported_file_is_an_error() {
         let file = TempFile::new("txt");
-        std::fs::write(&file.0, "not a recording").unwrap();
-        let msg = error_text(&load(&file.0).err().unwrap());
+        std::fs::write(file.path(), "not a recording").unwrap();
+        let msg = error_text(&load(file.path()).err().unwrap());
         assert!(msg.contains("not a supported file format"), "{msg}");
     }
 
@@ -410,9 +385,9 @@ mod tests {
     fn a_truncated_header_is_an_error() {
         let full = TempFile::preset("bdf+c-small");
         let cut = TempFile::new("bdf");
-        let bytes = std::fs::read(&full.0).unwrap();
-        std::fs::write(&cut.0, &bytes[..300]).unwrap();
-        assert!(load(&cut.0).is_err());
+        let bytes = std::fs::read(full.path()).unwrap();
+        std::fs::write(cut.path(), &bytes[..300]).unwrap();
+        assert!(load(cut.path()).is_err());
     }
 
     #[test]

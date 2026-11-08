@@ -371,10 +371,6 @@ impl ViewState {
         self.default_span
     }
 
-    pub fn set_dc_removed(&mut self, on: bool) {
-        self.dc = on;
-    }
-
     pub fn toggle_bad(&mut self, channel: ChannelId) {
         if !self.bad.remove(&channel) && (channel.0 as usize) < self.kinds.len() {
             self.bad.insert(channel);

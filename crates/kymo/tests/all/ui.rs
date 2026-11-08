@@ -2,7 +2,6 @@
 //! line, with the trace renderer on a real GPU where there is one.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, Modifiers};
@@ -15,47 +14,20 @@ use kymo::settings::Settings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
 use kymo::viewer::Viewer;
+use kymo_testgen::{TempDir, TempFile};
 
-/// A generated recording in the temp directory, deleted on drop. Declare it before the
-/// harness, so the app (and its memory map) is gone first: Windows refuses to delete
-/// mapped files.
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn new(extension: &str) -> TempFile {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!("kymo-ui-test-{}-{n}.{extension}", std::process::id());
-        TempFile(std::env::temp_dir().join(name))
-    }
-
-    fn preset(name: &str) -> TempFile {
-        TempFile::seeded(name, 0)
-    }
-
-    /// A preset with its noise and spikes from `seed` (0 is the preset's own).
-    fn seeded(name: &str, seed: u64) -> TempFile {
-        let mut spec = kymo_testgen::Spec::preset(name).unwrap();
-        spec.seed ^= seed;
-        let file = TempFile::new(spec.format.extension());
-        kymo_testgen::write(&spec, &file.0).unwrap();
-        file
-    }
+/// A preset with its noise and spikes from `seed` (0 is the preset's own).
+fn seeded(name: &str, seed: u64) -> TempFile {
+    let mut spec = kymo_testgen::Spec::preset(name).unwrap();
+    spec.seed ^= seed;
+    TempFile::written(&spec)
 }
 
 /// A preset without its trigger channel, so only the file's annotations are shown.
 fn without_triggers(name: &str) -> TempFile {
     let mut spec = kymo_testgen::Spec::preset(name).unwrap();
     spec.channels.retain(|c| !c.trigger);
-    let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
-    file
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
+    TempFile::written(&spec)
 }
 
 /// Pyramids in memory, the menu bar drawn by egui as on Linux, on every platform, and
@@ -131,7 +103,7 @@ fn ready(harness: &mut Harness<'_, KymoApp>) {
 #[test]
 fn opens_a_recording_and_builds_its_overview() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let viewer = harness.state().viewer().unwrap();
     assert_eq!(viewer.view().time(), 0.0..20.0);
@@ -146,10 +118,13 @@ fn opens_a_recording_and_builds_its_overview() {
 #[test]
 fn a_missing_file_shows_the_error() {
     let file = TempFile::new("bdf");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     step_until(&mut harness, "the error", |app| app.error().is_some());
     let error = harness.state().error().unwrap().to_owned();
-    assert!(error.contains(&file.0.display().to_string()), "{error}");
+    assert!(
+        error.contains(&file.path().display().to_string()),
+        "{error}"
+    );
     harness.get_by_label("Could not open the recording.");
     harness.get_by_label(&error);
 }
@@ -157,7 +132,7 @@ fn a_missing_file_shows_the_error() {
 #[test]
 fn keys_move_the_view() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let time = |h: &Harness<'_, KymoApp>| h.state().viewer().unwrap().view().time();
     harness.key_press(Key::ArrowRight);
@@ -215,7 +190,7 @@ fn scroll(harness: &mut Harness<'_, KymoApp>, delta: egui::Vec2, modifiers: Modi
 #[test]
 fn scrolling_pans_time_and_rows() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     // Five rows of five channels, so there is something to scroll.
     harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::Minus);
@@ -245,7 +220,7 @@ fn scrolling_pans_time_and_rows() {
 #[test]
 fn pinching_and_command_scrolling_zoom_around_the_pointer() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     harness.key_press(Key::ArrowRight);
     harness.step();
@@ -273,7 +248,7 @@ fn pinching_and_command_scrolling_zoom_around_the_pointer() {
 #[test]
 fn dragging_the_traces_pans() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     harness.key_press(Key::ArrowRight);
     harness.step();
@@ -293,7 +268,7 @@ fn dragging_the_traces_pans() {
 #[test]
 fn names_and_b_toggle_bad_channels() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let layout = viewer(&harness).layout().unwrap();
     let rows = viewer(&harness).view().rows() as f32;
@@ -320,7 +295,7 @@ fn names_and_b_toggle_bad_channels() {
 #[test]
 fn hovering_reads_the_value_under_the_pointer() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let layout = viewer(&harness).layout().unwrap();
     let rows = viewer(&harness).view().rows() as f32;
@@ -348,7 +323,7 @@ fn hovering_reads_the_value_under_the_pointer() {
 #[test]
 fn the_scrollbars_move_the_view() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::Minus);
     harness.step();
@@ -381,7 +356,7 @@ fn the_scrollbars_move_the_view() {
 #[test]
 fn an_idle_window_stops_repainting() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     // Once the build is done and the tiles are in, nothing asks for frames.
     step_until(&mut harness, "the tiles", |app| {
@@ -420,7 +395,7 @@ fn enabled(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
 #[test]
 fn menu_items_are_enabled_as_the_state_allows() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     assert!(enabled(&mut harness, "View", "Zoom In"));
     assert!(enabled(&mut harness, "File", "Close"));
@@ -443,7 +418,7 @@ fn menu_items_are_enabled_as_the_state_allows() {
 #[test]
 fn menu_items_act_and_disabled_ones_dont() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     choose(&mut harness, "View", "Zoom In");
     assert_eq!(viewer(&harness).view().time(), 5.0..15.0);
@@ -491,7 +466,7 @@ fn offset_preset(name: &str, offset: f64) -> TempFile {
         channel.physical_max += offset;
     }
     let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
+    kymo_testgen::write(&spec, file.path()).unwrap();
     file
 }
 
@@ -548,7 +523,7 @@ fn reading_numbers(status: &str) -> Vec<f64> {
 #[test]
 fn dc_removal_centres_each_trace_on_its_window_mean() {
     let file = offset_preset("bdf+c-small", -21_000.0);
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let a1 = kymo_core::ChannelId(0);
     assert_eq!(viewer(&harness).baseline(a1), 0.0);
@@ -611,7 +586,7 @@ fn status_reading(status: &str) -> Option<Vec<f64>> {
 #[test]
 fn stim_channels_read_their_codes_with_and_without_dc_removal() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let status = kymo_core::ChannelId(4);
     assert_eq!(
@@ -661,7 +636,7 @@ fn typed_preset() -> TempFile {
     spec.channels[2].label = "EOG L".into();
     spec.channels[3].label = "ECG".into();
     let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
+    kymo_testgen::write(&spec, file.path()).unwrap();
     file
 }
 
@@ -696,7 +671,7 @@ fn shown(harness: &Harness<'_, KymoApp>) -> Vec<u32> {
 fn the_channel_list_shows_hides_and_marks_bad() {
     use egui::accesskit::{Role, Toggled};
     let file = typed_preset();
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
     for kind in ["EEG", "EOG", "ECG", "Stim"] {
@@ -782,8 +757,8 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     }
     spec.channels.push(status);
     let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
-    let mut harness = window(&file.0);
+    kymo_testgen::write(&spec, file.path()).unwrap();
+    let mut harness = window(file.path());
     ready(&mut harness);
     assert!(harness.query_by_label("LONGCHANNELNAME1").is_none());
     let bad = harness.get_by_label("A1 bad").rect().left();
@@ -822,7 +797,7 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
 fn the_channel_list_right_aligns_rates() {
     use egui::accesskit::Role;
     let file = TempFile::preset("edf+d-mixed");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let rights: Vec<(String, f32)> = ["64 Hz", "256 Hz", "512 Hz"]
         .iter()
@@ -853,7 +828,7 @@ fn the_legend_shows_and_hides_annotations() {
     // and "eyes closed" and "Elektrodenprüfung µV" (events at 15 s, colours 2 and 3; one
     // label, as the second would overlap the first).
     let file = without_triggers("edf+d-mixed");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     // 20 "event k", 7 "stim k", and three more.
     assert_eq!(viewer(&harness).legend().shown_count(), (30, 30));
@@ -957,7 +932,7 @@ fn the_status_line_names_the_annotations_under_the_pointer() {
     // "sleep stage N2" from 7.625 s to 10.125 s; "eyes closed" and "Elektrodenprüfung µV",
     // events at 15 s.
     let file = without_triggers("edf+d-mixed");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let traces = viewer(&harness).layout().unwrap().traces;
     let at = |harness: &Harness<'_, KymoApp>, t: f64| {
@@ -1010,8 +985,8 @@ fn recordings_without_annotations_have_no_legend() {
     spec.annotations.clear();
     spec.channels.retain(|c| !c.trigger);
     let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
-    let mut harness = window(&file.0);
+    kymo_testgen::write(&spec, file.path()).unwrap();
+    let mut harness = window(file.path());
     ready(&mut harness);
     let role = egui::accesskit::Role::CheckBox;
     assert!(
@@ -1138,8 +1113,8 @@ fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
         .unwrap();
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     spec.seed ^= seed;
-    let file = TempFile::seeded("bdf+c-small", seed);
-    let mut harness = window(&file.0);
+    let file = seeded("bdf+c-small", seed);
+    let mut harness = window(file.path());
     ready(&mut harness);
 
     let want = expected_stim(&spec, every_change, false);
@@ -1182,7 +1157,7 @@ fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
 
     // The recording opened next keeps the rule.
     let ctx = harness.ctx.clone();
-    harness.state_mut().open(&ctx, file.0.clone());
+    harness.state_mut().open(&ctx, file.path().to_owned());
     ready(&mut harness);
     assert_stim(&stim_annotations(&harness), &initial);
     assert_eq!(stim_item(&mut harness, "Increasing"), (true, true));
@@ -1191,7 +1166,7 @@ fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
 #[test]
 fn stim_stim_items_need_stim_channels() {
     let file = without_triggers("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     assert!(stim_annotations(&harness).is_empty());
     for item in ["Every Change", "From Zero", "Increasing", "Initial Code"] {
@@ -1203,11 +1178,10 @@ fn stim_stim_items_need_stim_channels() {
 #[test]
 fn stim_annotations_come_with_the_sidecar() {
     let file = TempFile::preset("bdf+c-small");
-    let dir = TempFile::new("sidecars");
-    std::fs::create_dir(&dir.0).unwrap();
+    let dir = TempDir::new();
     let open = |path: &Path| {
         let path = path.to_owned();
-        let sidecars = dir.0.clone();
+        let sidecars = dir.path().to_owned();
         Harness::builder().with_size(SIZE).build_eframe(move |cc| {
             KymoApp::new(
                 &cc.egui_ctx,
@@ -1223,24 +1197,27 @@ fn stim_annotations_come_with_the_sidecar() {
     let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     let want = expected_stim(&spec, every_change, false);
     {
-        let mut harness = open(&file.0);
+        let mut harness = open(file.path());
         ready(&mut harness);
         assert_stim(&stim_annotations(&harness), &want);
     }
-    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1, "no sidecar");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "no sidecar"
+    );
 
-    let mut harness = open(&file.0);
+    let mut harness = open(file.path());
     step_until(&mut harness, "the recording", |app| app.viewer().is_some());
     assert!(!viewer(&harness).status().right.contains("Building"));
     assert_stim(&stim_annotations(&harness), &want);
     drop(harness);
-    std::fs::remove_dir_all(&dir.0).unwrap();
 }
 
 #[test]
 fn the_sidebar_hides_and_shows() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     let width = |h: &Harness<'_, KymoApp>| viewer(h).layout().unwrap().traces.width();
     let with_sidebar = width(&harness);
@@ -1281,7 +1258,7 @@ fn set_field(harness: &mut Harness<'_, KymoApp>, label: &str, value: f64) {
 #[test]
 fn settings_apply_at_once() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     ready(&mut harness);
     harness.key_press_modifiers(command(), Key::Comma);
     harness.step();
@@ -1338,7 +1315,7 @@ fn settings_are_kept_between_runs() {
     let file = TempFile::preset("bdf+c-small");
     let mut storage = Memory::default();
     {
-        let mut harness = window(&file.0);
+        let mut harness = window(file.path());
         ready(&mut harness);
         harness.key_press_modifiers(command(), Key::Comma);
         harness.step();
@@ -1352,7 +1329,7 @@ fn settings_are_kept_between_runs() {
     let settings = Settings::load(Some(&storage));
     assert_eq!(settings.default_window_s, 8.0);
     assert_eq!(settings.tile_cache_mb, 300);
-    let mut harness = window_with(&file.0, settings);
+    let mut harness = window_with(file.path(), settings);
     ready(&mut harness);
     assert_eq!(viewer(&harness).view().time(), 0.0..8.0);
     assert_eq!(viewer(&harness).cache().budget(), 300 << 20);
@@ -1363,7 +1340,7 @@ fn settings_are_kept_between_runs() {
 fn the_shortcut_overview_and_about_open() {
     let file = TempFile::new("bdf");
     // A missing file: both work without a recording.
-    let mut harness = window(&file.0);
+    let mut harness = window(file.path());
     step_until(&mut harness, "the error", |app| app.error().is_some());
     harness.key_press_modifiers(command(), Key::Slash);
     harness.step();
@@ -1437,19 +1414,19 @@ fn traces_image(harness: &mut Harness<'_, KymoApp>) -> Vec<[u8; 4]> {
 fn opening_another_recording_never_draws_the_last_ones_tiles() {
     let Some(setup) = gpu_setup() else { return };
     // The same layout, so the same tile keys, with different values.
-    let first = TempFile::seeded("bdf+c-small", 1);
-    let second = TempFile::seeded("bdf+c-small", 2);
+    let first = seeded("bdf+c-small", 1);
+    let second = seeded("bdf+c-small", 2);
 
-    let mut fresh = gpu_window(&second.0, setup.clone());
+    let mut fresh = gpu_window(second.path(), setup.clone());
     ready(&mut fresh);
     let want = traces_image(&mut fresh);
 
-    let mut switched = gpu_window(&first.0, setup);
+    let mut switched = gpu_window(first.path(), setup);
     ready(&mut switched);
     let before = traces_image(&mut switched);
     assert_ne!(before, want, "the two recordings look the same");
     let ctx = switched.ctx.clone();
-    switched.state_mut().open(&ctx, second.0.clone());
+    switched.state_mut().open(&ctx, second.path().to_owned());
     ready(&mut switched);
     assert!(
         traces_image(&mut switched) == want,
@@ -1461,7 +1438,7 @@ fn opening_another_recording_never_draws_the_last_ones_tiles() {
 fn dc_removal_brings_an_offset_trace_into_its_row() {
     let Some(setup) = gpu_setup() else { return };
     let file = offset_preset("bdf+c-small", -21_000.0);
-    let mut harness = gpu_window(&file.0, setup);
+    let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     // Without the annotations' labels, some of which are near the trace colour.
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
@@ -1496,7 +1473,7 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
 fn the_gpu_budget_follows_the_settings() {
     let Some(setup) = gpu_setup() else { return };
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = gpu_window(&file.0, setup);
+    let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     let gpu = |h: &Harness<'_, KymoApp>| h.state().gpu().budget();
     assert_eq!(gpu(&harness), Some(256 << 20));
@@ -1517,8 +1494,8 @@ fn traces_take_their_types_colours() {
     spec.channels[2].label = "ECG".into();
     spec.channels[3].label = "TRIGGER".into();
     let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, &file.0).unwrap();
-    let mut harness = gpu_window(&file.0, setup);
+    kymo_testgen::write(&spec, file.path()).unwrap();
+    let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     // The rows, top to bottom; the last is Status.
@@ -1570,7 +1547,7 @@ fn stim_traces_stay_in_their_row() {
     // Status, the last row, holds codes up to 255 under status bits around 2^20; at a stim
     // scale of 1 per row, either would reach far beyond the row.
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = gpu_window(&file.0, setup);
+    let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     let grey = trace_color(kymo_core::ChannelKind::Stim, &visuals);
@@ -1628,7 +1605,7 @@ fn annotations_lie_behind_the_traces() {
     // In the first 20 s: "trigger 0" at 0.5 s (colour 0), "trigger 1" from 5.5 s to 6.5 s
     // (colour 1), and so on.
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = gpu_window(&file.0, setup);
+    let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     let marks = viewer(&harness).marks().clone();
@@ -1698,7 +1675,7 @@ fn renders_the_window() {
         return;
     }
     let generated = typed_preset();
-    let path = std::env::var_os("KYMO_UI_FILE").map_or(generated.0.clone(), PathBuf::from);
+    let path = std::env::var_os("KYMO_UI_FILE").map_or(generated.path().to_owned(), PathBuf::from);
     let mut harness = Harness::builder()
         .with_size(SIZE)
         .with_pixels_per_point(2.0)

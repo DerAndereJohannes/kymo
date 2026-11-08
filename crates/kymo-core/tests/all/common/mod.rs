@@ -1,8 +1,7 @@
 //! Shared test helpers and proptest strategies.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 use kymo_core::testing::{MemData, opened};
 use kymo_core::tile::{SignalVersion, TileData, View};
@@ -34,66 +33,7 @@ pub fn is_present(segments: &[Range<u64>], i: u64) -> bool {
     segments.iter().any(|s| s.contains(&i))
 }
 
-/// A file in the temp directory, deleted on drop.
-pub struct TempFile(PathBuf);
-
-impl TempFile {
-    pub fn new(extension: &str) -> Self {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!("kymo-test-{}-{n}.{extension}", std::process::id());
-        TempFile(std::env::temp_dir().join(name))
-    }
-
-    pub fn written(spec: &kymo_testgen::Spec) -> Self {
-        let file = TempFile::new(spec.format.extension());
-        kymo_testgen::write(spec, &file.0).unwrap();
-        file
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// A directory in the temp directory, deleted with its contents on drop.
-pub struct TempDir(PathBuf);
-
-impl TempDir {
-    pub fn new() -> Self {
-        let file = TempFile::new("dir");
-        std::fs::create_dir_all(file.path()).unwrap();
-        let path = file.path().to_owned();
-        std::mem::forget(file);
-        TempDir(path)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-
-    /// Names of the files in the directory, sorted.
-    pub fn files(&self) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(&self.0)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+pub use kymo_testgen::{TempDir, TempFile};
 
 /// Deterministic sample values: hashed, with the type's extremes mixed in.
 pub fn value(seed: u64, c: usize, i: u64) -> i64 {

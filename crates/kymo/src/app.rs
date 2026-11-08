@@ -200,11 +200,6 @@ impl KymoApp {
         }
     }
 
-    /// Whether a recording is being opened.
-    pub fn is_loading(&self) -> bool {
-        matches!(self.state, State::Loading(_))
-    }
-
     /// Why the last recording couldn't be opened.
     pub fn error(&self) -> Option<&str> {
         match &self.state {
