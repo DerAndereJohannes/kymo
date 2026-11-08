@@ -64,8 +64,8 @@ pub struct KymoApp {
     #[cfg(any(target_os = "macos", windows))]
     native_menu: Option<NativeMenu>,
     show_sidebar: bool,
-    /// How stim events are found, for this recording and the ones opened after it.
-    events: EventOptions,
+    /// How stim codes are annotated, for this recording and the ones opened after it.
+    stim_options: EventOptions,
     shortcuts_open: bool,
     about_open: bool,
     settings_open: bool,
@@ -100,7 +100,7 @@ impl KymoApp {
             #[cfg(any(target_os = "macos", windows))]
             native_menu: None,
             show_sidebar: true,
-            events: EventOptions::default(),
+            stim_options: EventOptions::default(),
             shortcuts_open: false,
             about_open: false,
             settings_open: false,
@@ -188,7 +188,7 @@ impl KymoApp {
             channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
             dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
             stim: self.viewer().is_some_and(Viewer::has_stim),
-            events: self.events,
+            stim_options: self.stim_options,
         }
     }
 
@@ -341,10 +341,10 @@ impl KymoApp {
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Action::Settings => self.settings_open = true,
             _ => {
-                if let Some(events) = action.event_options(self.events) {
-                    self.events = events;
+                if let Some(options) = action.stim_options(self.stim_options) {
+                    self.stim_options = options;
                     if let State::Ready(viewer) = &mut self.state {
-                        viewer.set_event_options(events);
+                        viewer.set_stim_options(options);
                     }
                 } else if let State::Ready(viewer) = &mut self.state {
                     viewer.apply(action);
@@ -416,7 +416,7 @@ impl KymoApp {
                     document,
                     service,
                     self.options.settings.default_window_s,
-                    self.events,
+                    self.stim_options,
                 )))
             }
             Err(error) => State::Failed {
@@ -445,9 +445,9 @@ struct AppMenuState {
     /// Whether the pointer is over a channel, which Toggle Bad acts on.
     channel: bool,
     dc: bool,
-    /// Whether the recording has stim channels, whose events the rule picks.
+    /// Whether the recording has stim channels, whose codes the rule annotates.
     stim: bool,
-    events: EventOptions,
+    stim_options: EventOptions,
 }
 
 impl MenuState for AppMenuState {
@@ -455,7 +455,7 @@ impl MenuState for AppMenuState {
         // Toggle Bad needs a channel to act on.
         let now = match action {
             Action::ToggleBad => self.channel,
-            _ if action.event_checked(self.events).is_some() => self.stim,
+            _ if action.stim_checked(self.stim_options).is_some() => self.stim,
             _ => true,
         };
         action.enabled(self.ready) && now
@@ -465,7 +465,7 @@ impl MenuState for AppMenuState {
         match action {
             Action::ToggleSidebar => Some(self.sidebar),
             Action::ToggleDc => Some(self.dc),
-            _ => action.event_checked(self.events),
+            _ => action.stim_checked(self.stim_options),
         }
     }
 }

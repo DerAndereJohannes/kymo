@@ -87,7 +87,7 @@ fn follows_each_platforms_layout() {
 }
 
 #[test]
-fn view_has_the_stim_event_submenu() {
+fn view_has_the_stim_annotations_submenu() {
     for platform in Platform::ALL {
         let view = menu_bar(platform)
             .into_iter()
@@ -96,7 +96,7 @@ fn view_has_the_stim_event_submenu() {
         let Some(Item::Submenu { title, items }) = view.items.last() else {
             panic!("{platform:?}: no submenu at the end of View");
         };
-        assert_eq!(*title, "Stim Events");
+        assert_eq!(*title, "Stim Annotations");
         let actions: Vec<Option<Action>> = items
             .iter()
             .map(|item| match item {
@@ -107,16 +107,16 @@ fn view_has_the_stim_event_submenu() {
         assert_eq!(
             actions,
             [
-                Some(Action::EventsEveryChange),
-                Some(Action::EventsFromZero),
-                Some(Action::EventsIncreasing),
+                Some(Action::StimEveryChange),
+                Some(Action::StimFromZero),
+                Some(Action::StimIncreasing),
                 None,
-                Some(Action::ToggleInitialEvent),
+                Some(Action::ToggleInitialCode),
             ]
         );
         assert_eq!(items[3], Item::Separator);
         // Menu::actions sees into it.
-        assert!(view.actions().any(|a| a == Action::ToggleInitialEvent));
+        assert!(view.actions().any(|a| a == Action::ToggleInitialCode));
     }
 }
 
@@ -217,10 +217,10 @@ fn only_command_shortcuts_are_attached() {
                         action,
                         Action::ToggleDc
                             | Action::ToggleSidebar
-                            | Action::EventsEveryChange
-                            | Action::EventsFromZero
-                            | Action::EventsIncreasing
-                            | Action::ToggleInitialEvent
+                            | Action::StimEveryChange
+                            | Action::StimFromZero
+                            | Action::StimIncreasing
+                            | Action::ToggleInitialCode
                     ),
                     "{action:?}"
                 );

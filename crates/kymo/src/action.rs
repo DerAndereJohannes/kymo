@@ -44,13 +44,13 @@ pub enum Action {
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
     /// Stim events at every change to a non-zero code (see [`EventRule`]).
-    EventsEveryChange,
-    /// Stim events only at changes from 0.
-    EventsFromZero,
-    /// Stim events only at changes to a larger code.
-    EventsIncreasing,
-    /// Whether a code at a stim channel's first sample is an event.
-    ToggleInitialEvent,
+    StimEveryChange,
+    /// Stim annotations only at changes from 0.
+    StimFromZero,
+    /// Stim annotations only at changes to a larger code.
+    StimIncreasing,
+    /// Whether a code at a stim channel's first sample is annotated.
+    ToggleInitialCode,
 }
 
 impl Action {
@@ -84,10 +84,10 @@ impl Action {
         Action::ToggleDc,
         Action::ToggleBad,
         Action::ToggleSidebar,
-        Action::EventsEveryChange,
-        Action::EventsFromZero,
-        Action::EventsIncreasing,
-        Action::ToggleInitialEvent,
+        Action::StimEveryChange,
+        Action::StimFromZero,
+        Action::StimIncreasing,
+        Action::ToggleInitialCode,
     ];
 
     /// The name in menus and the shortcut overview.
@@ -122,10 +122,10 @@ impl Action {
             Action::ToggleDc => "Remove DC",
             Action::ToggleBad => "Toggle Bad Channel",
             Action::ToggleSidebar => "Show Sidebar",
-            Action::EventsEveryChange => "Every Change",
-            Action::EventsFromZero => "From Zero",
-            Action::EventsIncreasing => "Increasing",
-            Action::ToggleInitialEvent => "Initial Event",
+            Action::StimEveryChange => "Every Change",
+            Action::StimFromZero => "From Zero",
+            Action::StimIncreasing => "Increasing",
+            Action::ToggleInitialCode => "Initial Code",
         }
     }
 
@@ -135,21 +135,22 @@ impl Action {
             self,
             Action::ToggleDc
                 | Action::ToggleSidebar
-                | Action::EventsEveryChange
-                | Action::EventsFromZero
-                | Action::EventsIncreasing
-                | Action::ToggleInitialEvent
+                | Action::StimEveryChange
+                | Action::StimFromZero
+                | Action::StimIncreasing
+                | Action::ToggleInitialCode
         )
     }
 
-    /// The stim event options after this action, if it is one of the stim event items.
-    pub fn event_options(self, options: EventOptions) -> Option<EventOptions> {
+    /// The stim annotation options after this action, if it is one of the Stim Annotations
+    /// items.
+    pub fn stim_options(self, options: EventOptions) -> Option<EventOptions> {
         let rule = |rule| EventOptions { rule, ..options };
         match self {
-            Action::EventsEveryChange => Some(rule(EventRule::EveryChange)),
-            Action::EventsFromZero => Some(rule(EventRule::FromZero)),
-            Action::EventsIncreasing => Some(rule(EventRule::Increasing)),
-            Action::ToggleInitialEvent => Some(EventOptions {
+            Action::StimEveryChange => Some(rule(EventRule::EveryChange)),
+            Action::StimFromZero => Some(rule(EventRule::FromZero)),
+            Action::StimIncreasing => Some(rule(EventRule::Increasing)),
+            Action::ToggleInitialCode => Some(EventOptions {
                 initial_event: !options.initial_event,
                 ..options
             }),
@@ -157,13 +158,14 @@ impl Action {
         }
     }
 
-    /// Whether the action is on under the stim event `options`, if it is one of their items.
-    pub fn event_checked(self, options: EventOptions) -> Option<bool> {
+    /// Whether the action is on under the stim annotation `options`, if it is one of their
+    /// items.
+    pub fn stim_checked(self, options: EventOptions) -> Option<bool> {
         match self {
-            Action::EventsEveryChange => Some(options.rule == EventRule::EveryChange),
-            Action::EventsFromZero => Some(options.rule == EventRule::FromZero),
-            Action::EventsIncreasing => Some(options.rule == EventRule::Increasing),
-            Action::ToggleInitialEvent => Some(options.initial_event),
+            Action::StimEveryChange => Some(options.rule == EventRule::EveryChange),
+            Action::StimFromZero => Some(options.rule == EventRule::FromZero),
+            Action::StimIncreasing => Some(options.rule == EventRule::Increasing),
+            Action::ToggleInitialCode => Some(options.initial_event),
             _ => None,
         }
     }

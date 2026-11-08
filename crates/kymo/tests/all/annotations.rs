@@ -133,7 +133,7 @@ fn brute_force(view: &ViewState, store: &AnnotationStore, legend: &Legend, width
         if !entry.shown || d.onset >= t.end || d.end() < t.start {
             continue;
         }
-        // Stim events mark a moment for all channels.
+        // Stim annotations mark a moment for all channels.
         let spans: Vec<Span> = if d.channels.is_empty() || d.origin == Origin::Stim {
             vec![Span::All]
         } else {
@@ -251,7 +251,7 @@ fn check_labels(
 }
 
 /// A random annotation: onset in the recording, an event, a sliver or a band, one of 14
-/// descriptions (so colours repeat), for all channels or a few, or a stim event of a
+/// descriptions (so colours repeat), for all channels or a few, or a stim annotation of a
 /// channel.
 fn annotation() -> impl Strategy<Value = AnnotationData> {
     (
@@ -435,10 +435,10 @@ fn channel_annotations_cover_their_rows() {
     assert_eq!(span_y(&view, Span::All, height), 0.0..height);
 }
 
-/// A stim event belongs to its stim channel but marks all rows, even with that channel off
+/// A stim annotation belongs to its stim channel but marks all rows, even with that channel off
 /// screen or hidden, and the pointer finds it on any of them.
 #[test]
-fn stim_events_mark_every_row() {
+fn stim_annotations_mark_every_row() {
     let rec = recording();
     let mut view = ViewState::new(&rec);
     view.set_rows(4);

@@ -285,10 +285,10 @@ impl ViewState {
             | Action::Shortcuts
             | Action::About
             | Action::ToggleSidebar
-            | Action::EventsEveryChange
-            | Action::EventsFromZero
-            | Action::EventsIncreasing
-            | Action::ToggleInitialEvent => return false,
+            | Action::StimEveryChange
+            | Action::StimFromZero
+            | Action::StimIncreasing
+            | Action::ToggleInitialCode => return false,
         }
         true
     }

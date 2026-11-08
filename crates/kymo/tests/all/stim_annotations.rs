@@ -1,7 +1,7 @@
-//! Stim events kept up with the build and the rule: when the store is updated, what it
+//! Stim annotations kept up with the build and the rule: when the store is updated, what it
 //! holds, and that the file's annotations stay as they are.
 
-use kymo::events::{INTERVAL, StimEvents, Update};
+use kymo::stim_annotations::{INTERVAL, StimAnnotations, Update};
 use kymo_core::stim::{self, Change, EventOptions, EventRule, StimChanges};
 use kymo_core::testing::{MemData, single_grid};
 use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId, Origin, Recording};
@@ -77,11 +77,11 @@ fn updates_follow_the_build_at_most_every_interval() {
     let rec = recording();
     let mut store = file_annotations();
     let files = of(&store, Origin::File);
-    let mut events = StimEvents::new(EventOptions::default());
+    let mut stim = StimAnnotations::new(EventOptions::default());
     let never = || -> Vec<StimChanges> { panic!("changes read without an update") };
 
     // The first update is at once, whatever the time.
-    let update = events.update(&mut store, &rec, 25, 100.0, || changes(25));
+    let update = stim.update(&mut store, &rec, 25, 100.0, || changes(25));
     assert_eq!(update, Update::Changed);
     let descriptions = |store: &AnnotationStore| -> Vec<(f64, String, u32)> {
         stim_data(store)
@@ -103,15 +103,15 @@ fn updates_follow_the_build_at_most_every_interval() {
 
     // No progress: nothing to do, however long it has been.
     assert_eq!(
-        events.update(&mut store, &rec, 25, 200.0, never),
+        stim.update(&mut store, &rec, 25, 200.0, never),
         Update::Unchanged
     );
     // Progress, but too soon: wait for the rest of the interval.
-    let Update::Wait(wait) = events.update(&mut store, &rec, 45, 100.1, never) else {
+    let Update::Wait(wait) = stim.update(&mut store, &rec, 45, 100.1, never) else {
         panic!("no wait");
     };
     assert!((wait - (INTERVAL - 0.1)).abs() < 1e-9, "{wait}");
-    let update = events.update(&mut store, &rec, 45, 100.0 + INTERVAL, || changes(45));
+    let update = stim.update(&mut store, &rec, 45, 100.0 + INTERVAL, || changes(45));
     assert_eq!(update, Update::Changed);
     // And 3 at 0.4 s on channel 2.
     assert_eq!(
@@ -131,16 +131,16 @@ fn a_rule_change_rebuilds_at_once_and_keeps_the_file_annotations() {
     let rec = recording();
     let mut store = file_annotations();
     let files = of(&store, Origin::File);
-    let mut events = StimEvents::new(EventOptions::default());
-    events.update(&mut store, &rec, 100, 0.0, || changes(100));
+    let mut stim = StimAnnotations::new(EventOptions::default());
+    stim.update(&mut store, &rec, 100, 0.0, || changes(100));
     assert_eq!(stim_data(&store).len(), 4);
 
     let from_zero = options(EventRule::FromZero, false);
-    events.set_options(from_zero);
-    assert_eq!(events.options(), from_zero);
+    stim.set_options(from_zero);
+    assert_eq!(stim.options(), from_zero);
     // Same progress, same instant: still rebuilt.
     assert_eq!(
-        events.update(&mut store, &rec, 100, 0.0, || changes(100)),
+        stim.update(&mut store, &rec, 100, 0.0, || changes(100)),
         Update::Changed
     );
     let codes: Vec<String> = stim_data(&store)
@@ -152,9 +152,9 @@ fn a_rule_change_rebuilds_at_once_and_keeps_the_file_annotations() {
     assert_eq!(of(&store, Origin::File), files);
 
     // Setting the same options again changes nothing.
-    events.set_options(from_zero);
+    stim.set_options(from_zero);
     assert_eq!(
-        events.update(&mut store, &rec, 100, 0.0, || changes(100)),
+        stim.update(&mut store, &rec, 100, 0.0, || changes(100)),
         Update::Unchanged
     );
 }
@@ -184,13 +184,13 @@ fn step() -> impl Strategy<Value = Step> {
 
 proptest! {
     /// Over random frames and rule changes, an update happens exactly when the model says,
-    /// and leaves the events of the changes found so far under the current rule.
+    /// and leaves the annotations of the changes found so far under the current rule.
     #[test]
     fn updates_match_the_model(steps in proptest::collection::vec(step(), 1..40)) {
         let rec = recording();
         let mut store = file_annotations();
         let files = of(&store, Origin::File);
-        let mut events = StimEvents::new(EventOptions::default());
+        let mut stim = StimAnnotations::new(EventOptions::default());
         let mut current = EventOptions::default();
         let (mut done, mut now) = (0u64, 0.0f64);
         // The progress and time of the last update, if it still holds for the rule.
@@ -198,7 +198,7 @@ proptest! {
         for step in steps {
             match step {
                 Step::Rule(options) => {
-                    events.set_options(options);
+                    stim.set_options(options);
                     if options != current {
                         last = None;
                     }
@@ -217,7 +217,7 @@ proptest! {
                 Some(_) => Update::Changed,
             };
             let before = stim_data(&store);
-            let update = events.update(&mut store, &rec, done, now, || changes(done));
+            let update = stim.update(&mut store, &rec, done, now, || changes(done));
             match (update, expected) {
                 (Update::Wait(a), Update::Wait(b)) => prop_assert!((a - b).abs() < 1e-9),
                 _ => prop_assert_eq!(update, expected),

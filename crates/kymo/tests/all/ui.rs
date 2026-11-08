@@ -1025,10 +1025,10 @@ fn recordings_without_annotations_have_no_legend() {
     );
 }
 
-/// The stim events of `spec`'s Status channel (channel 4, 512 Hz), brute force from the
+/// The stim annotations of `spec`'s Status channel (channel 4, 512 Hz), brute force from the
 /// codes it was written with: onsets and codes, in time order, where `event(before, now)`
 /// says whether a change is one.
-fn expected_events(
+fn expected_stim(
     spec: &kymo_testgen::Spec,
     event: fn(i32, i32) -> bool,
     initial: bool,
@@ -1049,9 +1049,9 @@ fn expected_events(
     events
 }
 
-/// The viewer's stim events, onsets and codes; each must belong to Status alone and last
+/// The viewer's stim annotations, onsets and codes; each must belong to Status alone and last
 /// no time.
-fn stim_events(harness: &Harness<'_, KymoApp>) -> Vec<(f64, String)> {
+fn stim_annotations(harness: &Harness<'_, KymoApp>) -> Vec<(f64, String)> {
     viewer(harness)
         .document()
         .annotations
@@ -1065,7 +1065,7 @@ fn stim_events(harness: &Harness<'_, KymoApp>) -> Vec<(f64, String)> {
         .collect()
 }
 
-fn assert_events(got: &[(f64, String)], want: &[(f64, String)]) {
+fn assert_stim(got: &[(f64, String)], want: &[(f64, String)]) {
     assert_eq!(got.len(), want.len(), "{got:?}\n{want:?}");
     for (g, w) in got.iter().zip(want) {
         assert!(
@@ -1085,17 +1085,17 @@ fn file_annotations(harness: &Harness<'_, KymoApp>) -> Vec<kymo_core::Annotation
         .collect()
 }
 
-/// Opens View → Stim Events.
-fn open_events_menu(harness: &mut Harness<'_, KymoApp>) {
+/// Opens View → Stim Annotations.
+fn open_stim_menu(harness: &mut Harness<'_, KymoApp>) {
     harness.get_by_label("View").click();
     harness.run_steps(2);
-    harness.get_by_label("Stim Events").click();
+    harness.get_by_label("Stim Annotations").click();
     harness.run_steps(2);
 }
 
-/// Whether `item` in View → Stim Events is enabled and checked; leaves the menus closed.
-fn event_item(harness: &mut Harness<'_, KymoApp>, item: &str) -> (bool, bool) {
-    open_events_menu(harness);
+/// Whether `item` in View → Stim Annotations is enabled and checked; leaves the menus closed.
+fn stim_item(harness: &mut Harness<'_, KymoApp>, item: &str) -> (bool, bool) {
+    open_stim_menu(harness);
     let node = harness.get_by_label(item);
     let enabled = !node.accesskit_node().is_disabled();
     let checked = node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True);
@@ -1108,8 +1108,8 @@ fn event_item(harness: &mut Harness<'_, KymoApp>, item: &str) -> (bool, bool) {
     (enabled, checked)
 }
 
-fn choose_events(harness: &mut Harness<'_, KymoApp>, item: &str) {
-    open_events_menu(harness);
+fn choose_stim(harness: &mut Harness<'_, KymoApp>, item: &str) {
+    open_stim_menu(harness);
     harness.get_by_label(item).click();
     harness.run_steps(2);
 }
@@ -1126,9 +1126,9 @@ fn increasing(before: i32, now: i32) -> bool {
 }
 
 #[test]
-fn stim_events_follow_the_rule_and_keep_the_file_annotations() {
+fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
     use egui::accesskit::Role;
-    // A seed whose first code is not 0, so Initial Event makes a difference.
+    // A seed whose first code is not 0, so Initial Code makes a difference.
     let seed = (0..)
         .find(|&seed| {
             let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
@@ -1142,11 +1142,11 @@ fn stim_events_follow_the_rule_and_keep_the_file_annotations() {
     let mut harness = window(&file.0);
     ready(&mut harness);
 
-    let want = expected_events(&spec, every_change, false);
+    let want = expected_stim(&spec, every_change, false);
     assert!(want.len() > 20, "{} events", want.len());
-    assert_events(&stim_events(&harness), &want);
-    assert_eq!(event_item(&mut harness, "Every Change"), (true, true));
-    assert_eq!(event_item(&mut harness, "Initial Event"), (true, false));
+    assert_stim(&stim_annotations(&harness), &want);
+    assert_eq!(stim_item(&mut harness, "Every Change"), (true, true));
+    assert_eq!(stim_item(&mut harness, "Initial Code"), (true, false));
     // The legend lists the codes after the file's descriptions, all shown.
     let legend = viewer(&harness).legend();
     let codes: std::collections::BTreeSet<&str> = want.iter().map(|w| w.1.as_str()).collect();
@@ -1164,44 +1164,44 @@ fn stim_events_follow_the_rule_and_keep_the_file_annotations() {
         ("From Zero", from_zero as fn(i32, i32) -> bool),
         ("Increasing", increasing),
     ] {
-        choose_events(&mut harness, item);
-        assert_events(
-            &stim_events(&harness),
-            &expected_events(&spec, event, false),
+        choose_stim(&mut harness, item);
+        assert_stim(
+            &stim_annotations(&harness),
+            &expected_stim(&spec, event, false),
         );
-        assert_eq!(event_item(&mut harness, item), (true, true));
-        assert_eq!(event_item(&mut harness, "Every Change"), (true, false));
+        assert_eq!(stim_item(&mut harness, item), (true, true));
+        assert_eq!(stim_item(&mut harness, "Every Change"), (true, false));
         assert_eq!(file_annotations(&harness), files);
         assert!(!viewer(&harness).legend().entry("trigger 0").unwrap().shown);
     }
-    choose_events(&mut harness, "Initial Event");
-    let initial = expected_events(&spec, increasing, true);
+    choose_stim(&mut harness, "Initial Code");
+    let initial = expected_stim(&spec, increasing, true);
     assert_eq!(initial[0].0, 0.0);
-    assert_events(&stim_events(&harness), &initial);
-    assert_eq!(event_item(&mut harness, "Initial Event"), (true, true));
+    assert_stim(&stim_annotations(&harness), &initial);
+    assert_eq!(stim_item(&mut harness, "Initial Code"), (true, true));
 
     // The recording opened next keeps the rule.
     let ctx = harness.ctx.clone();
     harness.state_mut().open(&ctx, file.0.clone());
     ready(&mut harness);
-    assert_events(&stim_events(&harness), &initial);
-    assert_eq!(event_item(&mut harness, "Increasing"), (true, true));
+    assert_stim(&stim_annotations(&harness), &initial);
+    assert_eq!(stim_item(&mut harness, "Increasing"), (true, true));
 }
 
 #[test]
-fn stim_event_items_need_stim_channels() {
+fn stim_stim_items_need_stim_channels() {
     let file = without_triggers("bdf+c-small");
     let mut harness = window(&file.0);
     ready(&mut harness);
-    assert!(stim_events(&harness).is_empty());
-    for item in ["Every Change", "From Zero", "Increasing", "Initial Event"] {
-        assert!(!event_item(&mut harness, item).0, "{item}");
+    assert!(stim_annotations(&harness).is_empty());
+    for item in ["Every Change", "From Zero", "Increasing", "Initial Code"] {
+        assert!(!stim_item(&mut harness, item).0, "{item}");
     }
 }
 
 /// A reopened recording has its events from its sidecar in its first frame.
 #[test]
-fn stim_events_come_with_the_sidecar() {
+fn stim_annotations_come_with_the_sidecar() {
     let file = TempFile::preset("bdf+c-small");
     let dir = TempFile::new("sidecars");
     std::fs::create_dir(&dir.0).unwrap();
@@ -1221,18 +1221,18 @@ fn stim_events_come_with_the_sidecar() {
         })
     };
     let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
-    let want = expected_events(&spec, every_change, false);
+    let want = expected_stim(&spec, every_change, false);
     {
         let mut harness = open(&file.0);
         ready(&mut harness);
-        assert_events(&stim_events(&harness), &want);
+        assert_stim(&stim_annotations(&harness), &want);
     }
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1, "no sidecar");
 
     let mut harness = open(&file.0);
     step_until(&mut harness, "the recording", |app| app.viewer().is_some());
     assert!(!viewer(&harness).status().right.contains("Building"));
-    assert_events(&stim_events(&harness), &want);
+    assert_stim(&stim_annotations(&harness), &want);
     drop(harness);
     std::fs::remove_dir_all(&dir.0).unwrap();
 }

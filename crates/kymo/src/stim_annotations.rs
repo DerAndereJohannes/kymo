@@ -1,4 +1,4 @@
-//! Stim channel events in the annotation store, kept up with the pyramid build and the event
+//! Stim channel annotations in the annotation store, kept up with the pyramid build and the
 //! rule. GUI-free: the viewer hands in the build's progress, the time and the changes found.
 
 use kymo_core::stim::{self, EventOptions, StimChanges};
@@ -8,7 +8,7 @@ use kymo_core::{AnnotationStore, Origin, Recording};
 /// every stim annotation.
 pub const INTERVAL: f64 = 0.25;
 
-/// What [`StimEvents::update`] did.
+/// What [`StimAnnotations::update`] did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Update {
     /// Nothing new.
@@ -20,19 +20,19 @@ pub enum Update {
     Wait(f64),
 }
 
-/// Keeps the store's [`Origin::Stim`] annotations at the events of the changes found so far,
-/// under the event rule.
+/// Keeps the store's [`Origin::Stim`] annotations at the codes the rule picks from the changes
+/// found so far.
 #[derive(Clone, Debug)]
-pub struct StimEvents {
+pub struct StimAnnotations {
     options: EventOptions,
     /// The build's samples done and the time at the last update; `None` before the first,
     /// and after a rule change.
     last: Option<(u64, f64)>,
 }
 
-impl StimEvents {
-    pub fn new(options: EventOptions) -> StimEvents {
-        StimEvents {
+impl StimAnnotations {
+    pub fn new(options: EventOptions) -> StimAnnotations {
+        StimAnnotations {
             options,
             last: None,
         }
@@ -42,7 +42,7 @@ impl StimEvents {
         self.options
     }
 
-    /// Changes the rule; the next update rebuilds the events at once.
+    /// Changes the rule; the next update rebuilds the annotations at once.
     pub fn set_options(&mut self, options: EventOptions) {
         if options != self.options {
             self.options = options;
@@ -50,7 +50,7 @@ impl StimEvents {
         }
     }
 
-    /// Replaces `store`'s stim annotations with the events of `changes()` if the build has
+    /// Replaces `store`'s stim annotations with the annotations of `changes()` if the build has
     /// moved on (`done` samples, read before the changes) and the last update is at least
     /// [`INTERVAL`] before `now` (seconds); at once for the first update and after a rule
     /// change. Other annotations stay as they are.
@@ -71,10 +71,10 @@ impl StimEvents {
                 return Update::Wait(wait);
             }
         }
-        let events = stim::annotations(recording, &changes(), self.options);
+        let annotations = stim::annotations(recording, &changes(), self.options);
         store
-            .replace_origin(Origin::Stim, events)
-            .expect("stim events have finite onsets and the stim origin");
+            .replace_origin(Origin::Stim, annotations)
+            .expect("stim annotations have finite onsets and the stim origin");
         self.last = Some((done, now));
         Update::Changed
     }

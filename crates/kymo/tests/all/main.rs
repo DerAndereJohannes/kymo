@@ -9,7 +9,6 @@ mod common;
 
 mod annotations;
 mod axis;
-mod events;
 mod frame;
 mod keymap;
 mod menu;
@@ -19,6 +18,7 @@ mod readout;
 mod render;
 mod settings;
 mod shortcuts;
+mod stim_annotations;
 mod ui;
 mod view;
 mod widgets;

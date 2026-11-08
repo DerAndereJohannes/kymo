@@ -143,7 +143,7 @@ pub struct Marks {
     /// Translucent: annotations at least a pixel long. Bands of the same colour and span
     /// never overlap or touch; overlapping ones are merged.
     pub bands: Vec<Mark>,
-    /// Solid, one column wide: events, and annotations shorter than a pixel. At most one
+    /// Solid, one column wide: annotations without or with less than a pixel's duration. At most one
     /// per column, colour and span.
     pub lines: Vec<Mark>,
     /// From left to right, never overlapping.
@@ -153,7 +153,7 @@ pub struct Marks {
 /// The marks for `store`'s annotations in `view`, on a trace area `width_px` physical
 /// pixels wide, of the descriptions `legend` shows.
 ///
-/// An annotation of all channels, or a stim event, spans the trace area's height (see
+/// An annotation of all channels, or of a stim channel, spans the trace area's height (see
 /// [`spans_all`]); one tied to channels spans the rows of those on screen, and draws nothing
 /// if none is. Marks of the same colour over
 /// the same rows that would overlap are merged, so however many annotations there are,
@@ -282,7 +282,7 @@ pub fn under<'s>(
 }
 
 /// Whether `a`'s mark spans the trace area's height: if it applies to all channels, or is a
-/// stim event. Events belong to their stim channel, but mark a moment for all of them, as
+/// stim annotation. Those belong to their stim channel, but mark a moment for all channels, as
 /// MNE draws them; and the stim row may well be off screen.
 pub fn spans_all(a: &AnnotationData) -> bool {
     a.channels.is_empty() || a.origin == Origin::Stim

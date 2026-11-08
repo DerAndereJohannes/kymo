@@ -184,13 +184,13 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             a(Action::ToggleBad),
             Item::Separator,
             Item::Submenu {
-                title: "Stim Events",
+                title: "Stim Annotations",
                 items: vec![
-                    a(Action::EventsEveryChange),
-                    a(Action::EventsFromZero),
-                    a(Action::EventsIncreasing),
+                    a(Action::StimEveryChange),
+                    a(Action::StimFromZero),
+                    a(Action::StimIncreasing),
                     Item::Separator,
-                    a(Action::ToggleInitialEvent),
+                    a(Action::ToggleInitialCode),
                 ],
             },
         ],
