@@ -382,7 +382,8 @@ struct Bench {
     script: Script,
     report: Rc<RefCell<Report>>,
     started: Instant,
-    last_frame: Option<Instant>,
+    /// When the last frame started, and the phase of the step it drew.
+    last_frame: Option<(Instant, Option<Phase>)>,
     /// The current step's phase and when it was taken.
     step: Option<(Phase, Instant)>,
     /// The middle of the traces, where the pointer is kept for scrolls and pinches.
@@ -449,13 +450,15 @@ impl eframe::App for Bench {
             self.app.frame(ui);
             return;
         }
-        if let (Some(last), Some((phase, _))) = (self.last_frame, self.step) {
+        // The time since the last frame started went to drawing that frame: it counts
+        // towards the step it drew (none while opening).
+        if let Some((last, Some(phase))) = self.last_frame {
             self.report
                 .borrow_mut()
                 .frames
                 .push((phase, (now - last).as_secs_f64()));
         }
-        self.last_frame = Some(now);
+        self.last_frame = Some((now, self.step.map(|(phase, _)| phase)));
 
         self.app.frame(ui);
         ctx.request_repaint();
