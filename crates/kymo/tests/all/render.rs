@@ -1,4 +1,5 @@
-//! The trace renderer on a real GPU: frames rendered off-screen, every pixel column checked
+//! The trace renderer on a real GPU: frames rendered off-screen in whole pixels and
+//! anti-aliased, every pixel column checked
 //! against an f64 reference computed from the raw samples.
 //!
 //! Without a GPU adapter the tests pass with a message; set `KYMO_REQUIRE_GPU` to make
@@ -285,69 +286,54 @@ fn check_columns(
     Ok(())
 }
 
-/// Checks every column of an anti-aliased image: the trace covers the reference's span
-/// widened by half a pixel on either side, as one run, every row the span reaches at least
-/// half, and in all about as much as the widened span is long.
+/// Least cover of a pixel the trace passes through: its centre is at most √½ pixel away.
+const MIN_COVER: f64 = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
+
+/// How much more than exactly the renderer may cover a pixel: it measures distances to
+/// boxes 1/16 of two pixels wide around the trace (see `traces.wgsl`).
+const OVER_COVER: f64 = 1.0 / 8.0;
+
+/// Checks an anti-aliased image against the same frame drawn in whole pixels (`whole`):
+/// every pixel lit there is covered at least [`MIN_COVER`], and no pixel is covered that
+/// isn't within one pixel of one lit there. Lines (level 0) are also checked pixel by pixel
+/// against the f64 reference: each pixel covered by 1 − its centre's distance to the line,
+/// or up to [`OVER_COVER`] more.
 fn check_antialiased(
     image: &Image,
+    whole: &Image,
     truth: &Truth,
     shape: &Shape,
     columns: &[std::ops::Range<u32>],
 ) -> Result<(), String> {
-    let height = f64::from(image.height);
-    // The widened span's length on screen.
-    let length = |range: Option<(f64, f64)>| {
-        range.map_or(0.0, |(lo, hi)| {
-            ((hi + 0.5).clamp(0.0, height) - (lo - 0.5).clamp(0.0, height)).max(0.0)
-        })
-    };
+    let (w, h) = (image.width, image.height);
+    // Rounding to 8 bits, and f32 positions.
+    let slack = 1.5 / 255.0 + 2.0 * EPS;
     for x in columns.iter().flat_map(Clone::clone) {
-        let c = f64::from(x);
-        let (inner, outer) = match shape {
-            Shape::Line => (
-                truth.line(c + EPS, c + 1.0 - EPS),
-                truth.line(c - EPS, c + 1.0 + EPS),
-            ),
-            Shape::Buckets { widths } => {
-                let width = widths[x as usize];
-                (
-                    truth.samples(c + EPS, c + 1.0 - EPS),
-                    truth.samples(c - width - EPS, c + 1.0 + width + EPS),
-                )
+        for y in 0..h {
+            let cover = image.cover(x, y);
+            if whole.trace(x, y) && cover < MIN_COVER - slack {
+                return Err(format!("pixel ({x}, {y}) lit, but covered only {cover:.3}"));
             }
-        };
-        let lit = image.run(x)?;
-        let covers: Vec<f64> = (0..image.height).map(|y| image.cover(x, y)).collect();
-        let total: f64 = covers.iter().sum();
-        // Rounding to 8 bits per lit pixel, and f32 positions at both ends.
-        let slack = lit.map_or(0.0, |(a, b)| (b - a + 1) as f64) / 255.0 + 4.0 * EPS;
-        let fail = |what: String| {
-            Err(format!(
-                "column {x}: {what}; lit {lit:?}, cover {total:.3} (inner {inner:?}, outer {outer:?})"
-            ))
-        };
-        if total < length(inner) - slack || total > length(outer) + slack {
-            return fail(format!(
-                "cover outside {:.3}..={:.3}",
-                length(inner),
-                length(outer)
-            ));
-        }
-        if let (Some((a, b)), Some(may)) = (lit, rows(outer, -0.5 - EPS, image.height))
-            && (a < may.0 || b > may.1)
-        {
-            return fail(format!("lit beyond {may:?}"));
-        }
-        if lit.is_some() && outer.is_none() {
-            return fail("lit without data".into());
-        }
-        if let Some((m0, m1)) = rows(inner, EPS, image.height)
-            && let Some(y) = (m0..=m1).find(|&y| covers[y as usize] < 0.5 - 1.0 / 255.0)
-        {
-            return fail(format!(
-                "row {y} of the span covered {:.3}",
-                covers[y as usize]
-            ));
+            let near = (x.saturating_sub(1)..=(x + 1).min(w - 1))
+                .any(|nx| (y.saturating_sub(1)..=(y + 1).min(h - 1)).any(|ny| whole.trace(nx, ny)));
+            // On the border, the trace may lie just off screen.
+            let border = x == 0 || y == 0 || x == w - 1 || y == h - 1;
+            if cover > slack && !near && !border {
+                return Err(format!(
+                    "pixel ({x}, {y}) covered {cover:.3}, far from the trace"
+                ));
+            }
+            if let Shape::Line = shape {
+                let d = truth.distance(f64::from(x) + 0.5, f64::from(y) + 0.5, 1.5);
+                let want = (1.0 - d).clamp(0.0, 1.0);
+                let most = (1.0 - d + OVER_COVER).clamp(0.0, 1.0);
+                if cover < want - slack || cover > most + slack {
+                    return Err(format!(
+                        "pixel ({x}, {y}) covered {cover:.3}, not {want:.3} to {most:.3} \
+                         (distance {d:.4})"
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -404,8 +390,19 @@ fn check_some(
     columns: &[std::ops::Range<u32>],
 ) -> Image {
     let query = query(&fx.recording, &view(scene), cache);
-    let frame = Frame::new(&fx.recording, scene, &query);
-    let image = gpu.render(&mut gpu.renderer(), &frame);
+    // Both ways, whatever the scene asks for: in whole pixels, and anti-aliased.
+    let render = |antialias| {
+        let scene = Scene {
+            antialias,
+            ..scene.clone()
+        };
+        gpu.render(
+            &mut gpu.renderer(),
+            &Frame::new(&fx.recording, &scene, &query),
+        )
+    };
+    let whole = render(false);
+    let smooth = render(true);
     let shape = shape(fx, scene, &query);
     let margin = match shape {
         Shape::Line => 1.0,
@@ -416,18 +413,15 @@ fn check_some(
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let mut ppm = format!("P6 {} {} 255\n", image.width, image.height).into_bytes();
-        ppm.extend(image.pixels.iter().flat_map(|p| [p[0], p[1], p[2]]));
+        let mut ppm = format!("P6 {} {} 255\n", smooth.width, smooth.height).into_bytes();
+        ppm.extend(smooth.pixels.iter().flat_map(|p| [p[0], p[1], p[2]]));
         std::fs::write(std::path::Path::new(&dir).join(format!("{n:03}.ppm")), ppm).unwrap();
     }
-    let checked = if scene.antialias {
-        check_antialiased(&image, &truth, &shape, columns)
-    } else {
-        check_columns(&image, &truth, &shape, columns)
-    };
+    let checked = check_columns(&whole, &truth, &shape, columns)
+        .and_then(|()| check_antialiased(&smooth, &whole, &truth, &shape, columns));
     if let Err(e) = checked {
         panic!(
-            "{:?} over {:?} at {:?} ({shape:?}, antialias {}): {e}",
+            "{:?} over {:?} at {:?} ({}): {e}",
             scene.rows[0].channel,
             scene.time,
             query
@@ -435,10 +429,13 @@ fn check_some(
                 .iter()
                 .map(|p| (p.tile.key().level, p.samples.clone()))
                 .collect::<Vec<_>>(),
-            scene.antialias,
+            match shape {
+                Shape::Line => "line".to_owned(),
+                Shape::Buckets { .. } => format!("buckets up to {:.3} px", shape.widest()),
+            },
         );
     }
-    image
+    if scene.antialias { smooth } else { whole }
 }
 
 /// The tiles the view of `scene` wants, all cached.
@@ -515,11 +512,8 @@ fn columns_match_the_samples_at_every_zoom() {
         let id = ChannelId(id);
         let rate = fx.grid_of(id).rate();
         for time in views(fx.recording.duration(), rate) {
-            for antialias in [false, true] {
-                let mut scene = fx.scene(id, time.clone(), SIZE);
-                scene.antialias = antialias;
-                check(gpu, &fx, &scene, &exact(&fx, &scene));
-            }
+            let scene = fx.scene(id, time, SIZE);
+            check(gpu, &fx, &scene, &exact(&fx, &scene));
         }
     }
 }
@@ -566,12 +560,13 @@ fn a_single_sample_spike_shows_at_every_zoom() {
             let mut scene = fx.scene(id, start..start + span_now, SIZE);
             scene.antialias = antialias;
             let image = check(gpu, &fx, &scene, &exact(&fx, &scene));
-            // A column next to the spike's reaches the spike's row, at least half of it.
+            // A column next to the spike's reaches the spike's row, which the line runs
+            // through.
             let row = &scene.rows[0];
             let x = ((at - start) / span_now * f64::from(SIZE[0])) as u32;
             let top = (row.center - (1000.0 - row.baseline) * row.px_per_unit).floor() as u32;
             let reaches = (x.saturating_sub(1)..=(x + 1).min(SIZE[0] - 1))
-                .any(|x| image.cover(x, top) >= 0.5);
+                .any(|x| image.cover(x, top) >= MIN_COVER - 0.01);
             assert!(
                 reaches,
                 "span {span_now}, antialias {antialias}: spike at column {x} doesn't reach row {top}"

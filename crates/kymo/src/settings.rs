@@ -38,7 +38,7 @@ impl Default for Settings {
             tile_cache_mb: (DEFAULT_BUDGET >> 20) as u32,
             gpu_memory_mb: (DEFAULT_GPU_BUDGET >> 20) as u32,
             default_window_s: DEFAULT_SPAN,
-            antialias: true,
+            antialias: false,
         }
     }
 }

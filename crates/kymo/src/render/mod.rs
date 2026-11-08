@@ -9,6 +9,6 @@ mod frame;
 mod gpu;
 
 pub use frame::{
-    ChannelDraw, Coefficients, EDGE_TOLERANCE, Frame, Hatch, Native, Row, Scene, TileDraw,
+    ChannelDraw, Coefficients, EDGE_TOLERANCE, Frame, Hatch, Native, Part, Row, Scene, TileDraw,
 };
 pub use gpu::{DEFAULT_GPU_BUDGET, RenderError, TraceRenderer, check_support};

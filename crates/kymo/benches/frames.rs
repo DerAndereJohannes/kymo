@@ -3,7 +3,7 @@
 //! public API and egui's input, as the keys and the trackpad do:
 //!
 //! ```text
-//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]
+//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]
 //! ```
 //!
 //! The window (1280×800, vsync off, drawing continuously) opens FILE at the default view
@@ -25,7 +25,7 @@
 //! Without `--fresh` the sidecar in the user's cache directory is used, built first (and
 //! then the benchmark started again, so the build doesn't count towards peak memory); with
 //! `--fresh` the pyramid builds into an empty directory during the run, as on a first open.
-//! Traces are anti-aliased, as by default, unless `--no-antialias` is given.
+//! Traces are drawn in whole pixels, as by default, or anti-aliased with `--antialias`.
 
 // A measuring tool: panicking on a broken input is the point.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -61,22 +61,22 @@ fn main() {
         .collect();
     let fresh = args.iter().any(|a| a == "--fresh");
     let settings = Settings {
-        antialias: !args.iter().any(|a| a == "--no-antialias"),
+        antialias: args.iter().any(|a| a == "--antialias"),
         ..Settings::default()
     };
     let files: Vec<PathBuf> = args
         .iter()
-        .filter(|a| *a != "--fresh" && *a != "--no-antialias")
+        .filter(|a| *a != "--fresh" && *a != "--antialias")
         .map(PathBuf::from)
         .collect();
     let [path] = &files[..] else {
         if args.is_empty() {
             eprintln!(
-                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]`"
+                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]`"
             );
             return;
         }
-        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--no-antialias]");
+        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]");
         std::process::exit(2);
     };
 

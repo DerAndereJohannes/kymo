@@ -177,16 +177,16 @@ proptest! {
         let mut ends: Vec<(u32, f32)> = Vec::new();
         let mut columns: Vec<(u32, u32)> = Vec::new();
         for draw in &frame.draws {
-            let key = draw.tile.key();
+            let key = draw.part.tile.key();
             let bucket = key.level.bucket_len();
-            for item in draw.items.clone() {
+            for item in draw.part.items.clone() {
                 let sample = key.sample_range().start + u64::from(item) * bucket;
                 let exact = (grid.time_of(sample) - start) * per_px;
                 if !(-2.0..f64::from(width) + 2.0).contains(&exact) {
                     continue;
                 }
-                let placed = f64::from(draw.anchor_x)
-                    + (f64::from(item) - f64::from(draw.anchor)) * f64::from(draw.item_width);
+                let placed = f64::from(draw.part.anchor_x)
+                    + (f64::from(item) - f64::from(draw.part.anchor)) * f64::from(draw.part.item_width);
                 prop_assert!((placed - exact).abs() < 1e-3, "{key:?} item {item}: {placed} vs {exact}");
             }
             // One channel of each block: 3 in the first, 40 in the second.
@@ -207,7 +207,7 @@ proptest! {
             columns.push((key.block.index, draw.columns.end));
             prop_assert_eq!(
                 draw.seam.is_some(),
-                draw.continues && draw.domain[1].floor() < width as f32
+                draw.next.is_some() && draw.domain[1].floor() < width as f32
             );
             if let Some(seam) = draw.seam {
                 prop_assert_eq!(seam, draw.domain[1].floor() as u32);
@@ -219,7 +219,7 @@ proptest! {
         let last = (grid.time_of(grid.len() - 1) - start) * per_px;
         let right = (last.floor() as u32 + 1).min(width);
         for block in [0, 1] {
-            let draws: Vec<_> = frame.draws.iter().filter(|d| d.tile.key().block.index == block).collect();
+            let draws: Vec<_> = frame.draws.iter().filter(|d| d.part.tile.key().block.index == block).collect();
             prop_assert!(!draws.is_empty());
             prop_assert_eq!(draws[0].columns.start, 0);
             prop_assert_eq!(draws.last().unwrap().columns.end, right);
@@ -248,75 +248,66 @@ fn drawing_continues_into_the_next_tile() {
     let wanted = tiles_for_view(&fx.recording, &view(&scene));
     let frame = frame_of(fx, &scene, &fx.cache(wanted.iter().copied()));
     let draw = frame.draws[0].clone();
-    assert_eq!(draw.tile.key().level, Level::RAW);
-    assert!(draw.continues);
-    assert_eq!(*draw.items.end(), TILE_LEN as u32);
-    let TileData::I16(d) = frame.draws[1].tile.data() else {
-        panic!()
+    assert_eq!(draw.part.tile.key().level, Level::RAW);
+    assert_eq!(*draw.part.items.end(), TILE_LEN as u32 - 1);
+    // The next tile is the draw's neighbour, from its first sample on, placed where its
+    // own draw places it.
+    let next = draw.next.as_ref().unwrap();
+    assert_eq!(next.tile.key(), frame.draws[1].part.tile.key());
+    assert_eq!(*next.items.start(), 0);
+    let own = &frame.draws[1].part;
+    let x = |p: &kymo::render::Part, i: u32| {
+        f64::from(p.anchor_x) + (f64::from(i) - f64::from(p.anchor)) * f64::from(p.item_width)
     };
-    let first = Native::Int(i32::from(d[0]));
-    assert_eq!(draw.channels[0].next, Some([first, first]));
-    // The column holding the next tile's first sample is this draw's alone: it adds the
-    // next tile's samples there, and the line where it leaves the column.
+    for i in [0, 1, 100] {
+        assert!((x(next, i) - x(own, i)).abs() < 1e-3, "item {i}");
+    }
+    // And the next tile's draw has this tile before it.
+    let prev = frame.draws[1].prev.as_ref().unwrap();
+    assert_eq!(prev.tile.key(), draw.part.tile.key());
+    assert!((x(prev, TILE_LEN as u32 - 1) - x(&draw.part, TILE_LEN as u32 - 1)).abs() < 1e-3);
+    // The column holding the next tile's first sample is this draw's alone.
     let seam = draw.seam.unwrap();
     assert_eq!(seam, draw.domain[1].floor() as u32);
     assert_eq!(draw.columns.end, seam + 1);
     assert_eq!(frame.draws[1].columns.start, seam + 1);
-    let c = draw.channels[0].coefficients;
-    let next = &frame.draws[1];
-    let x = |i: u32| {
-        f64::from(next.anchor_x)
-            + (f64::from(i) - f64::from(next.anchor)) * f64::from(next.item_width)
-    };
-    let y = |i: u32| f64::from(c.y(Native::Int(i32::from(d[i as usize]))).unwrap());
-    let right = f64::from(seam) + 1.0;
-    let mut want = [f64::INFINITY, f64::NEG_INFINITY];
-    let mut i = 0;
-    while x(i) <= right {
-        want = [want[0].min(y(i)), want[1].max(y(i))];
-        i += 1;
-    }
-    let t = (right - x(i - 1)) / (x(i) - x(i - 1));
-    let cross = y(i - 1) + (y(i) - y(i - 1)) * t;
-    want = [want[0].min(cross), want[1].max(cross)];
-    let got = draw.channels[0].seam.unwrap();
-    assert!(
-        (f64::from(got[0]) - want[0]).abs() < 1e-3 && (f64::from(got[1]) - want[1]).abs() < 1e-3,
-        "{got:?} vs {want:?}"
-    );
 
     // Without the next tile, the line ends at the tile's last sample.
     let frame = frame_of(fx, &scene, &fx.cache(wanted.iter().copied().take(1)));
     let draw = frame.draws[0].clone();
-    assert!(!draw.continues);
-    assert_eq!(*draw.items.end(), TILE_LEN as u32 - 1);
-    assert_eq!(draw.channels[0].next, None);
+    assert!(draw.next.is_none());
+    assert_eq!(*draw.part.items.end(), TILE_LEN as u32 - 1);
     assert_eq!(draw.seam, None);
-    assert_eq!(draw.channels[0].seam, None);
     // The rest is loading, hatched over the channel's row.
     assert_eq!(frame.hatches.len(), 1);
     let [x0, y0, x1, y1] = frame.hatches[0].rect;
     assert!((x0 - 200.0).abs() < 0.01 && x1 == 400.0, "{x0} {x1}");
     assert_eq!((y0, y1), (0.0, 100.0));
 
-    // A level-0 line doesn't run on into a coarser stand-in's envelope.
+    // A coarser stand-in is a neighbour too, before or after (the shader doesn't run a
+    // level-0 line on into an envelope, but does run an envelope on into a line).
     let frame = frame_of(
         fx,
         &scene,
         &fx.cache([wanted[0], wanted[1].parent().unwrap()]),
     );
-    assert_eq!(frame.draws[1].tile.key().level.get(), 1);
-    assert!(!frame.draws[0].continues);
-    // But the stand-in continues to the next exact tile's first sample.
+    assert_eq!(frame.draws[1].part.tile.key().level.get(), 1);
+    assert_eq!(
+        frame.draws[0].next.as_ref().unwrap().tile.key().level.get(),
+        1
+    );
     let frame = frame_of(
         fx,
         &scene,
         &fx.cache([wanted[0].parent().unwrap(), wanted[1]]),
     );
-    assert!(frame.draws[0].continues);
-    assert_eq!(frame.draws[0].channels[0].next, Some([first, first]));
+    assert_eq!(frame.draws[0].next.as_ref().unwrap().tile.key(), wanted[1]);
+    assert_eq!(
+        frame.draws[1].prev.as_ref().unwrap().tile.key().level.get(),
+        1
+    );
 
-    // Zoomed out, an envelope runs on to the next tile's first bucket.
+    // Zoomed out, the next tile of buckets is a neighbour as well.
     let n = 300_000u64;
     let mut rng = Rng::new(9);
     let long = Fixture::new(
@@ -330,15 +321,12 @@ fn drawing_continues_into_the_next_tile() {
     let frame = frame_of(&long, &scene, &exact_cache(&long, &scene));
     assert_eq!(frame.draws.len(), 2);
     let draw = &frame.draws[0];
-    assert_eq!(draw.tile.key().level.get(), 1);
-    assert!(draw.continues);
-    assert_eq!(*draw.items.end(), TILE_LEN as u32);
-    let TileData::I16(d) = frame.draws[1].tile.data() else {
-        panic!()
-    };
-    let (min, max) = (Native::Int(i32::from(d[0])), Native::Int(i32::from(d[1])));
-    assert_eq!(draw.channels[0].next, Some([min, max]));
-    assert!(!frame.draws[1].continues);
+    assert_eq!(draw.part.tile.key().level.get(), 1);
+    assert_eq!(
+        draw.next.as_ref().unwrap().tile.key(),
+        frame.draws[1].part.tile.key()
+    );
+    assert!(frame.draws[1].next.is_none());
 }
 
 #[test]
@@ -366,7 +354,7 @@ fn a_stand_in_straddling_the_next_tile_ends_there() {
             &query(&fx.recording, &view(&scene), &cache),
         );
         assert_eq!(frame.draws.len(), 2);
-        frame.draws[0].continues
+        frame.draws[0].next.is_some()
     };
     assert!(!stand_in_runs_on(0.0));
     // Standing in for tile 1, it ends on a bucket boundary and does run on.
@@ -439,7 +427,7 @@ fn stim_rows_clip_and_draw_codes() {
             frame
                 .draws
                 .iter()
-                .all(|d| (d.tile.key().level > Level::RAW) == zoom_out)
+                .all(|d| (d.part.tile.key().level > Level::RAW) == zoom_out)
         );
         for draw in &frame.draws {
             for c in &draw.channels {
@@ -460,10 +448,10 @@ fn stim_rows_clip_and_draw_codes() {
                     assert!((y(0) - row.center).abs() < 1e-3);
                     assert!((y(1) - (row.center - half)).abs() < 1e-3);
                     // The tile holds codes, not raw values.
-                    let TileData::I32(values) = draw.tile.data() else {
+                    let TileData::I32(values) = draw.part.tile.data() else {
                         panic!("int32 tiles");
                     };
-                    let per = values.len() / draw.tile.channels();
+                    let per = values.len() / draw.part.tile.channels();
                     let mine = &values[c.row as usize * per..][..per];
                     assert!(
                         mine.iter().all(|v| [0, 85, 170, 255].contains(v)),

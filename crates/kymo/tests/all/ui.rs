@@ -1297,16 +1297,16 @@ fn settings_apply_at_once() {
 }
 
 #[test]
-fn anti_aliasing_follows_the_menu_and_settings() {
+fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
-    // On by default.
-    assert!(harness.state().settings().antialias);
-    assert!(checked(&mut harness, "View", "Anti-aliasing"));
-    choose(&mut harness, "View", "Anti-aliasing");
+    // Off by default.
     assert!(!harness.state().settings().antialias);
     assert!(!checked(&mut harness, "View", "Anti-aliasing"));
+    choose(&mut harness, "View", "Anti-aliasing");
+    assert!(harness.state().settings().antialias);
+    assert!(checked(&mut harness, "View", "Anti-aliasing"));
 
     // The Settings checkbox shows and changes the same setting.
     harness.key_press_modifiers(command(), Key::Comma);
@@ -1314,12 +1314,19 @@ fn anti_aliasing_follows_the_menu_and_settings() {
     let checkbox = harness.get_by_label("Anti-aliased");
     assert_eq!(
         checkbox.accesskit_node().toggled(),
-        Some(egui::accesskit::Toggled::False)
+        Some(egui::accesskit::Toggled::True)
     );
     checkbox.click();
     harness.run_steps(2);
+    assert!(!harness.state().settings().antialias);
+    assert!(!checked(&mut harness, "View", "Anti-aliasing"));
+    harness.get_by_label("Close window").click();
+    harness.run_steps(2);
+
+    // ⇧⌘A switches it too.
+    harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::A);
+    harness.step();
     assert!(harness.state().settings().antialias);
-    assert!(checked(&mut harness, "View", "Anti-aliasing"));
 
     // A setting, so it can change without a recording.
     harness.key_press_modifiers(command(), Key::W);
@@ -1432,6 +1439,17 @@ fn gpu_window(path: &Path, setup: egui_wgpu::WgpuSetup) -> Harness<'static, Kymo
         })
 }
 
+/// Turns anti-aliasing off, so every trace pixel has its colour exactly (anti-aliased edges
+/// blend with the background and the annotations behind).
+fn whole_pixels(harness: &mut Harness<'_, KymoApp>) {
+    let settings = *harness.state().settings();
+    harness.state_mut().set_settings(Settings {
+        antialias: false,
+        ..settings
+    });
+    harness.run_steps(2);
+}
+
 /// The trace area's pixels.
 fn traces_image(harness: &mut Harness<'_, KymoApp>) -> Vec<[u8; 4]> {
     let traces = viewer(harness).layout().unwrap().traces;
@@ -1458,12 +1476,12 @@ fn anti_aliased_traces_blend_their_edges() {
             .collect::<std::collections::HashSet<_>>()
             .len()
     };
-    let on = colours(&mut harness);
+    let off = colours(&mut harness);
     let ctx = harness.ctx.clone();
     harness.state_mut().perform(&ctx, Action::ToggleAntialias);
     harness.run_steps(2);
-    assert!(!harness.state().settings().antialias);
-    let off = colours(&mut harness);
+    assert!(harness.state().settings().antialias);
+    let on = colours(&mut harness);
     assert!(
         on >= off + 20,
         "{on} colours with anti-aliasing, {off} without"
@@ -1557,13 +1575,7 @@ fn traces_take_their_types_colours() {
     kymo_testgen::write(&spec, file.path()).unwrap();
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
-    // Whole pixels, so every trace pixel has its type's colour exactly.
-    let settings = *harness.state().settings();
-    harness.state_mut().set_settings(Settings {
-        antialias: false,
-        ..settings
-    });
-    harness.run_steps(2);
+    whole_pixels(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     // The rows, top to bottom; the last is Status.
     let kinds = [
@@ -1616,6 +1628,7 @@ fn stim_traces_stay_in_their_row() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
+    whole_pixels(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     let grey = trace_color(kymo_core::ChannelKind::Stim, &visuals);
     let text = visuals.text_color();

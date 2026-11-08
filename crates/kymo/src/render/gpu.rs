@@ -1,5 +1,6 @@
 //! The GPU side: two pipelines (traces and loading hatches), one storage buffer per tile
-//! under a byte budget, and the per-frame parameters.
+//! under a byte budget, and the per-frame parameters. Each tile draw binds its tile and the
+//! tiles placed right before and after it, so the shader reads across tile boundaries.
 
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -10,13 +11,14 @@ use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt as _;
 use kymo_core::tile::{Level, Tile, TileData, TileKey};
 
-use super::frame::{Frame, Native};
+use super::frame::{Frame, Part};
 
 /// GPU memory for tile buffers, unless set otherwise.
 pub const DEFAULT_GPU_BUDGET: usize = 256 << 20;
 
-/// Storage buffers the vertex stage reads: per-channel slots, hatches and the tile.
-const VERTEX_STORAGE_BUFFERS: u32 = 3;
+/// Storage buffers the trace pipeline's stages read: per-channel slots and three tiles.
+/// The hatches have a pipeline of their own.
+const VERTEX_STORAGE_BUFFERS: u32 = 4;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RenderError {
@@ -58,35 +60,42 @@ struct Slot {
     reference: u32,
     scale: f32,
     offset: f32,
-    next: [u32; 2],
-    has_next: u32,
-    has_seam: u32,
     /// The y range (top, bottom) the trace is clamped to.
     clip: [f32; 2],
-    /// The y range the next tile reaches in the draw's seam column, if `has_seam` is 1.
-    seam: [f32; 2],
+    _pad: [u32; 2],
+}
+
+/// Where one of a draw's three tiles puts its items, as the shader reads it.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct PartParams {
+    anchor_x: f32,
+    item_width: f32,
+    inverse_width: f32,
+    anchor: i32,
+    /// The items that may be read.
+    first: i32,
+    last: i32,
+    /// Items per channel in the tile.
+    len: u32,
+    /// 1 at levels >= 1: a (min, max) pair per bucket.
+    pairs: u32,
+    /// First data word, after the validity bits.
+    data: u32,
+    present: u32,
+    _pad: [u32; 2],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct DrawParams {
-    anchor_x: f32,
-    item_width: f32,
-    inverse_width: f32,
-    anchor: i32,
-    first: i32,
-    last: i32,
+    /// The tile before, the tile, the tile after.
+    parts: [PartParams; 3],
     column0: u32,
     columns: u32,
     slot0: u32,
-    len: u32,
+    /// 0: int16 (two per word), 1: int32, 2: float32.
     kind: u32,
-    pairs: u32,
-    data: u32,
-    next_item: u32,
-    /// The column where the next tile's part joins in, or `u32::MAX`.
-    seam: u32,
-    _pad: u32,
 }
 
 #[repr(C)]
@@ -148,7 +157,7 @@ fn create_buffer(
 
 /// A tile on the GPU.
 struct Resident {
-    group: wgpu::BindGroup,
+    buffer: wgpu::Buffer,
     bytes: usize,
     /// The last frame that drew it.
     used: u64,
@@ -176,6 +185,8 @@ pub struct TraceRenderer {
     draws: Grow,
     hatches: Grow,
     frame_group: wgpu::BindGroup,
+    hatch_layout: wgpu::BindGroupLayout,
+    hatch_group: wgpu::BindGroup,
     draw_stride: u64,
     tiles: HashMap<TileKey, Resident>,
     bytes: usize,
@@ -199,30 +210,39 @@ impl TraceRenderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("traces.wgsl").into()),
         });
 
-        let buffer = |binding, ty, dynamic, size: Option<u64>| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: dynamic,
-                min_binding_size: size.and_then(NonZeroU64::new),
-            },
-            count: None,
-        };
+        let both = wgpu::ShaderStages::VERTEX_FRAGMENT;
+        let buffer =
+            |binding, visibility, ty, dynamic, size: Option<u64>| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility,
+                ty: wgpu::BindingType::Buffer {
+                    ty,
+                    has_dynamic_offset: dynamic,
+                    min_binding_size: size.and_then(NonZeroU64::new),
+                },
+                count: None,
+            };
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let uniform = wgpu::BufferBindingType::Uniform;
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("kymo frame"),
             entries: &[
-                buffer(0, uniform, false, Some(size_of::<Globals>() as u64)),
-                buffer(1, storage, false, None),
-                buffer(2, uniform, true, Some(size_of::<DrawParams>() as u64)),
-                buffer(3, storage, false, None),
+                buffer(0, both, uniform, false, Some(size_of::<Globals>() as u64)),
+                buffer(1, both, storage, false, None),
+                buffer(2, both, uniform, true, Some(size_of::<DrawParams>() as u64)),
             ],
+        });
+        let hatch_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("kymo hatches"),
+            entries: &[buffer(3, wgpu::ShaderStages::VERTEX, storage, false, None)],
         });
         let tile_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("kymo tile"),
-            entries: &[buffer(0, storage, false, None)],
+            entries: &[
+                buffer(0, both, storage, false, None),
+                buffer(1, both, storage, false, None),
+                buffer(2, both, storage, false, None),
+            ],
         });
 
         let pipeline = |label, layouts: &[Option<&wgpu::BindGroupLayout>], vs, fs| {
@@ -269,7 +289,12 @@ impl TraceRenderer {
             "vs_trace",
             "fs_trace",
         );
-        let hatch = pipeline("kymo hatch", &[Some(&frame_layout)], "vs_hatch", "fs_hatch");
+        let hatch = pipeline(
+            "kymo hatch",
+            &[Some(&frame_layout), Some(&hatch_layout)],
+            "vs_hatch",
+            "fs_hatch",
+        );
 
         let globals = create_buffer(
             device,
@@ -280,7 +305,8 @@ impl TraceRenderer {
         let slots = Grow::new(device, "kymo slots", wgpu::BufferUsages::STORAGE);
         let draws = Grow::new(device, "kymo draws", wgpu::BufferUsages::UNIFORM);
         let hatches = Grow::new(device, "kymo hatches", wgpu::BufferUsages::STORAGE);
-        let frame_group = frame_group(device, &frame_layout, &globals, &slots, &draws, &hatches);
+        let frame_group = frame_group(device, &frame_layout, &globals, &slots, &draws);
+        let hatch_group = hatch_group(device, &hatch_layout, &hatches);
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         Ok(TraceRenderer {
             traces,
@@ -292,6 +318,8 @@ impl TraceRenderer {
             draws,
             hatches,
             frame_group,
+            hatch_layout,
+            hatch_group,
             draw_stride: (size_of::<DrawParams>() as u64).next_multiple_of(alignment.max(1)),
             tiles: HashMap::new(),
             bytes: 0,
@@ -338,36 +366,45 @@ impl TraceRenderer {
         for draw in &frame.draws {
             let channels = draw.channels.len() as u32;
             let columns = draw.columns.end.saturating_sub(draw.columns.start);
-            if channels == 0 || columns == 0 || draw.tile.is_empty() {
+            if channels == 0 || columns == 0 || draw.part.tile.is_empty() {
                 continue;
             }
-            let tile = &draw.tile;
-            let group = self.resident(device, tile);
+            let tile = &draw.part.tile;
+            let own = self.resident(device, tile);
+            let neighbour = |r: &mut Self, part: &Option<Part>| {
+                part.as_ref()
+                    .filter(|p| !p.tile.is_empty())
+                    .map(|p| (r.resident(device, &p.tile), part_params(p)))
+            };
+            let prev = neighbour(self, &draw.prev);
+            let next = neighbour(self, &draw.next);
+            let buffers = [
+                prev.as_ref().map_or(&own, |(b, _)| b),
+                &own,
+                next.as_ref().map_or(&own, |(b, _)| b),
+            ];
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("kymo tiles"),
+                layout: &self.tile_layout,
+                entries: &[0, 1, 2].map(|i| wgpu::BindGroupEntry {
+                    binding: i,
+                    resource: buffers[i as usize].as_entire_binding(),
+                }),
+            });
             let p = DrawParams {
-                anchor_x: draw.anchor_x,
-                item_width: draw.item_width,
-                inverse_width: draw.inverse_width,
-                anchor: draw.anchor as i32,
-                first: *draw.items.start() as i32,
-                last: *draw.items.end() as i32,
+                parts: [
+                    prev.map_or_else(PartParams::default, |(_, p)| p),
+                    part_params(&draw.part),
+                    next.map_or_else(PartParams::default, |(_, p)| p),
+                ],
                 column0: draw.columns.start,
                 columns,
                 slot0: slots.len() as u32,
-                len: tile.len() as u32,
                 kind: match tile.data() {
                     TileData::I16(_) => 0,
                     TileData::I32(_) => 1,
                     TileData::F32(_) => 2,
                 },
-                pairs: u32::from(tile.key().level != Level::RAW),
-                data: tile.len().div_ceil(32) as u32,
-                next_item: if draw.continues {
-                    *draw.items.end()
-                } else {
-                    u32::MAX
-                },
-                seam: draw.seam.unwrap_or(u32::MAX),
-                _pad: 0,
             };
             slots.extend(draw.channels.iter().map(|c| Slot {
                 color: c.color,
@@ -375,11 +412,8 @@ impl TraceRenderer {
                 reference: c.coefficients.reference.bits(),
                 scale: c.coefficients.scale,
                 offset: c.coefficients.offset,
-                next: c.next.map_or([0; 2], |n| n.map(Native::bits)),
-                has_next: u32::from(c.next.is_some()),
-                has_seam: u32::from(c.seam.is_some()),
                 clip: c.clip.unwrap_or([f32::MIN, f32::MAX]),
-                seam: c.seam.unwrap_or([0.0; 2]),
+                _pad: [0; 2],
             }));
             let offset = params.len();
             params.extend_from_slice(bytemuck::bytes_of(&p));
@@ -405,8 +439,7 @@ impl TraceRenderer {
         let slot_bytes: &[u8] = bytemuck::cast_slice(&slots);
         let hatch_bytes: &[u8] = bytemuck::cast_slice(&hatches);
         let replaced = self.slots.reserve(device, slot_bytes.len() as u64)
-            | self.draws.reserve(device, params.len() as u64)
-            | self.hatches.reserve(device, hatch_bytes.len() as u64);
+            | self.draws.reserve(device, params.len() as u64);
         if replaced {
             self.frame_group = frame_group(
                 device,
@@ -414,8 +447,10 @@ impl TraceRenderer {
                 &self.globals,
                 &self.slots,
                 &self.draws,
-                &self.hatches,
             );
+        }
+        if self.hatches.reserve(device, hatch_bytes.len() as u64) {
+            self.hatch_group = hatch_group(device, &self.hatch_layout, &self.hatches);
         }
         let globals = Globals {
             size: frame.size.map(|s| s as f32),
@@ -433,6 +468,7 @@ impl TraceRenderer {
         if self.hatch_count > 0 {
             pass.set_pipeline(&self.hatch);
             pass.set_bind_group(0, &self.frame_group, &[0]);
+            pass.set_bind_group(1, &self.hatch_group, &[]);
             pass.draw(0..4, 0..self.hatch_count);
         }
         if !self.commands.is_empty() {
@@ -445,12 +481,12 @@ impl TraceRenderer {
         }
     }
 
-    /// The bind group of `tile`'s buffer, uploading it first if needed.
-    fn resident(&mut self, device: &wgpu::Device, tile: &Tile) -> wgpu::BindGroup {
+    /// `tile`'s buffer, uploading it first if needed.
+    fn resident(&mut self, device: &wgpu::Device, tile: &Tile) -> wgpu::Buffer {
         let clock = self.clock;
         if let Some(resident) = self.tiles.get_mut(&tile.key()) {
             resident.used = clock;
-            return resident.group.clone();
+            return resident.buffer.clone();
         }
         let words = tile_words(tile);
         let bytes: &[u8] = bytemuck::cast_slice(&words);
@@ -459,24 +495,16 @@ impl TraceRenderer {
             contents: bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("kymo tile"),
-            layout: &self.tile_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
         self.bytes += bytes.len();
         self.tiles.insert(
             tile.key(),
             Resident {
-                group: group.clone(),
+                buffer: buffer.clone(),
                 bytes: bytes.len(),
                 used: clock,
             },
         );
-        group
+        buffer
     }
 
     /// Drops the least recently drawn tiles until the budget holds, sparing this frame's.
@@ -502,7 +530,6 @@ fn frame_group(
     globals: &wgpu::Buffer,
     slots: &Grow,
     draws: &Grow,
-    hatches: &Grow,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("kymo frame"),
@@ -524,12 +551,41 @@ fn frame_group(
                     size: NonZeroU64::new(size_of::<DrawParams>() as u64),
                 }),
             },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: hatches.buffer.as_entire_binding(),
-            },
         ],
     })
+}
+
+fn hatch_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    hatches: &Grow,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("kymo hatches"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 3,
+            resource: hatches.buffer.as_entire_binding(),
+        }],
+    })
+}
+
+/// Where `part`'s items lie, for the shader.
+fn part_params(part: &Part) -> PartParams {
+    let tile = &part.tile;
+    PartParams {
+        anchor_x: part.anchor_x,
+        item_width: part.item_width,
+        inverse_width: part.inverse_width,
+        anchor: part.anchor as i32,
+        first: *part.items.start() as i32,
+        last: *part.items.end() as i32,
+        len: tile.len() as u32,
+        pairs: u32::from(tile.key().level != Level::RAW),
+        data: tile.len().div_ceil(32) as u32,
+        present: 1,
+        _pad: [0; 2],
+    }
 }
 
 /// A tile as the shader reads it: one validity bit per item, then the values (int16

@@ -191,6 +191,7 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::ScaleDown, Chord::alt_cmd(Key::Minus)),
     (Action::ToggleDc, Chord::cmd(Key::D)),
     (Action::ToggleBad, Chord::cmd(Key::B)),
+    (Action::ToggleAntialias, Chord::shift_cmd(Key::A)),
 ];
 
 /// Points per line of a mouse wheel.

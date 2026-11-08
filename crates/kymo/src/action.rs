@@ -43,7 +43,7 @@ pub enum Action {
     ToggleBad,
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
-    /// Turns anti-aliased traces on or off (a setting).
+    /// Turns anti-aliased traces on or off (a setting, off by default).
     ToggleAntialias,
     /// Stim events at every change to a non-zero code (see [`EventRule`]).
     StimEveryChange,

@@ -234,6 +234,26 @@ impl Truth {
         self.xs.partition_point(|&x| x < a)..self.xs.partition_point(|&x| x <= b)
     }
 
+    /// The distance from `(x, y)` to the line through consecutive present samples (and to
+    /// samples without a present neighbour), looking at samples within `reach` pixels.
+    pub fn distance(&self, x: f64, y: f64, reach: f64) -> f64 {
+        let inside = self.within(x - reach, x + reach);
+        let from = inside.start.saturating_sub(1);
+        let to = (inside.end + 1).min(self.xs.len());
+        let mut d = f64::INFINITY;
+        for i in from..to {
+            let Some(y0) = self.ys[i] else { continue };
+            let x0 = self.xs[i];
+            d = d.min((x - x0).hypot(y - y0));
+            if let Some(&Some(y1)) = self.ys.get(i + 1) {
+                let (dx, dy) = (self.xs[i + 1] - x0, y1 - y0);
+                let t = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                d = d.min((x - (x0 + dx * t)).hypot(y - (y0 + dy * t)));
+            }
+        }
+        d
+    }
+
     /// Whether the line runs without a gap over x in `a..=b`: every sample there and the
     /// one on either side is present.
     pub fn continuous(&self, a: f64, b: f64) -> bool {
