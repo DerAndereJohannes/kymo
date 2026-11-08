@@ -14,6 +14,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
 use kymo::ui::gpu::Gpu;
+use kymo::ui::palette::trace_color;
 use kymo::viewer::Viewer;
 
 /// A generated recording in the temp directory, deleted on drop. Declare it before the
@@ -560,6 +561,105 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
     assert!(!checked(&mut harness, "View", "Remove DC"));
 }
 
+/// bdf+c-small with its channels relabelled to five types: A1 and A2 (EEG), "EOG L",
+/// "ECG" and Status (stim).
+fn typed_preset() -> TempFile {
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.channels[2].label = "EOG L".into();
+    spec.channels[3].label = "ECG".into();
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    file
+}
+
+/// Clicks the sidebar widget labelled `label` (exactly, with `role`).
+fn click_in_list(harness: &mut Harness<'_, KymoApp>, role: egui::accesskit::Role, label: &str) {
+    harness.get_by_role_and_label(role, label).click();
+    harness.run_steps(2);
+}
+
+fn toggled(
+    harness: &Harness<'_, KymoApp>,
+    role: egui::accesskit::Role,
+    label: &str,
+) -> egui::accesskit::Toggled {
+    harness
+        .get_by_role_and_label(role, label)
+        .accesskit_node()
+        .toggled()
+        .unwrap()
+}
+
+fn shown(harness: &Harness<'_, KymoApp>) -> Vec<u32> {
+    viewer(harness)
+        .view()
+        .visible_channels()
+        .iter()
+        .map(|c| c.0)
+        .collect()
+}
+
+#[test]
+fn the_channel_list_shows_hides_and_marks_bad() {
+    use egui::accesskit::{Role, Toggled};
+    let file = typed_preset();
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+    for kind in ["EEG", "EOG", "ECG", "stim"] {
+        assert_eq!(
+            toggled(&harness, Role::CheckBox, kind),
+            Toggled::True,
+            "{kind}"
+        );
+    }
+    assert!(
+        harness
+            .query_by_role_and_label(Role::CheckBox, "EMG")
+            .is_none()
+    );
+    harness.get_by_label("2 of 2 shown");
+
+    // One channel's box hides it; its type's box is mixed then.
+    click_in_list(&mut harness, Role::CheckBox, "Show A2");
+    assert_eq!(shown(&harness), [0, 2, 3, 4]);
+    assert_eq!(toggled(&harness, Role::CheckBox, "Show A2"), Toggled::False);
+    assert_eq!(toggled(&harness, Role::CheckBox, "EEG"), Toggled::Mixed);
+    harness.get_by_label("1 of 2 shown");
+    // A mixed type's box shows them all, and then hides them all.
+    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    assert_eq!(shown(&harness), [2, 3, 4]);
+    assert_eq!(toggled(&harness, Role::CheckBox, "Show A1"), Toggled::False);
+    assert_eq!(toggled(&harness, Role::CheckBox, "EEG"), Toggled::False);
+    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+
+    // The bad toggle.
+    let ecg = kymo_core::ChannelId(3);
+    click_in_list(&mut harness, Role::Button, "ECG bad");
+    assert!(viewer(&harness).view().is_bad(ecg));
+    assert_eq!(toggled(&harness, Role::Button, "ECG bad"), Toggled::True);
+    click_in_list(&mut harness, Role::Button, "ECG bad");
+    assert!(!viewer(&harness).view().is_bad(ecg));
+
+    // A click on a name scrolls the traces to it: three rows of five.
+    for _ in 0..2 {
+        harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::Minus);
+        harness.step();
+    }
+    assert_eq!(viewer(&harness).view().rows(), 3);
+    click_in_list(&mut harness, Role::Label, "EOG L");
+    assert_eq!(viewer(&harness).view().top(), 2.0);
+    click_in_list(&mut harness, Role::Label, "A2");
+    assert_eq!(viewer(&harness).view().top(), 1.0);
+    // A hidden channel's name doesn't scroll.
+    click_in_list(&mut harness, Role::CheckBox, "Show A1");
+    click_in_list(&mut harness, Role::Label, "A1");
+    assert_eq!(shown(&harness), [1, 2, 3]);
+}
+
 #[test]
 fn the_sidebar_hides_and_shows() {
     let file = TempFile::preset("bdf+c-small");
@@ -708,6 +808,68 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
     );
 }
 
+#[test]
+fn traces_take_their_types_colours() {
+    let Some(setup) = gpu_setup() else { return };
+    // The BDF Status channel holds status bits around 2^20, far off its row; a flat
+    // EEG signal labelled TRIGGER stands in for stim.
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.channels[1].label = "EOG L".into();
+    spec.channels[2].label = "ECG".into();
+    spec.channels[3].label = "TRIGGER".into();
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    let mut harness = gpu_window(&file.0, setup);
+    ready(&mut harness);
+    let visuals = harness.ctx.global_style().visuals.clone();
+    // The rows to check, top to bottom; Status (also stim) is fifth.
+    let kinds = [
+        kymo_core::ChannelKind::Eeg,
+        kymo_core::ChannelKind::Eog,
+        kymo_core::ChannelKind::Ecg,
+        kymo_core::ChannelKind::Stim,
+    ];
+    let colors: Vec<_> = kinds.iter().map(|&k| trace_color(k, &visuals)).collect();
+    // Per row, the pixels in each type's colour.
+    let counts = |harness: &mut Harness<'_, KymoApp>| {
+        let traces = viewer(harness).layout().unwrap().traces;
+        let width = traces.width() as usize;
+        let row_height = traces.height() as usize / 5;
+        let image = traces_image(harness);
+        (0..kinds.len())
+            .map(|row| {
+                let pixels = &image[row * row_height * width..(row + 1) * row_height * width];
+                colors
+                    .iter()
+                    .map(|c| pixels.iter().filter(|p| near(p, *c)).count())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = counts(&mut harness);
+    for (row, kind) in kinds.iter().enumerate() {
+        let own = before[row][row];
+        assert!(own > 200, "row {row} ({kind:?}): {:?}", before[row]);
+        for (other, count) in before[row].iter().enumerate() {
+            if colors[other] != colors[row] {
+                assert!(*count < own / 20, "row {row} ({kind:?}): {:?}", before[row]);
+            }
+        }
+    }
+
+    // A bad channel is greyed out, whatever its type.
+    harness.get_by_label("ECG bad").click();
+    harness.run_steps(2);
+    let after = counts(&mut harness);
+    assert!(after[2][2] < before[2][2] / 20, "{:?}", after[2]);
+}
+
+/// Whether a pixel is within a small distance of `color`.
+fn near(pixel: &[u8; 4], color: egui::Color32) -> bool {
+    let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
+    d(pixel[0], color.r()) + d(pixel[1], color.g()) + d(pixel[2], color.b()) < 40
+}
+
 /// Renders the window on a GPU and writes it to `KYMO_DUMP` (a directory) if set, showing
 /// `KYMO_UI_FILE` or a generated recording.
 #[test]
@@ -715,7 +877,7 @@ fn renders_the_window() {
     if std::env::var_os("KYMO_DUMP").is_none() {
         return;
     }
-    let generated = TempFile::preset("edf+d-mixed");
+    let generated = typed_preset();
     let path = std::env::var_os("KYMO_UI_FILE").map_or(generated.0.clone(), PathBuf::from);
     let mut harness = Harness::builder()
         .with_size(SIZE)

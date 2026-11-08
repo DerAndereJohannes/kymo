@@ -301,6 +301,119 @@ fn toggles_dc_removal_and_bad_channels() {
     assert_eq!(view.bad_channels().count(), 0, "not a channel");
 }
 
+fn ids(ids: &[u32]) -> Vec<ChannelId> {
+    ids.iter().map(|&i| ChannelId(i)).collect()
+}
+
+#[test]
+fn hidden_channels_lose_their_rows_and_the_top_channel_stays_first() {
+    let (_, mut view) = state();
+    view.set_top(5.0);
+    view.set_shown(ChannelId(2), false);
+    view.set_shown(ChannelId(7), false);
+    assert!(!view.is_shown(ChannelId(2)) && view.is_shown(ChannelId(3)));
+    assert_eq!(view.row_count(), 30);
+    assert_eq!(view.row_of(ChannelId(2)), None);
+    assert_eq!(view.row_of(ChannelId(8)), Some(6));
+    // Channel 5 is still first, one row higher up.
+    assert_eq!(view.top(), 4.0);
+    assert_eq!(view.visible_channels()[..4], ids(&[5, 6, 8, 9]));
+    assert_eq!(view.visible_rows(), 4..24);
+
+    // Hiding the top channel makes the next shown one first.
+    view.set_shown(ChannelId(5), false);
+    assert_eq!(view.visible_channels()[..3], ids(&[6, 8, 9]));
+    // Showing it again puts it back above, keeping channel 6 first.
+    view.set_shown(ChannelId(5), true);
+    view.set_shown(ChannelId(2), true);
+    assert_eq!(view.visible_channels()[..2], ids(&[6, 8]));
+    assert_eq!(view.top(), 6.0);
+    // Unknown channels change nothing.
+    view.set_shown(ChannelId(99), false);
+    assert!(!view.is_shown(ChannelId(99)));
+    assert_eq!(view.row_count(), 31);
+}
+
+#[test]
+fn types_are_shown_and_hidden_together() {
+    // 30 EEG channels, then EOG and stim.
+    let (_, mut view) = state();
+    assert_eq!(view.kind_shown(ChannelKind::Eeg), (30, 30));
+    assert_eq!(view.kind_shown(ChannelKind::Eog), (1, 1));
+    assert_eq!(view.kind_shown(ChannelKind::Ecg), (0, 0));
+    view.set_shown(ChannelId(4), false);
+    assert_eq!(view.kind_shown(ChannelKind::Eeg), (29, 30));
+
+    view.set_kind_shown(ChannelKind::Eeg, false);
+    assert_eq!(view.kind_shown(ChannelKind::Eeg), (0, 30));
+    assert_eq!(view.visible_channels(), ids(&[30, 31]));
+    assert_eq!(view.rows(), 2);
+    assert_eq!(view.top(), 0.0);
+
+    // Nothing shown: no rows, and nothing breaks.
+    view.set_kind_shown(ChannelKind::Eog, false);
+    view.set_kind_shown(ChannelKind::Stim, false);
+    assert_eq!(view.row_count(), 0);
+    assert!(view.visible_channels().is_empty());
+    assert_eq!(view.channel_at(10.0, 400.0), None);
+    for action in Action::ALL {
+        view.apply(action, None);
+    }
+    assert!(view.visible_channels().is_empty());
+
+    // All back: the 20 rows chosen before, from the top.
+    view.set_kind_shown(ChannelKind::Eeg, true);
+    assert_eq!(view.kind_shown(ChannelKind::Eeg), (30, 30));
+    assert_eq!(view.rows(), DEFAULT_ROWS);
+    assert_eq!(view.visible_rows(), 0..20);
+}
+
+#[test]
+fn the_chosen_number_of_rows_returns_with_hidden_channels() {
+    let (_, mut view) = state();
+    view.set_rows(10);
+    view.set_kind_shown(ChannelKind::Eeg, false);
+    assert_eq!(view.rows(), 2);
+    // More rows than there are channels keeps the choice.
+    act(&mut view, Action::MoreChannels);
+    assert_eq!(view.rows(), 2);
+    view.set_kind_shown(ChannelKind::Eeg, true);
+    assert_eq!(view.rows(), 10);
+
+    // Fewer rows than channels is a new choice.
+    view.set_kind_shown(ChannelKind::Eeg, false);
+    act(&mut view, Action::FewerChannels);
+    assert_eq!(view.rows(), 1);
+    view.set_kind_shown(ChannelKind::Eeg, true);
+    assert_eq!(view.rows(), 1);
+}
+
+#[test]
+fn scrolls_to_a_shown_channel() {
+    let (_, mut view) = state();
+    assert!(view.scroll_to(ChannelId(7)));
+    assert_eq!(view.visible_channels()[0], ChannelId(7));
+    // Near the end, as far as the rows allow.
+    assert!(view.scroll_to(ChannelId(30)));
+    assert_eq!(view.visible_rows(), 12..32);
+    view.set_shown(ChannelId(3), false);
+    assert!(!view.scroll_to(ChannelId(3)));
+    assert!(!view.scroll_to(ChannelId(99)));
+    assert!(view.scroll_to(ChannelId(4)));
+    assert_eq!(view.top(), 3.0);
+}
+
+#[test]
+fn bad_channels_stay_bad_while_hidden() {
+    let (_, mut view) = state();
+    view.toggle_bad(ChannelId(1));
+    view.set_shown(ChannelId(1), false);
+    assert!(view.is_bad(ChannelId(1)));
+    view.toggle_bad(ChannelId(1));
+    view.set_shown(ChannelId(1), true);
+    assert!(!view.is_bad(ChannelId(1)));
+}
+
 #[test]
 fn leaves_other_actions_to_the_app() {
     let (_, mut view) = state();
@@ -404,6 +517,9 @@ enum Step {
     Pan(f64),
     Zoom(f64, f64),
     Rows(usize),
+    Show(u32, bool),
+    ShowKind(ChannelKind, bool),
+    ScrollTo(u32),
 }
 
 fn steps() -> impl Strategy<Value = Step> {
@@ -427,6 +543,13 @@ fn steps() -> impl Strategy<Value = Step> {
         (-1000.0f64..1000.0).prop_map(Step::Pan),
         (factor, -1.0f64..2.0).prop_map(|(f, a)| Step::Zoom(f, a)),
         (0usize..50).prop_map(Step::Rows),
+        (0u32..45, any::<bool>()).prop_map(|(c, on)| Step::Show(c, on)),
+        (
+            proptest::sample::select(vec![ChannelKind::Eeg, ChannelKind::Eog, ChannelKind::Stim]),
+            any::<bool>()
+        )
+            .prop_map(|(k, on)| Step::ShowKind(k, on)),
+        (0u32..45).prop_map(Step::ScrollTo),
     ]
 }
 
@@ -440,7 +563,7 @@ proptest! {
         let mut view = ViewState::new(&rec);
         let area = Area { width: 1000.0, height: 400.0 };
         let duration = rec.duration();
-        let rows = rec.channels().len();
+        let channels = rec.channels().len();
         for step in steps {
             match step {
                 Step::Act(action) => {
@@ -450,12 +573,30 @@ proptest! {
                 Step::Pan(seconds) => view.pan(seconds),
                 Step::Zoom(factor, anchor) => view.zoom(factor, anchor),
                 Step::Rows(n) => view.set_rows(n),
+                Step::Show(c, on) => view.set_shown(ChannelId(c), on),
+                Step::ShowKind(kind, on) => view.set_kind_shown(kind, on),
+                Step::ScrollTo(c) => {
+                    let shown = view.is_shown(ChannelId(c));
+                    prop_assert_eq!(view.scroll_to(ChannelId(c)), shown);
+                    if shown {
+                        let first = view.visible_channels()[0];
+                        prop_assert!(first == ChannelId(c) || view.visible_rows().end == view.row_count());
+                    }
+                }
             }
+            // The rows are the shown channels in file order.
+            let shown: Vec<_> = (0..channels as u32).map(ChannelId).filter(|&c| view.is_shown(c)).collect();
+            prop_assert_eq!(view.row_count(), shown.len());
+            prop_assert_eq!(view.visible_channels(), &shown[view.visible_rows()]);
+            let rows = shown.len();
             let time = view.time();
             prop_assert!(time.start >= 0.0 && time.end <= duration * (1.0 + 1e-12), "{time:?}");
             prop_assert!(view.span() >= (0.01f64).min(duration) * (1.0 - 1e-12), "{}", view.span());
-            prop_assert!((1..=rows).contains(&view.rows()));
-            prop_assert!(view.top() >= 0.0 && view.top() + view.rows() as f64 <= rows as f64);
+            prop_assert!((1..=rows.max(1)).contains(&view.rows()));
+            prop_assert!(view.top() >= 0.0 && view.top() + view.rows().min(rows) as f64 <= rows as f64);
+            // Every row on screen is filled while there are enough (one more is partly
+            // visible while scrolling).
+            prop_assert!(view.visible_rows().len() >= view.rows().min(rows));
             prop_assert!(view.visible_rows().end <= rows);
             for kind in [ChannelKind::Eeg, ChannelKind::Stim] {
                 let a = view.amplitude(kind);

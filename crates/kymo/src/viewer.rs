@@ -17,6 +17,7 @@ use crate::render::{Frame, Scene};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{header_panel, within_width};
+use crate::ui::palette::{bad_color, trace_color};
 use crate::ui::{readout, scrollbar, status};
 use crate::view::{Area, ViewState};
 
@@ -164,8 +165,9 @@ impl Viewer {
                 .min_size(SIDEBAR_MIN_WIDTH)
                 .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
                 .show(ui, |ui| {
-                    open_clicked =
-                        within_width(ui, |ui| header_panel(ui, &self.document, &self.summary));
+                    open_clicked = within_width(ui, |ui| {
+                        header_panel(ui, &self.document, &self.summary, &mut self.view)
+                    });
                 });
         }
         egui::CentralPanel::default().show(ui, |ui| self.trace_region(ui, gpu, keymap));
@@ -330,13 +332,9 @@ impl Viewer {
             );
         }
 
-        let trace_color = rgba(visuals.text_color());
-        let bad_color = rgba(visuals.weak_text_color().gamma_multiply(0.6));
-        let mut scene = Scene::from_view(&self.view, size_px, trace_color);
+        let mut scene = Scene::from_view(&self.view, size_px, rgba(visuals.text_color()));
         for row in &mut scene.rows {
-            if self.view.is_bad(row.channel) {
-                row.color = bad_color;
-            }
+            row.color = rgba(self.channel_color(row.channel, visuals));
             row.baseline = self.baseline(row.channel);
         }
         let query = query(rec, &self.view.tile_view(size_px[0]), service.cache());
@@ -359,12 +357,10 @@ impl Viewer {
         let height = area.height;
         for (i, &channel) in self.view.visible_rows().zip(self.view.visible_channels()) {
             let y = traces.top() + self.view.y_of_row(i as f64 + 0.5, height) as f32;
-            let color = if self.view.is_bad(channel) {
-                visuals.weak_text_color().gamma_multiply(0.6)
-            } else if self.hover.channel == Some(channel) {
+            let color = if self.hover.channel == Some(channel) && !self.view.is_bad(channel) {
                 visuals.strong_text_color()
             } else {
-                visuals.text_color()
+                self.channel_color(channel, visuals)
             };
             names_painter.text(
                 pos2(names.left() + NAME_PADDING, y),
@@ -373,6 +369,15 @@ impl Viewer {
                 body.clone(),
                 color,
             );
+        }
+    }
+
+    /// The colour of a channel's trace and name: its type's, or greyed out if it is bad.
+    fn channel_color(&self, channel: ChannelId, visuals: &egui::Visuals) -> Color32 {
+        if self.view.is_bad(channel) {
+            bad_color(visuals)
+        } else {
+            trace_color(self.document.recording.channel(channel).kind, visuals)
         }
     }
 

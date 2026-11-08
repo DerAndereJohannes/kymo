@@ -42,7 +42,8 @@ fn default_amplitude(kind: ChannelKind) -> f64 {
     }
 }
 
-const KINDS: [ChannelKind; 6] = [
+/// The channel types, in the order the sidebar lists them.
+pub const KINDS: [ChannelKind; 6] = [
     ChannelKind::Eeg,
     ChannelKind::Eog,
     ChannelKind::Ecg,
@@ -63,8 +64,10 @@ fn kind_index(kind: ChannelKind) -> usize {
 pub struct ViewState {
     duration: f64,
     min_span: f64,
-    /// The rows, top to bottom.
+    /// The rows, top to bottom: the shown channels in file order.
     rows_order: Vec<ChannelId>,
+    /// Per channel (by id): whether it is hidden.
+    hidden: Vec<bool>,
     /// Per channel (by id): its type and its unit's factor to SI.
     kinds: Vec<ChannelKind>,
     to_si: Vec<Option<f64>>,
@@ -72,6 +75,7 @@ pub struct ViewState {
     span: f64,
     /// The first row on screen; fractional while scrolling smoothly.
     top: f64,
+    /// Rows on screen as last chosen; fewer while fewer channels are shown.
     rows: usize,
     /// Amplitude per channel spacing, SI units, per [`KINDS`].
     amplitudes: [f64; KINDS.len()],
@@ -98,6 +102,7 @@ impl ViewState {
                 0.0
             },
             rows_order: (0..channels.len() as u32).map(ChannelId).collect(),
+            hidden: vec![false; channels.len()],
             kinds: channels.iter().map(|c| c.kind).collect(),
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
             start: 0.0,
@@ -138,22 +143,28 @@ impl ViewState {
         self.top
     }
 
-    /// All channel rows, on screen or not.
+    /// All channel rows, on screen or not: the shown channels.
     pub fn row_count(&self) -> usize {
         self.rows_order.len()
     }
 
-    /// Rows that fit on screen.
+    /// Rows that fit on screen: as many as last chosen, at most all, at least 1.
     pub fn rows(&self) -> usize {
-        self.rows
+        self.rows.min(self.rows_order.len()).max(1)
     }
 
     /// Indices of the rows on screen, including partly visible ones.
     pub fn visible_rows(&self) -> Range<usize> {
         let n = self.rows_order.len();
         let first = (self.top.floor() as usize).min(n);
-        let last = ((self.top + self.rows as f64).ceil() as usize).min(n);
+        let last = ((self.top + self.rows() as f64).ceil() as usize).min(n);
         first..last.max(first)
+    }
+
+    /// The row a channel is shown in, `None` if it is hidden.
+    pub fn row_of(&self, channel: ChannelId) -> Option<usize> {
+        // Rows are in file order.
+        self.rows_order.binary_search(&channel).ok()
     }
 
     /// The channels on screen, top to bottom.
@@ -187,10 +198,26 @@ impl ViewState {
         self.bad.iter().copied()
     }
 
+    /// Whether a channel has a row (on screen or not); `false` for unknown channels.
+    pub fn is_shown(&self, channel: ChannelId) -> bool {
+        self.hidden.get(channel.0 as usize) == Some(&false)
+    }
+
+    /// How many channels of a type are shown, and how many there are.
+    pub fn kind_shown(&self, kind: ChannelKind) -> (usize, usize) {
+        self.kinds
+            .iter()
+            .zip(&self.hidden)
+            .filter(|&(&k, _)| k == kind)
+            .fold((0, 0), |(shown, all), (_, &hidden)| {
+                (shown + usize::from(!hidden), all + 1)
+            })
+    }
+
     /// Applies a view action; `under_pointer` is the channel [`Action::ToggleBad`] acts
     /// on. Returns `false` for actions outside the view (open, quit, ...).
     pub fn apply(&mut self, action: Action, under_pointer: Option<ChannelId>) -> bool {
-        let rows = self.rows as f64;
+        let rows = self.rows() as f64;
         match action {
             Action::PanLeft => self.pan(-self.span / 4.0),
             Action::PanRight => self.pan(self.span / 4.0),
@@ -218,11 +245,11 @@ impl ViewState {
             Action::LastChannels => self.set_top(f64::INFINITY),
             Action::MoreChannels => {
                 let more = (rows * ROWS_STEP).round() as usize;
-                self.set_rows(more.max(self.rows + 1));
+                self.set_rows(more.max(self.rows() + 1));
             }
             Action::FewerChannels => {
                 let fewer = (rows / ROWS_STEP).round() as usize;
-                self.set_rows(fewer.min(self.rows.saturating_sub(1)));
+                self.set_rows(fewer.min(self.rows().saturating_sub(1)));
             }
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
@@ -319,10 +346,43 @@ impl ViewState {
         }
     }
 
-    /// Shows `rows` rows (at least 1, at most all), keeping the top row.
+    /// Shows `rows` rows (at least 1, at most all), keeping the top row. Asking for all
+    /// rows or more keeps a larger number chosen before, for when hidden channels return.
     pub fn set_rows(&mut self, rows: usize) {
-        self.rows = rows;
+        let n = self.rows_order.len();
+        self.rows = if rows >= n { self.rows.max(n) } else { rows };
         self.clamp();
+    }
+
+    /// Shows or hides a channel's row. The first row on screen stays first while it is
+    /// shown; the rows on screen stay as many as chosen while there are enough.
+    pub fn set_shown(&mut self, channel: ChannelId, shown: bool) {
+        if let Some(hidden) = self.hidden.get_mut(channel.0 as usize) {
+            *hidden = !shown;
+            self.rebuild_rows();
+        }
+    }
+
+    /// Shows or hides every channel of a type, as [`set_shown`](Self::set_shown).
+    pub fn set_kind_shown(&mut self, kind: ChannelKind, shown: bool) {
+        for (hidden, &k) in self.hidden.iter_mut().zip(&self.kinds) {
+            if k == kind {
+                *hidden = !shown;
+            }
+        }
+        self.rebuild_rows();
+    }
+
+    /// Scrolls so that a shown channel's row is first on screen, or as close to it as the
+    /// end of the list allows. Returns `false` for a hidden channel.
+    pub fn scroll_to(&mut self, channel: ChannelId) -> bool {
+        match self.row_of(channel) {
+            Some(row) => {
+                self.set_top(row as f64);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Scrolls so that row `top` (fractional for smooth scrolling) is first on screen.
@@ -345,7 +405,7 @@ impl ViewState {
 
     /// Height of one row in an area `height` points tall.
     pub fn row_height(&self, height: f64) -> f64 {
-        height / self.rows as f64
+        height / self.rows() as f64
     }
 
     /// The (fractional) row index at `y` points from the top.
@@ -420,6 +480,25 @@ impl ViewState {
         Some(windows)
     }
 
+    /// The rows after a change of what is shown, keeping the first channel on screen (or
+    /// the next shown one after it) first.
+    fn rebuild_rows(&mut self) {
+        let row = self.top.floor();
+        let anchor = self.rows_order.get(row as usize).copied();
+        self.rows_order = (0..self.hidden.len() as u32)
+            .map(ChannelId)
+            .filter(|&c| self.is_shown(c))
+            .collect();
+        if let Some(anchor) = anchor {
+            let top = match self.rows_order.binary_search(&anchor) {
+                Ok(i) => i as f64 + (self.top - row),
+                Err(i) => i as f64,
+            };
+            self.top = top;
+        }
+        self.clamp();
+    }
+
     fn clamp_span(&mut self) {
         let shortest = self.min_span.min(self.duration);
         self.span = if self.span.is_nan() {
@@ -437,9 +516,8 @@ impl ViewState {
         } else {
             self.start.clamp(0.0, latest.max(0.0))
         };
-        let n = self.rows_order.len();
-        self.rows = self.rows.clamp(1, n.max(1));
-        let lowest = n.saturating_sub(self.rows) as f64;
+        self.rows = self.rows.max(1);
+        let lowest = self.rows_order.len().saturating_sub(self.rows()) as f64;
         self.top = self.top.clamp(0.0, lowest);
     }
 }
