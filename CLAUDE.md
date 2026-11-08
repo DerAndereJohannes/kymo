@@ -10,7 +10,7 @@ Phase 3 work follows `docs/phase3-plan.md` (viewer features); phase 2's plan, `d
 
 ## Current scope
 
-Phases 1 to 3 (see "Plan" in `docs/design.md`); phases 1 and 2 are done, phase 3 adds viewer features (anti-aliasing, automatic scale, colors, annotation editing with CSV save and load):
+Phases 1 to 3 (see "Plan" in `docs/design.md`); phases 1 and 2 are done, phase 3 adds viewer features (anti-aliasing, automatic scale, colors, annotation editing with CSV save and load, theme selection):
 
 1. `crates/kymo-core`: recording model, EDF/BDF reader, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.

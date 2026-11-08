@@ -14,8 +14,8 @@ use kymo_core::tile::query;
 use kymo_core::{AnnotationData, AnnotationId, ChannelId, ChannelKind, GridId, Origin};
 
 use crate::action::Action;
-use crate::annotations::AnnotationColors;
 use crate::annotations::{self, Legend, Marks};
+use crate::annotations::{AnnotationColor, AnnotationColors};
 use crate::document::{Document, Summary};
 use crate::history::{self, Change, History};
 use crate::keymap::Keymap;
@@ -90,6 +90,9 @@ pub struct Layout {
 /// The status line's texts, on the left and the right.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusLine {
+    /// The selected annotation's color, in a swatch before `left`, which then starts with
+    /// its description.
+    pub swatch: Option<AnnotationColor>,
     pub left: String,
     pub right: String,
 }
@@ -394,6 +397,12 @@ impl Viewer {
         let mut open_clicked = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
+                if let Some(color) = self.status.swatch {
+                    let side = ui.text_style_height(&TextStyle::Body) * 0.7;
+                    let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, 2.0, annotation_color(color, ui.visuals()));
+                }
                 ui.label(&self.status.left);
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     ui.label(&self.status.right);
@@ -481,20 +490,21 @@ impl Viewer {
                 )
             })
             .unwrap_or_default();
-        let mode = self.editing.then(|| {
-            match self
-                .selected
-                .and_then(|id| self.document.annotations.get(id))
-            {
-                Some(a) => status::selection_text(
-                    &a.data.description,
-                    a.data.onset,
-                    a.data.duration,
-                    status::time_decimals(rec.sfreq()),
-                    Clock::for_end(self.view.duration()),
-                ),
-                None => "Editing annotations".to_owned(),
-            }
+        let selected = self
+            .selected
+            .and_then(|id| self.document.annotations.get(id));
+        let swatch = selected
+            .and_then(|a| self.legend.entry(&a.data.description))
+            .map(|e| e.color);
+        let mode = self.editing.then(|| match selected {
+            Some(a) => status::selection_text(
+                &a.data.description,
+                a.data.onset,
+                a.data.duration,
+                status::time_decimals(rec.sfreq()),
+                Clock::for_end(self.view.duration()),
+            ),
+            None => "Editing annotations".to_owned(),
         });
         let left = [mode.unwrap_or_default(), left, self.pointed.clone()]
             .into_iter()
@@ -505,7 +515,11 @@ impl Viewer {
         if let Some(build) = status::build_text(&service.progress()) {
             right = format!("{build} · {right}");
         }
-        StatusLine { left, right }
+        StatusLine {
+            swatch,
+            left,
+            right,
+        }
     }
 
     /// Channel names, traces, the time axis and both scrollbars.

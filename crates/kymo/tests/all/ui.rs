@@ -1741,12 +1741,12 @@ fn annotation_mode_creates_selects_and_deletes_with_undo() {
     let mut harness = window(file.path());
     ready(&mut harness);
     let count = viewer(&harness).document().annotations.len();
-    assert!(!checked(&mut harness, "View", "Edit Annotations"));
+    assert!(!checked(&mut harness, "Edit", "Edit Annotations"));
     assert!(!enabled(&mut harness, "Edit", "Undo"));
     assert!(!enabled(&mut harness, "Edit", "Delete"));
     press(&mut harness, command(), Key::E);
     assert!(viewer(&harness).editing());
-    assert!(checked(&mut harness, "View", "Edit Annotations"));
+    assert!(checked(&mut harness, "Edit", "Edit Annotations"));
     let p = at_time(&harness, 12.0, 20.0);
     hover(&mut harness, p);
     let status = viewer(&harness).status().left.clone();
@@ -1786,11 +1786,15 @@ fn annotation_mode_creates_selects_and_deletes_with_undo() {
         status.starts_with("BAD at 0:02.000 for 2.000 s · "),
         "{status}"
     );
+    // With a swatch in its color before it.
+    let color = viewer(&harness).legend().entry("BAD").unwrap().color;
+    assert_eq!(viewer(&harness).status().swatch, Some(color));
 
     // A click away from annotations deselects; on it, selects.
     click_at_time(&mut harness, 12.0);
     assert_eq!(viewer(&harness).selected(), None);
     assert_eq!(viewer(&harness).outline(), None);
+    assert_eq!(viewer(&harness).status().swatch, None);
     assert!(!enabled(&mut harness, "Edit", "Delete"));
     click_at_time(&mut harness, 3.0);
     assert_eq!(viewer(&harness).selected(), Some(id));
@@ -1839,7 +1843,7 @@ fn annotation_mode_creates_selects_and_deletes_with_undo() {
     // Out of annotation mode, clicks don't select, a drag pans, and undo still works.
     click_at_time(&mut harness, 3.0);
     assert_eq!(viewer(&harness).selected(), Some(id));
-    choose(&mut harness, "View", "Edit Annotations");
+    choose(&mut harness, "Edit", "Edit Annotations");
     assert!(!viewer(&harness).editing());
     assert_eq!(viewer(&harness).selected(), None);
     click_at_time(&mut harness, 3.0);

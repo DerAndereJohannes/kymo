@@ -78,7 +78,12 @@ fn follows_each_platforms_layout() {
     assert!(mac[0].items.contains(&Item::System(SystemItem::About)));
     assert_eq!(
         mac[2].actions().collect::<Vec<_>>(),
-        [Action::Undo, Action::Redo, Action::DeleteAnnotation]
+        [
+            Action::Undo,
+            Action::Redo,
+            Action::ToggleEditing,
+            Action::DeleteAnnotation
+        ]
     );
     assert_eq!(mac[5].role, Role::Window);
     assert_eq!(mac[6].role, Role::Help);
@@ -90,6 +95,7 @@ fn follows_each_platforms_layout() {
         [
             Action::Undo,
             Action::Redo,
+            Action::ToggleEditing,
             Action::DeleteAnnotation,
             Action::Settings
         ]

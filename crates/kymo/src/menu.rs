@@ -160,6 +160,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         a(Action::Undo),
         a(Action::Redo),
         Item::Separator,
+        a(Action::ToggleEditing),
         a(Action::DeleteAnnotation),
     ];
     if !mac {
@@ -192,8 +193,6 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::ToggleDc),
             a(Action::ToggleBad),
-            Item::Separator,
-            a(Action::ToggleEditing),
             Item::Separator,
             Item::Submenu {
                 title: "Stim Annotations",
