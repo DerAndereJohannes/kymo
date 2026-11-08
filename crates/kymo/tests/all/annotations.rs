@@ -467,3 +467,31 @@ fn stim_annotations_mark_every_row() {
         assert_eq!(found[0].data.onset, 10.0);
     }
 }
+
+/// Translucent bands of different colors that overlap blend by the order they are drawn
+/// in, so that order must never change from one frame to the next: by color, then rows,
+/// then from left to right.
+#[test]
+fn bands_come_in_a_fixed_order() {
+    let rec = recording();
+    let view = ViewState::new(&rec);
+    let mut items: Vec<AnnotationData> = (0..6)
+        .map(|k| data(f64::from(k), 30.0, &format!("d{k}"), &[]))
+        .collect();
+    items.push(data(0.5, 1.0, "d3", &[]));
+    items.push(data(2.0, 3.0, "d1", &[0]));
+    let store = AnnotationStore::from_data(items);
+    let legend = Legend::new(&store);
+    let first = marks(&view, &store, &legend, 300, label_width);
+    let keys: Vec<_> = first
+        .bands
+        .iter()
+        .map(|m| (m.color, m.span, m.columns.start))
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted);
+    for _ in 0..50 {
+        assert_eq!(marks(&view, &store, &legend, 300, label_width), first);
+    }
+}

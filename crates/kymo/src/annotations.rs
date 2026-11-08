@@ -171,7 +171,8 @@ pub struct Label {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Marks {
     /// Translucent: annotations at least a pixel long. Bands of the same color and span
-    /// never overlap or touch; overlapping ones are merged.
+    /// never overlap or touch; overlapping ones are merged. By color, span and first
+    /// column, so bands of different colors that overlap blend the same in every frame.
     pub bands: Vec<Mark>,
     /// Solid, one column wide: annotations without or with less than a pixel's duration. At most one
     /// per column, color and span.
@@ -277,6 +278,10 @@ pub fn marks(
             span,
             color,
         }));
+    // The bands still open come in the hash map's order, which changes with every map.
+    marks
+        .bands
+        .sort_unstable_by_key(|m| (m.color, m.span, m.columns.start));
     marks
 }
 
