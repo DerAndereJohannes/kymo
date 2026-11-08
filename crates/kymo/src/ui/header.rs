@@ -132,22 +132,28 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
         });
 }
 
-/// A checkbox for all annotations (mixed while some are shown), then a row per
-/// description: a checkbox, its colour, the description and how many annotations have it.
-/// Scrolls beyond [`LEGEND_ROWS`] rows.
+/// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how
+/// many there are; then a row per description: a checkbox, its colour, the description and
+/// how many annotations have it. Counts are right-aligned. Scrolls beyond [`LEGEND_ROWS`]
+/// description rows.
 fn legend_list(ui: &mut Ui, legend: &mut Legend) {
     let (shown, all) = legend.shown_count();
-    ui.horizontal(|ui| {
+    let row_height = ui.spacing().interact_size.y;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    row.add(Label::new(RichText::new(legend.total().to_string()).weak()).extend());
+    row.with_layout(Layout::left_to_right(Align::Center), |ui| {
         let mut checked = shown == all;
         let checkbox =
             Checkbox::new(&mut checked, "Annotations").indeterminate(0 < shown && shown < all);
         if ui.add(checkbox).changed() {
             legend.set_all_shown(checked);
         }
-        let count = format!("{shown} of {all} shown");
-        ui.add(Label::new(RichText::new(count).weak()).extend());
     });
-    let row_height = ui.spacing().interact_size.y;
     let entries: Vec<(String, usize, usize, bool)> = legend
         .entries()
         .map(|e| (e.description.clone(), e.color, e.count, e.shown))
@@ -368,8 +374,8 @@ pub fn kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Eog => "EOG",
         ChannelKind::Ecg => "ECG",
         ChannelKind::Emg => "EMG",
-        ChannelKind::Stim => "stim",
-        ChannelKind::Misc => "misc",
-        _ => "other",
+        ChannelKind::Stim => "Stim",
+        ChannelKind::Misc => "Misc",
+        _ => "Other",
     }
 }

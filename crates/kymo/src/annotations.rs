@@ -102,6 +102,11 @@ impl Legend {
             (shown + usize::from(e.shown), all + 1)
         })
     }
+
+    /// How many annotations there are, of every description.
+    pub fn total(&self) -> usize {
+        self.entries().map(|e| e.count).sum()
+    }
 }
 
 /// The rows a mark covers.

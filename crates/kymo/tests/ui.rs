@@ -701,7 +701,7 @@ fn the_channel_list_shows_hides_and_marks_bad() {
     let mut harness = window(&file.0);
     ready(&mut harness);
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
-    for kind in ["EEG", "EOG", "ECG", "stim"] {
+    for kind in ["EEG", "EOG", "ECG", "Stim"] {
         assert_eq!(
             toggled(&harness, Role::CheckBox, kind),
             Toggled::True,
@@ -912,6 +912,26 @@ fn the_legend_shows_and_hides_annotations() {
             .unwrap()
             .count,
         20
+    );
+    // The Annotations row counts them all, right-aligned with the descriptions' counts.
+    let in_row = |harness: &Harness<'_, KymoApp>, checkbox: &str, text: &str| {
+        let row = harness
+            .get_by_role_and_label(Role::CheckBox, checkbox)
+            .rect();
+        let found: Vec<_> = harness
+            .query_all_by_label(text)
+            .map(|n| n.rect())
+            .filter(|r| row.y_range().contains(r.center().y))
+            .collect();
+        assert_eq!(found.len(), 1, "{text} in the row of {checkbox}");
+        found[0]
+    };
+    let total = viewer(&harness).document().annotations.len();
+    let total = in_row(&harness, "Annotations", &total.to_string());
+    let count = in_row(&harness, "Show sleep stage N2", "20");
+    assert!(
+        (total.right() - count.right()).abs() < 0.5,
+        "{total} {count}"
     );
 
     click_in_list(&mut harness, Role::CheckBox, "Show sleep stage N2");
