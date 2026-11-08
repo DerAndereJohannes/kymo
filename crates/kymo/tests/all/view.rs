@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use kymo::action::{Action, Gesture};
-use kymo::view::{Area, DEFAULT_ROWS, ViewState};
+use kymo::view::{Area, DEFAULT_ROWS, KINDS, ViewState};
 use kymo_core::tile::{Direction, prefetch, tiles_for_view};
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
@@ -685,4 +685,22 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     assert_eq!(view.dc_request(&rec), None);
     act(&mut view, Action::ToggleDc);
     assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
+}
+
+#[test]
+fn set_amplitudes_takes_only_positive_finite_ones() {
+    let rec = recording(4, 60);
+    let mut view = ViewState::new(&rec);
+    let before = KINDS.map(|k| view.amplitude(k));
+    view.set_amplitudes([
+        Some(0.0),
+        Some(-1.0),
+        Some(f64::NAN),
+        Some(f64::INFINITY),
+        None,
+        Some(3e-6),
+    ]);
+    let after = KINDS.map(|k| view.amplitude(k));
+    assert_eq!(after[..5], before[..5]);
+    assert_eq!(after[5], 3e-6);
 }

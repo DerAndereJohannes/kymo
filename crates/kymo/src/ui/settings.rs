@@ -39,6 +39,13 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     ui.checkbox(&mut settings.antialias, "Anti-aliased");
                     ui.end_row();
                     hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
+                    ui.label("Scale");
+                    ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on opening");
+                    ui.end_row();
+                    hint(
+                        ui,
+                        "Fit each channel type to the first window, as Auto Scale does.",
+                    );
                     row(
                         ui,
                         "Default window",

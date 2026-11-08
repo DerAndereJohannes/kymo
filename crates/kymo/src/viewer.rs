@@ -17,6 +17,7 @@ use crate::annotations::{self, Legend, Marks};
 use crate::document::{Document, Summary};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
+use crate::scale;
 use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
@@ -100,6 +101,8 @@ pub struct Viewer {
     stim: Option<StimAnnotations>,
     /// Whether traces are anti-aliased.
     antialias: bool,
+    /// Whether [`Action::AutoScale`] waits for a complete frame.
+    auto_scale: bool,
 }
 
 impl Viewer {
@@ -134,6 +137,7 @@ impl Viewer {
             marks: Marks::default(),
             pointed: String::new(),
             antialias: false,
+            auto_scale: false,
         }
     }
 
@@ -190,12 +194,12 @@ impl Viewer {
         }
     }
 
-    /// Seconds [`Action::DefaultWindow`] shows from now on.
     /// Whether traces are anti-aliased from the next frame on.
     pub fn set_antialias(&mut self, on: bool) {
         self.antialias = on;
     }
 
+    /// Seconds [`Action::DefaultWindow`] shows from now on.
     pub fn set_default_span(&mut self, seconds: f64) {
         self.view.set_default_span(seconds);
     }
@@ -215,7 +219,17 @@ impl Viewer {
     }
 
     /// Applies a view action; [`Action::ToggleBad`] acts on the channel under the pointer.
+    /// [`Action::AutoScale`] applies at the first frame that has all its tiles, as coarser
+    /// stand-ins would draw too wide an envelope; any other scale action cancels it.
     pub fn apply(&mut self, action: Action) -> bool {
+        match action {
+            Action::AutoScale => {
+                self.auto_scale = true;
+                return true;
+            }
+            Action::ScaleUp | Action::ScaleDown | Action::DefaultScale => self.auto_scale = false,
+            _ => {}
+        }
         self.view.apply(action, self.hover.channel)
     }
 
@@ -488,14 +502,19 @@ impl Viewer {
             overlay.rect_filled(rect_of(line), 0.0, annotation_color(line.color, visuals));
         }
 
+        let query = query(rec, &self.view.tile_view(size_px[0]), service.cache());
+        self.missing = query.missing.len();
+        if self.auto_scale && query.missing.is_empty() {
+            self.view
+                .set_amplitudes(scale::fit(rec, &self.view, &query, size_px[0]));
+            self.auto_scale = false;
+        }
         let mut scene = Scene::from_view(&self.view, size_px, rgba(visuals.text_color()));
         scene.antialias = self.antialias;
         for row in &mut scene.rows {
             row.color = rgba(self.channel_color(row.channel, visuals));
             row.baseline = self.baseline(row.channel);
         }
-        let query = query(rec, &self.view.tile_view(size_px[0]), service.cache());
-        self.missing = query.missing.len();
         let frame = Frame::new(rec, &scene, &query);
         gpu.paint(&painter, traces, frame, self.serial);
         if let Some(error) = gpu.error() {

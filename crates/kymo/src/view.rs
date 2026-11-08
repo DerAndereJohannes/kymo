@@ -52,7 +52,8 @@ pub const KINDS: [ChannelKind; 6] = [
     ChannelKind::Misc,
 ];
 
-fn kind_index(kind: ChannelKind) -> usize {
+/// The index of a channel type in [`KINDS`]; types not listed there count as `Misc`.
+pub fn kind_index(kind: ChannelKind) -> usize {
     KINDS
         .iter()
         .position(|&k| k == kind)
@@ -191,10 +192,23 @@ impl ViewState {
     /// Amplitude per channel spacing for one channel, in its own physical unit. A unit
     /// without a known SI factor counts as SI.
     pub fn channel_amplitude(&self, channel: ChannelId) -> f64 {
+        self.amplitude(self.kind_of(channel)) / self.to_si(channel)
+    }
+
+    /// The factor from a channel's physical unit to SI; 1 for a unit without a known one.
+    pub fn to_si(&self, channel: ChannelId) -> f64 {
         let i = channel.0 as usize;
-        let kind = self.kind_of(channel);
-        let to_si = self.to_si.get(i).copied().flatten().unwrap_or(1.0);
-        self.amplitude(kind) / to_si
+        self.to_si.get(i).copied().flatten().unwrap_or(1.0)
+    }
+
+    /// Sets the amplitude per channel spacing of each type in [`KINDS`] order that has one
+    /// (SI units); the others, and values that aren't positive and finite, stay as they are.
+    pub fn set_amplitudes(&mut self, amplitudes: [Option<f64>; KINDS.len()]) {
+        for (amplitude, new) in self.amplitudes.iter_mut().zip(amplitudes) {
+            if let Some(new) = new.filter(|a| a.is_finite() && *a > 0.0) {
+                *amplitude = new;
+            }
+        }
     }
 
     /// The channel's type (`Misc` for a channel not in the recording).
@@ -272,6 +286,7 @@ impl ViewState {
             }
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
+            Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
             Action::ToggleDc => self.dc = !self.dc,
             Action::ToggleBad => {
                 if let Some(channel) = under_pointer {
@@ -286,6 +301,7 @@ impl ViewState {
             | Action::About
             | Action::ToggleSidebar
             | Action::ToggleAntialias
+            | Action::AutoScale
             | Action::StimEveryChange
             | Action::StimFromZero
             | Action::StimIncreasing

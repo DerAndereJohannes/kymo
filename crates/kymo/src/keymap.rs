@@ -189,6 +189,8 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::ScaleUp, Chord::alt_cmd(Key::Plus)),
     (Action::ScaleUp, Chord::alt_cmd(Key::Equals)),
     (Action::ScaleDown, Chord::alt_cmd(Key::Minus)),
+    (Action::AutoScale, Chord::cmd(Key::R)),
+    (Action::DefaultScale, Chord::alt_cmd(Key::Num0)),
     (Action::ToggleDc, Chord::cmd(Key::D)),
     (Action::ToggleBad, Chord::cmd(Key::B)),
     (Action::ToggleAntialias, Chord::shift_cmd(Key::A)),

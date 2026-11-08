@@ -16,6 +16,7 @@ mod native_menu;
 mod palette;
 mod readout;
 mod render;
+mod scale;
 mod settings;
 mod shortcuts;
 mod stim_annotations;

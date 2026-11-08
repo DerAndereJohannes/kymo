@@ -421,6 +421,9 @@ impl KymoApp {
                     self.stim_options,
                 );
                 viewer.set_antialias(self.options.settings.antialias);
+                if self.options.settings.auto_scale_on_open {
+                    viewer.apply(Action::AutoScale);
+                }
                 State::Ready(Box::new(viewer))
             }
             Err(error) => State::Failed {

@@ -14,7 +14,9 @@ use kymo::keymap::Platform;
 use kymo::settings::Settings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
+use kymo::view::{KINDS, kind_index};
 use kymo::viewer::Viewer;
+use kymo_core::ChannelKind;
 use kymo_testgen::{TempDir, TempFile};
 
 /// A preset with its noise and spikes from `seed` (0 is the preset's own).
@@ -1334,6 +1336,145 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     assert!(enabled(&mut harness, "View", "Anti-aliasing"));
     choose(&mut harness, "View", "Anti-aliasing");
     assert!(!harness.state().settings().antialias);
+}
+
+/// Each type's amplitude per channel spacing, in [`KINDS`] order.
+fn amplitudes(harness: &Harness<'_, KymoApp>) -> [f64; KINDS.len()] {
+    let view = viewer(harness).view();
+    KINDS.map(|kind| view.amplitude(kind))
+}
+
+#[test]
+fn auto_scale_fits_the_window_from_the_menu_keys_and_setting() {
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let defaults = amplitudes(&harness);
+
+    // ⌘R: the generated signals reach 15 uV, their spikes (to the digital limits) are rare.
+    harness.key_press_modifiers(command(), Key::R);
+    harness.run_steps(2);
+    let fitted = amplitudes(&harness);
+    let signal = kymo_testgen::EEG_AMPLITUDE * 1e-6;
+    for kind in [ChannelKind::Eeg, ChannelKind::Eog, ChannelKind::Ecg] {
+        let amplitude = fitted[kind_index(kind)];
+        assert!(
+            (signal / 4.0..=signal * 2.0).contains(&amplitude),
+            "{kind:?}: {amplitude}"
+        );
+    }
+    // Stim keeps its scale, and so do types without channels.
+    for kind in [ChannelKind::Stim, ChannelKind::Emg, ChannelKind::Misc] {
+        assert_eq!(
+            fitted[kind_index(kind)],
+            defaults[kind_index(kind)],
+            "{kind:?}"
+        );
+    }
+
+    // Once fitted, the scale stays as the view moves on.
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(2);
+    step_until(&mut harness, "the tiles", |app| {
+        app.viewer().unwrap().complete()
+    });
+    assert_eq!(amplitudes(&harness), fitted);
+    harness.key_press(Key::ArrowLeft);
+    harness.step();
+
+    // Default Scale (⌥⌘0) brings the defaults back; the menu item fits again.
+    harness.key_press_modifiers(command() | Modifiers::ALT, Key::Num0);
+    harness.step();
+    assert_eq!(amplitudes(&harness), defaults);
+    choose(&mut harness, "View", "Auto Scale");
+    harness.run_steps(2);
+    assert_eq!(amplitudes(&harness), fitted);
+    assert!(enabled(&mut harness, "View", "Default Scale"));
+
+    // The setting: a recording opens fitted, as ⌘R fits it.
+    let settings = Settings {
+        auto_scale_on_open: true,
+        ..Settings::default()
+    };
+    let mut harness = window_with(file.path(), settings);
+    ready(&mut harness);
+    assert_eq!(amplitudes(&harness), fitted);
+
+    // The Settings checkbox shows and changes it.
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    harness.get_by_label("Automatic on opening").click();
+    harness.run_steps(2);
+    assert!(!harness.state().settings().auto_scale_on_open);
+}
+
+#[test]
+fn auto_scale_waits_for_the_windows_tiles() {
+    // Long enough that its pyramid takes a while: 16 channels at 1000 Hz, 30 min (58 MB).
+    let mut spec = kymo_testgen::Spec::preset("edf-64ch-1h").unwrap();
+    spec.channels.truncate(16);
+    spec.n_records = 1800;
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    // One frame per step, so the view is still the first one when the viewer appears.
+    while harness.state().viewer().is_none() {
+        harness.step();
+    }
+    let defaults = amplitudes(&harness);
+    // The whole recording, from the pyramid's top levels, which the build makes last; Fit
+    // and Auto Scale in one frame, so the tiles can't arrive between them.
+    let input = harness.input_mut();
+    for key in [Key::Num9, Key::R] {
+        input.events.push(egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers: command(),
+            repeat: false,
+            physical_key: None,
+        });
+    }
+    let mut incomplete = 0;
+    loop {
+        harness.step();
+        if viewer(&harness).complete() {
+            break;
+        }
+        assert_eq!(amplitudes(&harness), defaults);
+        incomplete += 1;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(incomplete > 0, "the whole recording had its tiles at once");
+    assert_eq!(
+        viewer(&harness).view().time(),
+        0.0..viewer(&harness).view().duration()
+    );
+    let fitted = amplitudes(&harness);
+    assert_ne!(fitted, defaults);
+    // What it fits then is what the complete window gives.
+    harness.key_press_modifiers(command() | Modifiers::ALT, Key::Num0);
+    harness.key_press_modifiers(command(), Key::R);
+    harness.run_steps(2);
+    assert_eq!(amplitudes(&harness), fitted);
+}
+
+#[test]
+fn auto_scale_ignores_a_dc_offset() {
+    let eeg = kind_index(ChannelKind::Eeg);
+    let mut fitted = Vec::new();
+    for offset in [0.0, 21_000.0] {
+        let file = offset_preset("bdf+c-small", offset);
+        let mut harness = window(file.path());
+        ready(&mut harness);
+        let default = amplitudes(&harness)[eeg];
+        harness.key_press_modifiers(command(), Key::R);
+        harness.run_steps(2);
+        fitted.push(amplitudes(&harness)[eeg]);
+        assert_ne!(fitted.last(), Some(&default));
+    }
+    assert!(
+        (fitted[0] - fitted[1]).abs() <= fitted[0] * 1e-6,
+        "{fitted:?}"
+    );
 }
 
 #[test]

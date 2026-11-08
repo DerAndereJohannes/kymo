@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c1256551ea5e00db2a2392ac061d6f043ea242af2ded3189d81e1463e9058b0a # shrinks to span_exp = -1.9935305459734816, start_frac = 0.0, width = 50, bad = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], hidden = 0, rows = 10
+cc 4e07179a80c47711499b7708a21cb40494e421e6f51864476584868142799e3a # shrinks to span_exp = 0.0, start_frac = 0.0, width = 50, bad = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], hidden = 0, rows = 10
+cc 001313f186b6dee7c0ffcfefaee9488bd6169205af71d668f1873b2a43d83a1d # shrinks to span_exp = 0.0, start_frac = 0.0, width = 50, bad = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], hidden = 0, rows = 33
+cc 94098d8b040fa1b242507395a4d24f146cd585770cc0988dacd529e8217ade82 # shrinks to span_exp = -0.5544371879708029, start_frac = 0.0, width = 173, bad = [false, false, false, true, false, false, false, false, false, false, false, false, true, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], hidden = 4, rows = 20

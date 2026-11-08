@@ -38,6 +38,11 @@ pub enum Action {
     /// Taller traces: a smaller amplitude per channel spacing.
     ScaleUp,
     ScaleDown,
+    /// Fits each channel type's amplitude to what the window shows (see [`crate::scale`]),
+    /// once the window is complete.
+    AutoScale,
+    /// The amplitudes a recording opens with, per type.
+    DefaultScale,
     ToggleDc,
     /// Toggles bad for the channel under the pointer.
     ToggleBad,
@@ -56,7 +61,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 34] = [
+    pub const ALL: [Action; 36] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -83,6 +88,8 @@ impl Action {
         Action::FewerChannels,
         Action::ScaleUp,
         Action::ScaleDown,
+        Action::AutoScale,
+        Action::DefaultScale,
         Action::ToggleDc,
         Action::ToggleBad,
         Action::ToggleSidebar,
@@ -122,6 +129,8 @@ impl Action {
             Action::FewerChannels => "Fewer Channels",
             Action::ScaleUp => "Scale Up",
             Action::ScaleDown => "Scale Down",
+            Action::AutoScale => "Auto Scale",
+            Action::DefaultScale => "Default Scale",
             Action::ToggleDc => "Remove DC",
             Action::ToggleBad => "Toggle Bad Channel",
             Action::ToggleSidebar => "Show Sidebar",
