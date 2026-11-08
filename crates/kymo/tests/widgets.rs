@@ -9,7 +9,8 @@ use kymo::ui::axis::Clock;
 use kymo::ui::readout::Reading;
 use kymo::ui::scrollbar::{MIN_THUMB, start_at, thumb};
 use kymo::ui::status::{
-    build_text, format_value, memory_text, pointer_text, reading_text, time_decimals,
+    annotations_text, build_text, format_value, memory_text, pointer_text, reading_text,
+    time_decimals,
 };
 use kymo_core::service::BuildProgress;
 use proptest::prelude::*;
@@ -103,6 +104,20 @@ fn the_pointer_text_names_time_channel_and_value() {
     assert_eq!(time_decimals(1000.0), 3);
     assert_eq!(time_decimals(10.0), 1);
     assert_eq!(time_decimals(1e9), 6);
+}
+
+#[test]
+fn annotations_under_the_pointer_are_named_once_each() {
+    assert_eq!(annotations_text([]), "");
+    assert_eq!(annotations_text(["N2"]), "N2");
+    assert_eq!(
+        annotations_text(["spike", "N2", "spike", "spike"]),
+        "spike ×3, N2"
+    );
+    assert_eq!(
+        annotations_text(["a", "b", "a", "c", "d", "e", "d"]),
+        "a ×2, b, c, +2 more"
+    );
 }
 
 #[test]

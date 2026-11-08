@@ -518,6 +518,8 @@ fn baselines_are_window_means(app: &KymoApp) -> bool {
 /// The numbers of the status line's reading ("12.5 uV" or "−3 … 4 uV").
 fn reading_numbers(status: &str) -> Vec<f64> {
     let reading = status.rsplit_once(" A1 ").unwrap().1;
+    // Up to the annotations under the pointer, if any.
+    let reading = reading.split(" · ").next().unwrap();
     reading
         .trim_end_matches(" uV")
         .split(" … ")
@@ -575,9 +577,11 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
 }
 
 /// The numbers of the status line's reading of the Status channel, if it shows one. Codes
-/// have no unit (the file's is "Boolean").
+/// have no unit (the file's is "Boolean"); the annotations under the pointer may follow.
 fn status_reading(status: &str) -> Option<Vec<f64>> {
     let reading = status.rsplit_once(" Status ")?.1;
+    // Up to the annotations under the pointer, if any.
+    let reading = reading.split(" · ").next()?;
     Some(
         reading
             .split(" … ")
@@ -844,6 +848,41 @@ fn the_legend_shows_and_hides_annotations() {
         (bands, lines, marks.labels.len())
     };
     assert_eq!(colors(&harness), (vec![1], vec![0, 2, 3], 3));
+
+    // The legend is at the bottom of the sidebar, below the types and channels, and shows
+    // 8 rows before it scrolls.
+    let top = |harness: &Harness<'_, KymoApp>, label: &str| {
+        harness
+            .get_by_role_and_label(Role::CheckBox, label)
+            .rect()
+            .top()
+    };
+    let legend = top(&harness, "Annotations");
+    let names: Vec<String> = viewer(&harness)
+        .document()
+        .recording
+        .channels()
+        .iter()
+        .map(|c| format!("Show {}", c.name))
+        .collect();
+    let channels: Vec<f32> = names
+        .iter()
+        .filter_map(|n| harness.query_by_role_and_label(Role::CheckBox, n))
+        .map(|n| n.rect().top())
+        .collect();
+    assert!(!channels.is_empty());
+    assert!(top(&harness, "EEG") < channels[0], "{channels:?}");
+    assert!(channels[0] < legend, "{channels:?} {legend}");
+    let row = harness.ctx.global_style().spacing.interact_size.y;
+    let status = harness
+        .get_by_label(&viewer(&harness).status().right)
+        .rect()
+        .top();
+    assert!(
+        status - legend > 9.0 * row,
+        "legend at {legend}, status at {status}"
+    );
+
     assert!(harness.query_by_label("sleep stage N2").is_some());
     assert!(harness.query_by_label("Elektrodenprüfung µV").is_some());
     assert_eq!(
@@ -872,6 +911,58 @@ fn the_legend_shows_and_hides_annotations() {
         toggled(&harness, Role::CheckBox, "Show event 0"),
         Toggled::False
     );
+}
+
+/// The status line names the shown annotations under the pointer.
+#[test]
+fn the_status_line_names_the_annotations_under_the_pointer() {
+    // "sleep stage N2" from 7.625 s to 10.125 s; "eyes closed" and "Elektrodenprüfung µV",
+    // events at 15 s.
+    let file = TempFile::preset("edf+d-mixed");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let traces = viewer(&harness).layout().unwrap().traces;
+    let at = |harness: &Harness<'_, KymoApp>, t: f64| {
+        let x = viewer(harness).view().x_at(t, f64::from(traces.width()));
+        egui::pos2(traces.left() + x as f32, traces.top() + 20.0)
+    };
+    let status = |harness: &Harness<'_, KymoApp>| viewer(harness).status().left.clone();
+
+    let p = at(&harness, 9.0);
+    hover(&mut harness, p);
+    assert!(
+        status(&harness).ends_with(" · sleep stage N2"),
+        "{}",
+        status(&harness)
+    );
+    let p = at(&harness, 12.0);
+    hover(&mut harness, p);
+    assert!(!status(&harness).contains("N2"), "{}", status(&harness));
+    // An event line is hit from a point away.
+    let p = at(&harness, 15.0) + egui::vec2(1.0, 0.0);
+    hover(&mut harness, p);
+    assert!(
+        status(&harness).ends_with(" · eyes closed, Elektrodenprüfung µV"),
+        "{}",
+        status(&harness)
+    );
+
+    // Hidden annotations aren't named.
+    click_in_list(
+        &mut harness,
+        egui::accesskit::Role::CheckBox,
+        "Show eyes closed",
+    );
+    hover(&mut harness, p);
+    assert!(
+        status(&harness).ends_with(" · Elektrodenprüfung µV"),
+        "{}",
+        status(&harness)
+    );
+
+    // Off the traces, they go away with the time.
+    hover(&mut harness, egui::pos2(5.0, 5.0));
+    assert_eq!(status(&harness), "");
 }
 
 /// Without annotations there is no legend.

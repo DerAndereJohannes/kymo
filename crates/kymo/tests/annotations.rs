@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use kymo::annotations::{COLORS, Legend, Mark, Marks, Span, marks, span_y};
+use kymo::annotations::{COLORS, Legend, Mark, Marks, Span, marks, span_y, under};
 use kymo::view::ViewState;
 use kymo_core::testing::{MemData, single_grid};
 use kymo_core::{
@@ -313,6 +313,59 @@ proptest! {
         let marks = marks(&view, &store, &legend, width, label_width);
         check(&marks, &brute_force(&view, &store, &legend, width), width)?;
         check_labels(&marks, &view, &store, &legend, width)?;
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// The annotations under the pointer are exactly the shown ones with a mark within
+    /// `slack` columns of it, over the pointer's row or the whole height, by onset.
+    #[test]
+    fn the_pointer_finds_the_marks_under_it(
+        view in view(&recording()),
+        annotations in proptest::collection::vec(annotation(), 0..200),
+        hidden in proptest::collection::vec(0..14usize, 0..4),
+        width in 1..700u32,
+        x in 0.0..1.0f64,
+        slack in 0..4u32,
+        channel in 0..9u32,
+    ) {
+        let store = AnnotationStore::from_data(annotations);
+        let mut legend = Legend::new(&store);
+        for d in hidden {
+            legend.set_shown(&format!("d{d}"), false);
+        }
+        let x = x * f64::from(width);
+        // A channel on screen, as under the pointer, or none.
+        let channel = Some(ChannelId(channel)).filter(|&c| {
+            view.row_of(c).is_some_and(|r| view.visible_rows().contains(&r))
+        });
+        let at = (x.floor() as u32).min(width - 1);
+        let near = at.saturating_sub(slack)..at + 1 + slack;
+        let want: Vec<_> = store
+            .iter()
+            .filter(|a| {
+                let span = if a.data.channels.is_empty() {
+                    Span::All
+                } else if let Some(c) = channel.filter(|c| a.data.channels.contains(c)) {
+                    Span::Row(view.row_of(c).unwrap())
+                } else {
+                    return false;
+                };
+                let alone = AnnotationStore::from_data(vec![a.data.clone()]);
+                let cover = brute_force(&view, &alone, &legend, width);
+                cover.into_iter().any(|((_, s), (bands, lines))| {
+                    s == span && bands.union(&lines).any(|c| near.contains(c))
+                })
+            })
+            .map(|a| a.id)
+            .collect();
+        let got: Vec<_> = under(&view, &store, &legend, width, x, slack, channel)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        prop_assert_eq!(got, want);
     }
 }
 

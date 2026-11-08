@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use kymo_core::AnnotationStore;
+use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId};
 
 use crate::view::ViewState;
 
@@ -167,8 +167,6 @@ pub fn marks(
     if width_px == 0 {
         return marks;
     }
-    let width = f64::from(width_px);
-    let last = width_px - 1;
     let rows = view.visible_rows();
     // The band being extended and the last line, per colour and span.
     let mut open: HashMap<(usize, Span), Range<u32>> = HashMap::new();
@@ -199,21 +197,19 @@ pub fn marks(
             continue;
         }
 
-        let x0 = view.x_at(a.data.onset, width);
-        let x1 = view.x_at(a.data.end(), width);
-        let first = column(x0, last);
+        let (columns, line) = columns(view, &a.data, width_px);
         for &span in &spans {
             let key = (entry.color, span);
-            if x1 - x0 < 1.0 {
-                if lines.insert(key, first) != Some(first) {
+            if line {
+                if lines.insert(key, columns.start) != Some(columns.start) {
                     marks.lines.push(Mark {
-                        columns: first..first + 1,
+                        columns: columns.clone(),
                         span,
                         color: entry.color,
                     });
                 }
             } else {
-                let columns = first..(x1.ceil().min(width) as u32).max(first + 1);
+                let columns = columns.clone();
                 match open.get_mut(&key) {
                     Some(band) if columns.start <= band.end => band.end = band.end.max(columns.end),
                     Some(band) => marks.bands.push(Mark {
@@ -228,7 +224,7 @@ pub fn marks(
             }
         }
 
-        let x = x0.max(0.0);
+        let x = view.x_at(a.data.onset, f64::from(width_px)).max(0.0);
         if x >= next_label {
             next_label = x + label_width(&a.data.description);
             marks.labels.push(Label {
@@ -246,6 +242,53 @@ pub fn marks(
             color,
         }));
     marks
+}
+
+/// The annotations under pixel column `x` of a trace area `width_px` physical pixels wide,
+/// by onset: those of the descriptions `legend` shows whose mark is within `slack` columns
+/// of `x`, and that apply to all channels or to `channel`, the one under the pointer.
+pub fn under<'s>(
+    view: &ViewState,
+    store: &'s AnnotationStore,
+    legend: &Legend,
+    width_px: u32,
+    x: f64,
+    slack: u32,
+    channel: Option<ChannelId>,
+) -> Vec<&'s Annotation> {
+    if width_px == 0 {
+        return Vec::new();
+    }
+    let at = column(x, width_px - 1);
+    let width = f64::from(width_px);
+    // Within the trace area: annotations beyond it are not drawn.
+    let near = at.saturating_sub(slack)..(at + 1 + slack).min(width_px);
+    let time = view.time_at(f64::from(near.start), width)..view.time_at(f64::from(near.end), width);
+    store
+        .query(time)
+        .filter(|a| legend.entry(&a.data.description).is_some_and(|e| e.shown))
+        .filter(|a| {
+            a.data.channels.is_empty() || channel.is_some_and(|c| a.data.channels.contains(&c))
+        })
+        .filter(|a| {
+            let (columns, _) = columns(view, &a.data, width_px);
+            columns.start < near.end && near.start < columns.end
+        })
+        .collect()
+}
+
+/// The pixel columns `a`'s mark covers on a trace area `width_px` (`> 0`) pixels wide, and
+/// whether it is a line: one column, for annotations shorter than a pixel.
+fn columns(view: &ViewState, a: &AnnotationData, width_px: u32) -> (Range<u32>, bool) {
+    let width = f64::from(width_px);
+    let x0 = view.x_at(a.onset, width);
+    let x1 = view.x_at(a.end(), width);
+    let first = column(x0, width_px - 1);
+    if x1 - x0 < 1.0 {
+        (first..first + 1, true)
+    } else {
+        (first..(x1.ceil().min(width) as u32).max(first + 1), false)
+    }
 }
 
 /// The y range `span` covers in a trace area `height` tall, from its top, in the units of

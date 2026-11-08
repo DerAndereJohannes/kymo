@@ -1,5 +1,7 @@
 //! The texts of the status line: build progress, memory, and the reading under the pointer.
 
+use std::collections::HashMap;
+
 use kymo_core::service::BuildProgress;
 
 use super::axis::{Clock, format_time};
@@ -93,4 +95,36 @@ pub fn pointer_text(
         }
     }
     text
+}
+
+/// Descriptions named in [`annotations_text`] before the rest are counted.
+const DESCRIPTIONS: usize = 3;
+
+/// The annotations under the pointer by description, in order of first appearance, with a
+/// count if there are several: "spike ×3, sleep stage N2, +2 more".
+pub fn annotations_text<'a>(descriptions: impl IntoIterator<Item = &'a str>) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    let mut index = HashMap::new();
+    for description in descriptions {
+        let i = *index.entry(description).or_insert_with(|| {
+            counts.push((description, 0));
+            counts.len() - 1
+        });
+        counts[i].1 += 1;
+    }
+    let mut parts: Vec<String> = counts
+        .iter()
+        .take(DESCRIPTIONS)
+        .map(|&(d, n)| {
+            if n > 1 {
+                format!("{d} ×{n}")
+            } else {
+                d.to_owned()
+            }
+        })
+        .collect();
+    if counts.len() > DESCRIPTIONS {
+        parts.push(format!("+{} more", counts.len() - DESCRIPTIONS));
+    }
+    parts.join(", ")
 }

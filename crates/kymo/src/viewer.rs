@@ -39,6 +39,9 @@ const BAND_ALPHA: f32 = 0.2;
 /// Room left of an annotation label, and between labels, in points.
 const ANNOTATION_LABEL_PAD: f32 = 3.0;
 const ANNOTATION_LABEL_GAP: f32 = 8.0;
+/// How near an annotation's mark the pointer must be, in points, for the status line to
+/// name it; 1-pixel event lines are hard to hit exactly.
+const POINTER_SLACK: f32 = 2.0;
 /// The share of the tile cache that tiles beyond the screen may take.
 const PREFETCH_SHARE: usize = 2;
 
@@ -88,6 +91,8 @@ pub struct Viewer {
     legend: Legend,
     /// The annotation marks of the last frame.
     marks: Marks,
+    /// The annotations under the pointer, as the status line shows them.
+    pointed: String,
 }
 
 impl Viewer {
@@ -109,6 +114,7 @@ impl Viewer {
             layout: None,
             missing: 0,
             marks: Marks::default(),
+            pointed: String::new(),
         }
     }
 
@@ -246,6 +252,11 @@ impl Viewer {
                 )
             })
             .unwrap_or_default();
+        let left = if self.pointed.is_empty() {
+            left
+        } else {
+            format!("{left} · {}", self.pointed)
+        };
         let mut right = status::memory_text(service.cache().bytes(), gpu.bytes());
         if let Some(build) = status::build_text(&service.progress()) {
             right = format!("{build} · {right}");
@@ -289,6 +300,7 @@ impl Viewer {
         ui.advance_cursor_after_rect(full);
         if size_px[0] == 0 || size_px[1] == 0 {
             self.hover = Hover::default();
+            self.pointed.clear();
             return;
         }
         self.layout = Some(Layout {
@@ -325,6 +337,25 @@ impl Viewer {
             self.view.set_top(top);
         }
         self.hover = self.hover_at(ui.input(|i| i.pointer.hover_pos()), traces, names);
+        self.pointed = match self.hover.time {
+            Some(time) => {
+                let x = self.view.x_at(time, f64::from(size_px[0]));
+                let slack = (POINTER_SLACK * ppp).round() as u32;
+                let under = annotations::under(
+                    &self.view,
+                    &self.document.annotations,
+                    &self.legend,
+                    size_px[0],
+                    x,
+                    slack,
+                    self.hover.channel,
+                )
+                .into_iter()
+                .map(|a| a.data.description.as_str());
+                status::annotations_text(under)
+            }
+            None => String::new(),
+        };
 
         // Tiles: ask for what's missing, draw what's cached.
         self.width_px = size_px[0];

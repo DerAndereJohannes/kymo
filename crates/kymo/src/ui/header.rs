@@ -1,8 +1,8 @@
 //! The sidebar: the file's header and its channels.
 
 use eframe::egui::{
-    self, Align, Button, Checkbox, Color32, CursorIcon, FontId, Id, Label, Layout, Response,
-    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
+    self, Align, Button, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin,
+    Response, RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
 };
 use kymo_core::{ChannelId, ChannelKind};
 
@@ -27,9 +27,9 @@ pub fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
 /// Rows of the annotation legend shown before it scrolls.
 const LEGEND_ROWS: f32 = 8.0;
 
-/// File header, annotation legend and channel list. The legend shows and hides annotations
-/// by description in `legend`; the channel list shows and hides channels and marks them bad
-/// in `view`. Returns whether Open was clicked.
+/// File header, channel types and channels, and the annotation legend at the bottom. The
+/// channel list shows and hides channels and marks them bad in `view`; the legend shows and
+/// hides annotations by description in `legend`. Returns whether Open was clicked.
 pub fn header_panel(
     ui: &mut Ui,
     document: &Document,
@@ -92,12 +92,15 @@ pub fn header_panel(
 
     ui.add_space(6.0);
     ui.separator();
+    // The legend at the bottom, so the channel list fills the space below its types.
+    if !legend.is_empty() {
+        egui::Panel::bottom("legend")
+            .resizable(false)
+            .frame(Frame::NONE.inner_margin(Margin::symmetric(0, 6)))
+            .show(ui, |ui| legend_list(ui, legend));
+    }
     kind_list(ui, view);
     ui.separator();
-    if !legend.is_empty() {
-        legend_list(ui, legend);
-        ui.separator();
-    }
     channel_list(ui, document, view);
     open_clicked
 }
@@ -145,14 +148,19 @@ fn legend_list(ui: &mut Ui, legend: &mut Legend) {
         ui.add(Label::new(RichText::new(count).weak()).extend());
     });
     let row_height = ui.spacing().interact_size.y;
-    let max_height = LEGEND_ROWS * (row_height + ui.spacing().item_spacing.y);
     let entries: Vec<(String, usize, usize, bool)> = legend
         .entries()
         .map(|e| (e.description.clone(), e.color, e.count, e.shown))
         .collect();
+    // Exactly as tall as its rows, up to LEGEND_ROWS: the panel holding it would otherwise
+    // keep its first height.
+    let height = (entries.len() as f32).min(LEGEND_ROWS)
+        * (row_height + ui.spacing().item_spacing.y)
+        - ui.spacing().item_spacing.y;
     ScrollArea::vertical()
         .id_salt("legend")
-        .max_height(max_height)
+        .min_scrolled_height(height)
+        .max_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for (description, color, count, shown) in entries {
