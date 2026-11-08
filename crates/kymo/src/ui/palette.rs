@@ -4,8 +4,7 @@ use eframe::egui::{Color32, Visuals};
 use kymo_core::ChannelKind;
 
 /// The colour of a channel type's traces and names: EEG, EMG and misc in the theme's text
-/// colour, EOG blue, ECG magenta, and stim a grey dimmer than the text. Dark themes get
-/// lighter blue and magenta.
+/// colour, EOG blue, ECG magenta and stim amber. Dark themes get lighter variants.
 pub fn trace_color(kind: ChannelKind, visuals: &Visuals) -> Color32 {
     let dark = visuals.dark_mode;
     match kind {
@@ -13,8 +12,8 @@ pub fn trace_color(kind: ChannelKind, visuals: &Visuals) -> Color32 {
         ChannelKind::Eog => Color32::from_rgb(0, 60, 220),
         ChannelKind::Ecg if dark => Color32::from_rgb(230, 115, 230),
         ChannelKind::Ecg => Color32::from_rgb(185, 0, 185),
-        ChannelKind::Stim if dark => Color32::from_gray(105),
-        ChannelKind::Stim => Color32::from_gray(135),
+        ChannelKind::Stim if dark => Color32::from_rgb(240, 160, 50),
+        ChannelKind::Stim => Color32::from_rgb(200, 100, 0),
         _ => visuals.text_color(),
     }
 }

@@ -34,6 +34,10 @@ fn types_are_told_apart_in_both_themes() {
         let bad = over(bad_color(&visuals), background);
         for (i, &kind) in coloured.iter().enumerate() {
             let color = trace_color(kind, &visuals);
+            // A hue of its own, not a shade of the text's grey.
+            let [r, g, b, _] = color.to_array();
+            let chroma = r.max(g).max(b) - r.min(g).min(b);
+            assert!(chroma >= 100, "{kind:?} is grey");
             assert!(distance(color, text) >= 60, "{kind:?} looks like text");
             assert!(
                 distance(color, background) >= 150,
