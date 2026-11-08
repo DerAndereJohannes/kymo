@@ -53,6 +53,19 @@ pub struct Channel {
 }
 
 impl Channel {
+    /// Gain and offset that turn the values in this channel's tiles into the values shown.
+    /// Tiles hold native values, so these are [`gain`](Self::gain) and
+    /// [`offset`](Self::offset), except for a channel with a
+    /// [`trigger_mask`](Self::trigger_mask): its tiles hold the masked codes, shown as they
+    /// are (1 and 0), as MNE shows BDF stim channels.
+    pub fn tile_scaling(&self) -> (f64, f64) {
+        if self.trigger_mask.is_some() {
+            (1.0, 0.0)
+        } else {
+            (self.gain, self.offset)
+        }
+    }
+
     /// A channel of kind `Misc` with unit gain, zero offset and empty metadata.
     pub fn new(name: impl Into<String>, grid: GridId) -> Self {
         Channel {

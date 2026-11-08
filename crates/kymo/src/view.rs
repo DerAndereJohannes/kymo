@@ -192,9 +192,17 @@ impl ViewState {
     /// without a known SI factor counts as SI.
     pub fn channel_amplitude(&self, channel: ChannelId) -> f64 {
         let i = channel.0 as usize;
-        let kind = self.kinds.get(i).copied().unwrap_or(ChannelKind::Misc);
+        let kind = self.kind_of(channel);
         let to_si = self.to_si.get(i).copied().flatten().unwrap_or(1.0);
         self.amplitude(kind) / to_si
+    }
+
+    /// The channel's type (`Misc` for a channel not in the recording).
+    pub fn kind_of(&self, channel: ChannelId) -> ChannelKind {
+        self.kinds
+            .get(channel.0 as usize)
+            .copied()
+            .unwrap_or(ChannelKind::Misc)
     }
 
     pub fn dc_removed(&self) -> bool {
@@ -480,8 +488,8 @@ impl ViewState {
     }
 
     /// The windows to ask for DC means over when they changed since the last call: each
-    /// visible channel's samples in view, top to bottom. `None` while DC removal is off or
-    /// nothing changed.
+    /// visible channel's samples in view, top to bottom, except stim channels, which DC
+    /// removal leaves alone. `None` while DC removal is off or nothing changed.
     pub fn dc_request(&mut self, recording: &Recording) -> Option<Vec<(ChannelId, Range<u64>)>> {
         if !self.dc {
             self.dc_requested = None;
@@ -491,6 +499,7 @@ impl ViewState {
         let windows: Vec<_> = self
             .visible_channels()
             .iter()
+            .filter(|&&c| self.kind_of(c) != ChannelKind::Stim)
             .map(|&c| {
                 let grid = recording.grid(recording.channel(c).grid);
                 (c, samples_in(grid, &time))

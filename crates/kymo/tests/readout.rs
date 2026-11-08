@@ -6,12 +6,12 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::{Fixture, Rng, channel, f32_rows, grid, i16_rows, walk};
+use common::{Fixture, Rng, channel, f32_rows, grid, i16_rows, i32_rows, walk};
 use kymo::ui::readout::{Reading, read};
 use kymo_core::tile::{
     Level, SignalVersion, TileCache, TileKey, View, level_for, max_level, tiles_for_view,
 };
-use kymo_core::{ChannelId, SampleType};
+use kymo_core::{ChannelId, ChannelKind, SampleType};
 
 const FAST: u64 = 150_000;
 const SLOW: u64 = 40_000;
@@ -198,4 +198,44 @@ fn readings_relative_to_a_baseline() {
         Reading::Range { min: 0.5, max: 5.0 }
     );
     assert_eq!(Reading::Value(4.0).relative_to(0.0), Reading::Value(4.0));
+}
+
+/// A stim channel with a trigger mask reads its codes as they are: without the bits above
+/// the mask, and without its gain and offset.
+#[test]
+fn stim_channels_read_their_codes() {
+    let len = 60_000u64;
+    let mut stim = channel("Status", 0, 2.0, 1e6);
+    stim.kind = ChannelKind::Stim;
+    stim.trigger_mask = Some(0xffff);
+    // Code 0, 85, 170 or 255 per second, over status bits.
+    let code = |i: u64| (i / 100 % 4 * 85) as i32;
+    let raw = (0..len).map(|i| f64::from((1 << 20) | code(i))).collect();
+    let fx = Fixture::new(
+        vec![stim],
+        vec![grid(100.0, len, vec![0..len], SampleType::I32, 0..1)],
+        vec![i32_rows(vec![raw])],
+    );
+    let id = ChannelId(0);
+    // Samples, then buckets.
+    for (span, width) in [(10.0, 1000), (600.0, 500)] {
+        let v = view(0.0..span, width, &[id]);
+        let cache = fx.cache(tiles_for_view(&fx.recording, &v));
+        let time = 0.35 * span;
+        let got = read(&fx.recording, &cache, &v, id, time).unwrap();
+        let level = level_for(fx.grid_of(id), &v);
+        let sample = (time * 100.0).round() as u64;
+        let want = if level == Level::RAW {
+            Reading::Value(f64::from(code(sample)))
+        } else {
+            let bucket = level.bucket_len();
+            let first = sample / bucket * bucket;
+            let codes: Vec<i32> = (first..first + bucket).map(code).collect();
+            Reading::Range {
+                min: f64::from(*codes.iter().min().unwrap()),
+                max: f64::from(*codes.iter().max().unwrap()),
+            }
+        };
+        assert_eq!(got, want, "{span} s");
+    }
 }

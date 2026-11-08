@@ -650,10 +650,12 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     // Off: nothing to ask for.
     assert_eq!(view.dc_request(&rec), None);
     act(&mut view, Action::ToggleDc);
-    // Each visible channel, top to bottom, over the samples in view of its own grid.
+    // Each visible channel but stim ones, top to bottom, over the samples in view of its
+    // own grid.
     let expected = |view: &ViewState| -> Vec<(ChannelId, Range<u64>)> {
         view.visible_channels()
             .iter()
+            .filter(|&&c| rec.channel(c).kind != ChannelKind::Stim)
             .map(|&c| {
                 let grid = rec.grid(rec.channel(c).grid);
                 let t = view.time();
@@ -676,6 +678,11 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     let windows = view.dc_request(&rec).unwrap();
     assert_eq!(windows, expected(&view));
     assert_eq!(rec.channel(windows.last().unwrap().0).grid, GridId(1));
+    // Status is on screen, but DC removal leaves it alone.
+    let status = *view.visible_channels().last().unwrap();
+    assert_eq!(rec.channel(status).kind, ChannelKind::Stim);
+    assert!(windows.iter().all(|&(c, _)| c != status));
+    assert_eq!(windows.len(), view.visible_channels().len() - 1);
     // Off and on again: asked for afresh.
     act(&mut view, Action::ToggleDc);
     assert_eq!(view.dc_request(&rec), None);

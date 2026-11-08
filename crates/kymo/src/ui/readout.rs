@@ -71,7 +71,8 @@ pub fn read(
         key = key.parent().filter(|k| k.level <= top)?;
     };
     let item = (sample - key.sample_range().start) / key.level.bucket_len();
-    let physical = |native: f64| native * info.gain + info.offset;
+    let (gain, offset) = info.tile_scaling();
+    let physical = |native: f64| native * gain + offset;
     match native(&tile, row % CHANNEL_BLOCK, item as usize)? {
         Native::Sample(v) => Some(Reading::Value(physical(v))),
         Native::Bucket(lo, hi) => {

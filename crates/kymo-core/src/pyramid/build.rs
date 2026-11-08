@@ -321,6 +321,16 @@ impl<T: Fold> Levels<T> {
                 let Some(pairs) = pairs.as_deref_mut() else {
                     continue;
                 };
+                // The sums are of the raw values, the envelopes of the codes. The chunk
+                // stays raw for the stim scan: a masked f32 can lose bits.
+                let masked: Vec<T>;
+                let row = match recording.channel(ids[c]).trigger_mask {
+                    Some(mask) => {
+                        masked = row.iter().map(|x| x.masked(mask)).collect();
+                        &masked[..]
+                    }
+                    None => row,
+                };
                 let pairs = &mut pairs[c * TILE * 2..][..TILE * 2];
                 for run in &runs {
                     let mut i = run.start;

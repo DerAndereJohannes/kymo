@@ -38,7 +38,8 @@ use crate::tile::{Level, TILE_LEN, TileData, max_level};
 use crate::{Grid, GridId, ReadError, Recording, SampleType};
 
 const MAGIC: &[u8; 8] = b"KYMOPYR\0";
-const VERSION: u32 = 2;
+/// 3: the envelopes of channels with a trigger mask hold the masked codes.
+const VERSION: u32 = 3;
 const TRAILER_MAGIC: &[u8; 8] = b"KYMOSTIM";
 /// Bytes per stored change: sample (u64), value (i32), padding.
 const CHANGE: usize = 16;

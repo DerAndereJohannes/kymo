@@ -156,7 +156,9 @@ fn copy_rows<T: Copy>(data: &[Vec<T>], rows: &[usize], samples: Range<usize>, ou
 }
 
 /// The smallest and largest native value of `channel` over the present samples in `range`,
-/// by brute force: the reference that tiles and the pyramid are checked against.
+/// by brute force: the reference that tiles and the pyramid are checked against. For a
+/// channel with a [`trigger_mask`](crate::Channel::trigger_mask), of the masked codes (the
+/// two's-complement bits of the native integer, or of a float truncated toward zero).
 ///
 /// NaN samples are skipped. `None` if no sample in `range` is present (or all are NaN).
 ///
@@ -174,8 +176,16 @@ pub fn brute_minmax(
         SampleType::I32 => native::<i32>(recording, grid_id, channel, range.clone())?,
         SampleType::F32 => native::<f32>(recording, grid_id, channel, range.clone())?,
     };
+    let mask = recording.channel(channel).trigger_mask;
+    let code = |x: f64| match mask {
+        Some(m) if !x.is_nan() => match grid.sample_type() {
+            SampleType::I16 => f64::from(x as i16 & m as i16),
+            _ => f64::from(x as i32 & m as i32),
+        },
+        _ => x,
+    };
     let mut minmax: Option<(f64, f64)> = None;
-    for (i, x) in range.zip(values) {
+    for (i, x) in range.zip(values.into_iter().map(code)) {
         // Checked per sample against the segments, independent of `Grid::present_in`.
         if x.is_nan() || !grid.segments().iter().any(|s| s.contains(&i)) {
             continue;

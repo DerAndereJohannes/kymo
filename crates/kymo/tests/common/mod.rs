@@ -187,6 +187,7 @@ impl Fixture {
                 px_per_unit: 0.8 * height / spread,
                 baseline: (lo + hi) / 2.0,
                 color: WHITE,
+                clip: false,
             }],
             hatch: HATCH,
         }

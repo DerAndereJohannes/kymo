@@ -59,6 +59,9 @@ struct Slot {
     next: [u32; 2],
     has_next: u32,
     _pad: u32,
+    /// The y range (top, bottom) the trace is clamped to.
+    clip: [f32; 2],
+    _pad_clip: [u32; 2],
 }
 
 #[repr(C)]
@@ -369,6 +372,8 @@ impl TraceRenderer {
                 next: c.next.map_or([0; 2], |n| n.map(Native::bits)),
                 has_next: u32::from(c.next.is_some()),
                 _pad: 0,
+                clip: c.clip.unwrap_or([f32::MIN, f32::MAX]),
+                _pad_clip: [0; 2],
             }));
             let offset = params.len();
             params.extend_from_slice(bytemuck::bytes_of(&p));

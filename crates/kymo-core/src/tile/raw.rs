@@ -2,10 +2,11 @@
 
 use std::ops::Range;
 
-use super::{ChannelBlock, Level, SignalVersion, Tile, TileData, TileKey};
-use crate::{ChannelId, GridId, ReadError, Recording, Sample, SampleType, TileError};
+use super::{ChannelBlock, Level, SignalVersion, Tile, TileData, TileKey, TileSample, mask_rows};
+use crate::{ChannelId, GridId, ReadError, Recording, SampleType, TileError};
 
-/// Decodes the level-0 tile `key` from the recording: native samples, zero in gaps.
+/// Decodes the level-0 tile `key` from the recording: native samples (masked codes for
+/// channels with a trigger mask), zero in gaps.
 ///
 /// The last tile of a grid is cut at the grid's end.
 pub fn compute_raw(recording: &Recording, key: TileKey) -> Result<Tile, TileError> {
@@ -44,13 +45,15 @@ pub fn compute_raw(recording: &Recording, key: TileKey) -> Result<Tile, TileErro
     Ok(Tile::new(key, channels.len() as u32, len, data, valid))
 }
 
-fn read<T: Sample>(
+fn read<T: TileSample>(
     recording: &Recording,
     grid: GridId,
     channels: &[ChannelId],
     range: Range<u64>,
 ) -> Result<Box<[T]>, ReadError> {
-    let mut buf = vec![T::default(); channels.len() * (range.end - range.start) as usize];
+    let len = (range.end - range.start) as usize;
+    let mut buf = vec![T::default(); channels.len() * len];
     recording.read_native(grid, channels, range, T::as_samples_mut(&mut buf))?;
+    mask_rows(recording, channels, &mut buf, len);
     Ok(buf.into_boxed_slice())
 }

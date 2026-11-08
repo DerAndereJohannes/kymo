@@ -497,13 +497,19 @@ fn window_mean(
     (n > 0).then(|| sum / n as f64)
 }
 
-/// Whether every visible channel's baseline is its brute-force mean over the view.
+/// Whether every visible channel's baseline is its brute-force mean over the view (0 for
+/// stim channels).
 fn baselines_are_window_means(app: &KymoApp) -> bool {
     let viewer = app.viewer().unwrap();
     let view = viewer.view();
     let rec = &viewer.document().recording;
     view.visible_channels().iter().all(|&c| {
-        let want = window_mean(rec, c, view.time()).unwrap();
+        // DC removal leaves stim channels alone.
+        let want = if rec.channel(c).kind == kymo_core::ChannelKind::Stim {
+            0.0
+        } else {
+            window_mean(rec, c, view.time()).unwrap()
+        };
         // The brute force reads f32 values.
         (viewer.baseline(c) - want).abs() <= 1e-5 * want.abs().max(1.0)
     })
@@ -566,6 +572,63 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
     harness.step();
     assert_eq!(viewer(&harness).baseline(a1), 0.0);
     assert!(!checked(&mut harness, "View", "Remove DC"));
+}
+
+/// The numbers of the status line's reading of the Status channel, if it shows one.
+fn status_reading(status: &str) -> Option<Vec<f64>> {
+    let reading = status.rsplit_once(" Status ")?.1.strip_suffix(" Boolean")?;
+    Some(
+        reading
+            .split(" … ")
+            .map(|x| x.replace('−', "-").parse().unwrap())
+            .collect(),
+    )
+}
+
+#[test]
+fn stim_channels_read_their_codes_with_and_without_dc_removal() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let status = kymo_core::ChannelId(4);
+    assert_eq!(
+        viewer(&harness).document().recording.channel(status).name,
+        "Status"
+    );
+    let layout = viewer(&harness).layout().unwrap();
+    let rows = viewer(&harness).view().rows() as f32;
+    let row = viewer(&harness).view().row_of(status).unwrap() as f32;
+    let y = layout.traces.top() + (row + 0.5) * layout.traces.height() / rows;
+    // Readings across the window: the codes 0 to 255, without the status bits above them.
+    let readings = |harness: &mut Harness<'_, KymoApp>| {
+        (1..20)
+            .map(|k| {
+                let x = layout.traces.left() + layout.traces.width() * k as f32 / 20.0;
+                hover(harness, egui::pos2(x, y));
+                step_until(harness, "a reading", |app| {
+                    status_reading(&app.viewer().unwrap().status().left).is_some()
+                });
+                status_reading(&viewer(harness).status().left).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let raw = readings(&mut harness);
+    let numbers: Vec<f64> = raw.iter().flatten().copied().collect();
+    assert!(
+        numbers
+            .iter()
+            .all(|&x| (0.0..=255.0).contains(&x) && x.fract() == 0.0),
+        "{raw:?}"
+    );
+    assert!(numbers.iter().any(|&x| x > 0.0), "{raw:?}");
+
+    // DC removal leaves the codes as they are.
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    step_until(&mut harness, "the means", baselines_are_window_means);
+    assert_eq!(viewer(&harness).baseline(status), 0.0);
+    assert_ne!(viewer(&harness).baseline(kymo_core::ChannelId(0)), 0.0);
+    assert_eq!(readings(&mut harness), raw);
 }
 
 /// bdf+c-small with its channels relabelled to five types: A1 and A2 (EEG), "EOG L",
@@ -939,8 +1002,7 @@ fn the_gpu_budget_follows_the_settings() {
 #[test]
 fn traces_take_their_types_colours() {
     let Some(setup) = gpu_setup() else { return };
-    // The BDF Status channel holds status bits around 2^20, far off its row; a flat
-    // EEG signal labelled TRIGGER stands in for stim.
+    // TRIGGER, a flat EEG signal, is stim too, but without a trigger mask.
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     spec.channels[1].label = "EOG L".into();
     spec.channels[2].label = "ECG".into();
@@ -950,11 +1012,12 @@ fn traces_take_their_types_colours() {
     let mut harness = gpu_window(&file.0, setup);
     ready(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
-    // The rows to check, top to bottom; Status (also stim) is fifth.
+    // The rows, top to bottom; the last is Status.
     let kinds = [
         kymo_core::ChannelKind::Eeg,
         kymo_core::ChannelKind::Eog,
         kymo_core::ChannelKind::Ecg,
+        kymo_core::ChannelKind::Stim,
         kymo_core::ChannelKind::Stim,
     ];
     let colors: Vec<_> = kinds.iter().map(|&k| trace_color(k, &visuals)).collect();
@@ -962,7 +1025,7 @@ fn traces_take_their_types_colours() {
     let counts = |harness: &mut Harness<'_, KymoApp>| {
         let traces = viewer(harness).layout().unwrap().traces;
         let width = traces.width() as usize;
-        let row_height = traces.height() as usize / 5;
+        let row_height = traces.height() as usize / kinds.len();
         let image = traces_image(harness);
         (0..kinds.len())
             .map(|row| {
@@ -990,6 +1053,62 @@ fn traces_take_their_types_colours() {
     harness.run_steps(2);
     let after = counts(&mut harness);
     assert!(after[2][2] < before[2][2] / 20, "{:?}", after[2]);
+}
+
+#[test]
+fn stim_traces_stay_in_their_row() {
+    let Some(setup) = gpu_setup() else { return };
+    // Status, the last row, holds codes up to 255 under status bits around 2^20; at a stim
+    // scale of 1 per row, either would reach far beyond the row.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = gpu_window(&file.0, setup);
+    ready(&mut harness);
+    let visuals = harness.ctx.global_style().visuals.clone();
+    let grey = trace_color(kymo_core::ChannelKind::Stim, &visuals);
+    let text = visuals.text_color();
+    // Per row, the pixels in the stim colour and in the text colour; and the pixel line of
+    // the last row with the most stim-coloured pixels, from the row's top.
+    let counts = |harness: &mut Harness<'_, KymoApp>| {
+        let traces = viewer(harness).layout().unwrap().traces;
+        let rows = viewer(harness).view().rows();
+        assert_eq!(rows, 5);
+        let width = traces.width() as usize;
+        let row_height = traces.height() as usize / rows;
+        let image = traces_image(harness);
+        let counts: Vec<(usize, usize)> = (0..rows)
+            .map(|row| {
+                let pixels = &image[row * row_height * width..(row + 1) * row_height * width];
+                let count = |c| pixels.iter().filter(|p| near(p, c)).count();
+                (count(grey), count(text))
+            })
+            .collect();
+        let lines = image[4 * row_height * width..5 * row_height * width].chunks_exact(width);
+        let busiest = lines
+            .map(|line| line.iter().filter(|p| near(p, grey)).count())
+            .enumerate()
+            .max_by_key(|&(_, n)| n)
+            .unwrap()
+            .0;
+        (counts, busiest as f32 / row_height as f32)
+    };
+    let check = |(counts, busiest): &(Vec<(usize, usize)>, f32)| {
+        let (status, _) = counts[4];
+        assert!(status > 500, "{counts:?}");
+        for &(grey, text) in &counts[..4] {
+            assert!(grey < status / 50, "{counts:?}");
+            assert!(text > 200, "{counts:?}");
+        }
+        // Mostly code 0, in the middle of the row.
+        assert!(
+            (busiest - 0.5).abs() < 0.05,
+            "busiest line at {busiest} of the row"
+        );
+    };
+    check(&counts(&mut harness));
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    step_until(&mut harness, "the means", baselines_are_window_means);
+    check(&counts(&mut harness));
 }
 
 /// Whether a pixel is within a small distance of `color`.

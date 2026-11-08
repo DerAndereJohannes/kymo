@@ -28,6 +28,12 @@ struct Slot {
     next_max: u32,
     has_next: u32,
     _pad: u32,
+    // The y range (top, bottom) the trace is clamped to: the row for stim channels,
+    // everything for others.
+    clip_top: f32,
+    clip_bottom: f32,
+    _pad_clip0: u32,
+    _pad_clip1: u32,
 };
 
 // One tile draw. Items are samples (level 0) or buckets; item `i` starts at
@@ -216,6 +222,9 @@ fn vs_trace(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     if lo > hi {
         return nothing();
     }
+    // A clipped trace runs along the row's edge where it would leave the row.
+    lo = clamp(lo, slot.clip_top, slot.clip_bottom);
+    hi = clamp(hi, slot.clip_top, slot.clip_bottom);
     // Whole rows: from the row holding the highest point to the one holding the lowest.
     let top = floor(clamp(lo, -2.0, globals.size.y + 2.0));
     let bottom = floor(clamp(hi, -2.0, globals.size.y + 2.0)) + 1.0;

@@ -13,8 +13,8 @@ mod raw;
 use std::ops::Range;
 
 pub use cache::{DEFAULT_BUDGET, TileCache};
-pub(crate) use data::TileSample;
 pub use data::{Tile, TileData, TileSlice};
+pub(crate) use data::{TileSample, mask_rows};
 pub use prefetch::{Direction, prefetch, tile_bytes};
 pub use query::{Loading, Placed, Query, query};
 pub use raw::compute_raw;

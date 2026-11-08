@@ -145,7 +145,8 @@ impl Viewer {
     }
 
     /// The physical value drawn at the middle of `channel`'s row: its mean over the window
-    /// with DC removal on (the last one computed, 0 until there is one), otherwise 0.
+    /// with DC removal on (the last one computed, 0 until there is one), otherwise 0. Always
+    /// 0 for stim channels: DC removal asks for no means of them.
     pub fn baseline(&self, channel: ChannelId) -> f64 {
         if !self.view.dc_removed() {
             return 0.0;

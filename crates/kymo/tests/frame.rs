@@ -8,14 +8,14 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::{Fixture, Rng, channel, grid, i16_rows, view, walk};
+use common::{Fixture, Rng, channel, grid, i16_rows, i32_rows, view, walk};
 use eframe::egui_wgpu::wgpu;
 use kymo::render::{
     Coefficients, EDGE_TOLERANCE, Frame, Native, RenderError, Row, Scene, check_support,
 };
 use kymo::view::ViewState;
 use kymo_core::tile::{Level, TILE_LEN, TileData, query, tiles_for_view};
-use kymo_core::{ChannelId, SampleType};
+use kymo_core::{ChannelId, ChannelKind, SampleType};
 use proptest::prelude::*;
 
 fn row(center: f64, px_per_unit: f64, baseline: f64) -> Row {
@@ -26,6 +26,7 @@ fn row(center: f64, px_per_unit: f64, baseline: f64) -> Row {
         px_per_unit,
         baseline,
         color: [1.0; 4],
+        clip: false,
     }
 }
 
@@ -353,6 +354,92 @@ fn the_scene_follows_the_view() {
     assert_eq!(r.px_per_unit, 50.0);
     assert_eq!(r.baseline, 0.0);
     assert_eq!(scene.hatch, [0.25, 0.125, 0.0, 0.25]);
+}
+
+/// A stim channel with a trigger mask: its row clips the trace, and its codes are drawn as
+/// they are, whatever the channel's gain and offset. Other rows don't clip.
+#[test]
+fn stim_rows_clip_and_draw_codes() {
+    let len = 60_000u64;
+    let eeg = channel("A1", 0, 0.5, 100.0);
+    let mut stim = channel("Status", 0, 2.0, 1e6);
+    stim.kind = ChannelKind::Stim;
+    stim.trigger_mask = Some(0xffff);
+    let codes: Vec<f64> = (0..len).map(|i| ((i / 100) % 4 * 85) as f64).collect();
+    let raw: Vec<f64> = codes.iter().map(|&c| f64::from(1 << 20) + c).collect();
+    let fx = Fixture::new(
+        vec![eeg, stim],
+        vec![grid(100.0, len, vec![0..len], SampleType::I32, 0..2)],
+        vec![i32_rows(vec![vec![0.0; len as usize], raw])],
+    );
+    let state = ViewState::new(&fx.recording);
+    let scene = Scene::from_view(&state, [800, 400], [1.0; 4]);
+    assert_eq!(
+        scene.rows.iter().map(|r| r.clip).collect::<Vec<_>>(),
+        [false, true]
+    );
+    for zoom_out in [false, true] {
+        let mut state = ViewState::new(&fx.recording);
+        if zoom_out {
+            // Ten minutes: buckets from the pyramid instead of samples.
+            for _ in 0..10 {
+                state.apply(kymo::action::Action::ZoomOut, None);
+            }
+        }
+        let scene = Scene::from_view(&state, [800, 400], [1.0; 4]);
+        let cache = exact_cache(&fx, &scene);
+        let frame = Frame::new(
+            &fx.recording,
+            &scene,
+            &query(&fx.recording, &view(&scene), &cache),
+        );
+        let (mut seen_eeg, mut seen_stim) = (false, false);
+        assert!(
+            frame
+                .draws
+                .iter()
+                .all(|d| (d.tile.key().level > Level::RAW) == zoom_out)
+        );
+        for draw in &frame.draws {
+            for c in &draw.channels {
+                let row = &scene.rows[c.row as usize];
+                if row.channel == ChannelId(1) {
+                    seen_stim = true;
+                    let half = row.height / 2.0;
+                    let [top, bottom] = c.clip.unwrap();
+                    assert!((f64::from(top) - (row.center - half)).abs() < 1e-3);
+                    assert!(f64::from(bottom) < row.center + half);
+                    assert!(f64::from(bottom) > row.center + half - 0.01);
+                    assert_eq!(
+                        c.coefficients,
+                        Coefficients::new(SampleType::I32, 1.0, 0.0, row)
+                    );
+                    // Code 0 on the middle of the row; code 1 at its top, as ±1 spans it.
+                    let y = |code| f64::from(c.coefficients.y(Native::Int(code)).unwrap());
+                    assert!((y(0) - row.center).abs() < 1e-3);
+                    assert!((y(1) - (row.center - half)).abs() < 1e-3);
+                    // The tile holds codes, not raw values.
+                    let TileData::I32(values) = draw.tile.data() else {
+                        panic!("int32 tiles");
+                    };
+                    let per = values.len() / draw.tile.channels();
+                    let mine = &values[c.row as usize * per..][..per];
+                    assert!(
+                        mine.iter().all(|v| [0, 85, 170, 255].contains(v)),
+                        "{zoom_out}"
+                    );
+                } else {
+                    seen_eeg = true;
+                    assert_eq!(c.clip, None);
+                    assert_eq!(
+                        c.coefficients,
+                        Coefficients::new(SampleType::I32, 0.5, 100.0, row)
+                    );
+                }
+            }
+        }
+        assert!(seen_eeg && seen_stim, "{zoom_out}");
+    }
 }
 
 #[test]

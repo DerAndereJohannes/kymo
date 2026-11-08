@@ -459,3 +459,103 @@ fn broken_stim_trailer_is_rebuilt() {
         );
     }
 }
+
+/// A BDF Status channel's tiles hold its trigger codes, not its raw values with the
+/// amplifier's status bits: raw tiles, every level of the pyramid, and a reopened sidecar.
+/// Its block sums, and so its window means, stay those of the raw values.
+#[test]
+fn stim_tiles_hold_the_codes() {
+    use kymo_core::tile::{CHANNEL_BLOCK, ChannelBlock, SignalVersion, TILE_LEN, TileKey};
+    use kymo_core::tile::{Tile, compute_raw};
+
+    let spec = Spec::preset("bdf+c-small").unwrap();
+    let file = TempFile::written(&spec);
+    let rec = Recording::new(kymo_core::open(file.path()).unwrap())
+        .unwrap()
+        .0;
+    let c = spec.channels.iter().position(|ch| ch.trigger).unwrap();
+    let id = ChannelId(c as u32);
+    let channel = rec.channel(id);
+    assert_eq!(channel.tile_scaling(), (1.0, 0.0));
+    let eeg = rec.channel(ChannelId(0));
+    assert_eq!(eeg.kind, ChannelKind::Eeg);
+    assert_eq!(eeg.tile_scaling(), (eeg.gain, eeg.offset));
+
+    let grid = rec.grid(channel.grid);
+    let row = grid.channels().iter().position(|&x| x == id).unwrap();
+    let block = ChannelBlock {
+        grid: channel.grid,
+        index: (row / CHANNEL_BLOCK) as u32,
+    };
+    let r = row % CHANNEL_BLOCK;
+    let codes: Vec<i32> = (0..grid.len())
+        .map(|i| spec.trigger_code(c, i).unwrap())
+        .collect();
+    assert!(codes.iter().any(|&x| x > 0) && codes.iter().all(|&x| (0..=255).contains(&x)));
+
+    let values = |tile: &Tile| -> Vec<i32> {
+        let TileData::I32(d) = tile.data() else {
+            panic!("BDF tiles are int32");
+        };
+        let per = d.len() / tile.channels();
+        d[r * per..(r + 1) * per].to_vec()
+    };
+    let key = |level: Level, time: u64| TileKey {
+        version: SignalVersion::RAW,
+        level,
+        block,
+        time,
+    };
+    for time in 0..grid.len().div_ceil(TILE_LEN) {
+        let tile = compute_raw(&rec, key(Level::RAW, time)).unwrap();
+        let start = (time * TILE_LEN) as usize;
+        assert_eq!(
+            values(&tile),
+            codes[start..start + tile.len()],
+            "raw tile {time}"
+        );
+    }
+
+    let check = |pyramid: &Pyramid| {
+        let mut level = Level::RAW;
+        while let Some(up) = level.up().filter(|_| level < pyramid.top()) {
+            level = up;
+            let bucket = level.bucket_len();
+            let buckets = grid.len().div_ceil(bucket);
+            for time in 0..buckets.div_ceil(TILE_LEN) {
+                let tile = pyramid.tile(key(level, time)).unwrap();
+                let pairs = values(&tile);
+                for (j, pair) in pairs.as_chunks::<2>().0.iter().enumerate() {
+                    let k = time * TILE_LEN + j as u64;
+                    let s =
+                        &codes[(k * bucket) as usize..((k + 1) * bucket).min(grid.len()) as usize];
+                    let want = [*s.iter().min().unwrap(), *s.iter().max().unwrap()];
+                    assert_eq!(*pair, want, "level {level:?}, bucket {k}");
+                }
+            }
+        }
+    };
+    let pyramid = Pyramid::build(&rec, channel.grid).unwrap();
+    assert!(pyramid.top() >= Level::new(1).unwrap());
+    check(&pyramid);
+    let dir = TempDir::new();
+    Sidecar::open_or_create(dir.path(), file.path(), &rec)
+        .unwrap()
+        .build(&rec)
+        .unwrap();
+    let reopened = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+    assert!(reopened.is_complete());
+    check(&reopened.pyramid(channel.grid).unwrap());
+
+    let len = grid.len();
+    let mut physical = vec![0f32; len as usize];
+    rec.read_physical(channel.grid, &[id], 0..len, &mut physical)
+        .unwrap();
+    let want = physical.iter().map(|&x| f64::from(x)).sum::<f64>() / len as f64;
+    let mean = pyramid.window_mean(&rec, id, 0..len).unwrap().unwrap();
+    assert!(want > 1e6, "raw values with status bits: {want}");
+    assert!(
+        (mean - want).abs() <= want.abs() * 1e-6,
+        "mean {mean}, want {want}"
+    );
+}

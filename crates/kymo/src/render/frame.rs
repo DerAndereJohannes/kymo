@@ -7,13 +7,17 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use kymo_core::tile::{ChannelBlock, Level, Placed, Query, Tile, TileData};
-use kymo_core::{ChannelId, Grid, Recording, SampleType};
+use kymo_core::{ChannelId, ChannelKind, Grid, Recording, SampleType};
 
 use crate::view::ViewState;
 
 /// Pixels by which a tile's columns reach past its data on either side, so that the
 /// shader's f32 positions never put an item in a column the f64 placement left out.
 pub const EDGE_TOLERANCE: f32 = 1e-3;
+
+/// Pixels a clipped row's bottom edge is moved up, so that a trace along it stays in the
+/// row's last pixel row instead of reaching into the next row's first.
+const CLIP_INSET: f64 = 1e-3;
 
 /// One channel's row in the trace area. Positions are physical pixels from the top.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +34,9 @@ pub struct Row {
     pub baseline: f64,
     /// Premultiplied RGBA, written as given.
     pub color: [f32; 4],
+    /// Whether the trace stays inside the row, drawn along its edge where it would leave
+    /// it (stim channels, whose codes reach far beyond one row at their scale).
+    pub clip: bool,
 }
 
 /// What the trace area shows, in its own pixels.
@@ -68,6 +75,7 @@ impl Scene {
                     },
                     baseline: 0.0,
                     color,
+                    clip: view.kind_of(channel) == ChannelKind::Stim,
                 }
             })
             .collect();
@@ -167,6 +175,8 @@ pub struct ChannelDraw {
     pub coefficients: Coefficients,
     /// Premultiplied RGBA.
     pub color: [f32; 4],
+    /// The y range (top, bottom) the trace is clamped to, if its row clips it.
+    pub clip: Option<[f32; 2]>,
     /// The first item of the next tile, when [`TileDraw::continues`]: its sample twice at
     /// level 0, or its bucket's minimum and maximum. `None` in a gap.
     pub next: Option<[Native; 2]>,
@@ -343,15 +353,17 @@ fn tile_draw(
         .enumerate()
         .filter_map(|(r, id)| {
             let row = rows.get(id)?;
-            let channel = recording.channel(*id);
+            let (gain, offset) = recording.channel(*id).tile_scaling();
             Some(ChannelDraw {
                 row: r as u32,
-                coefficients: Coefficients::new(
-                    grid.sample_type(),
-                    channel.gain,
-                    channel.offset,
-                    row,
-                ),
+                coefficients: Coefficients::new(grid.sample_type(), gain, offset, row),
+                clip: row.clip.then(|| {
+                    let half = row.height / 2.0;
+                    [
+                        (row.center - half) as f32,
+                        (row.center + half - CLIP_INSET) as f32,
+                    ]
+                }),
                 color: row.color,
                 next: next.and_then(|n| first_item(n, r)),
             })
