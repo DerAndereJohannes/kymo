@@ -574,9 +574,10 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
     assert!(!checked(&mut harness, "View", "Remove DC"));
 }
 
-/// The numbers of the status line's reading of the Status channel, if it shows one.
+/// The numbers of the status line's reading of the Status channel, if it shows one. Codes
+/// have no unit (the file's is "Boolean").
 fn status_reading(status: &str) -> Option<Vec<f64>> {
-    let reading = status.rsplit_once(" Status ")?.1.strip_suffix(" Boolean")?;
+    let reading = status.rsplit_once(" Status ")?.1;
     Some(
         reading
             .split(" … ")
@@ -728,6 +729,69 @@ fn the_channel_list_shows_hides_and_marks_bad() {
     click_in_list(&mut harness, Role::CheckBox, "Show A1");
     click_in_list(&mut harness, Role::Label, "A1");
     assert_eq!(shown(&harness), [1, 2, 3]);
+}
+
+/// The left edges of the sidebar list's labels `label`; panics unless there are some and
+/// they are all the same.
+fn column_left(harness: &Harness<'_, KymoApp>, role: egui::accesskit::Role, label: &str) -> f32 {
+    let lefts: Vec<f32> = harness
+        .query_all_by_role_and_label(role, label)
+        .map(|n| n.rect().left())
+        .collect();
+    assert!(!lefts.is_empty(), "no {label}");
+    assert!(lefts.iter().all(|&x| x == lefts[0]), "{label}: {lefts:?}");
+    lefts[0]
+}
+
+#[test]
+fn the_channel_list_keeps_its_columns_while_scrolling() {
+    use egui::accesskit::Role;
+    // 60 channels: only the last EEG channel has a long name, and Status comes after it.
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    let status = spec.channels.pop().unwrap();
+    for k in 0..55 {
+        let label = if k == 54 {
+            "LONGCHANNELNAME1".to_owned()
+        } else {
+            format!("E{k}")
+        };
+        spec.channels
+            .push(kymo_testgen::ChannelSpec::eeg(&label, 512, spec.format));
+    }
+    spec.channels.push(status);
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    assert!(harness.query_by_label("LONGCHANNELNAME1").is_none());
+    let bad = harness.get_by_label("A1 bad").rect().left();
+    let eeg = column_left(&harness, Role::Label, "EEG");
+    let uv = column_left(&harness, Role::Label, "uV");
+
+    // Scrolled to the end, where the long name and Status are.
+    let a1 = harness
+        .get_by_role_and_label(Role::Label, "A1")
+        .rect()
+        .center();
+    harness.hover_at(a1);
+    for _ in 0..10 {
+        scroll(&mut harness, egui::vec2(0.0, -2000.0), Modifiers::NONE);
+    }
+    harness.run_steps(2);
+    let long = harness.get_by_label("LONGCHANNELNAME1").rect();
+    assert_eq!(
+        harness.get_by_label("LONGCHANNELNAME1 bad").rect().left(),
+        bad
+    );
+    assert_eq!(harness.get_by_label("Status bad").rect().left(), bad);
+    assert!(
+        long.right() < bad,
+        "{long:?} reaches the bad toggles at {bad}"
+    );
+    assert_eq!(column_left(&harness, Role::Label, "EEG"), eeg);
+    assert_eq!(column_left(&harness, Role::Label, "uV"), uv);
+    // Codes have no unit, whatever the file says.
+    assert!(harness.query_by_label("Boolean").is_none());
 }
 
 #[test]

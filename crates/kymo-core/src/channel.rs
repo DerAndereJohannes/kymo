@@ -66,6 +66,17 @@ impl Channel {
         }
     }
 
+    /// The unit of the values shown from this channel's tiles: [`unit`](Self::unit)'s
+    /// label, or none for a channel with a [`trigger_mask`](Self::trigger_mask), whose
+    /// tiles hold codes (BioSemi files call the unit of their Status channel "Boolean").
+    pub fn tile_unit(&self) -> &str {
+        if self.trigger_mask.is_some() {
+            ""
+        } else {
+            &self.unit.label
+        }
+    }
+
     /// A channel of kind `Misc` with unit gain, zero offset and empty metadata.
     pub fn new(name: impl Into<String>, grid: GridId) -> Self {
         Channel {

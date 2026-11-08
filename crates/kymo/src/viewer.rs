@@ -207,7 +207,7 @@ impl Viewer {
                     let info = rec.channel(id);
                     let view = self.view.tile_view(self.width_px.max(1));
                     let reading = readout::read(rec, service.cache(), &view, id, time).map(|r| {
-                        status::reading_text(r.relative_to(self.baseline(id)), &info.unit.label)
+                        status::reading_text(r.relative_to(self.baseline(id)), info.tile_unit())
                     });
                     (info.name.as_str(), reading)
                 });

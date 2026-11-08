@@ -1,8 +1,8 @@
 //! The sidebar: the file's header and its channels.
 
 use eframe::egui::{
-    self, Align, Button, Checkbox, CursorIcon, Label, Layout, Response, RichText, ScrollArea,
-    Sense, Ui,
+    self, Align, Button, Checkbox, Color32, CursorIcon, FontId, Id, Label, Layout, Response,
+    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
 };
 use kymo_core::{ChannelId, ChannelKind};
 
@@ -119,75 +119,157 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
         });
 }
 
-/// All channels, drawing only the rows in view. Per channel: whether it is shown, its name
-/// (a click scrolls the traces to it), whether it is bad, its type, unit and rate.
+/// Widths of the channel list's text columns, fitting every channel's entry, so they stay
+/// put while the list scrolls (only the rows in view are drawn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Columns {
+    name: f32,
+    kind: f32,
+    unit: f32,
+    rate: f32,
+}
+
+/// Column widths with the font and scale they were measured for.
+#[derive(Clone, Debug, PartialEq)]
+struct Measured {
+    font: FontId,
+    pixels_per_point: f32,
+    columns: Columns,
+}
+
+impl Columns {
+    /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
+    /// font and scale.
+    fn of(ui: &Ui, document: &Document) -> Columns {
+        let font = TextStyle::Body.resolve(ui.style());
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        let rec = &document.recording;
+        let key = Id::unique(("kymo channel columns", &document.path, rec.channels().len()));
+        if let Some(m) = ui.data(|d| d.get_temp::<Measured>(key))
+            && m.font == font
+            && m.pixels_per_point == pixels_per_point
+        {
+            return m.columns;
+        }
+        let widest = |texts: &mut dyn Iterator<Item = String>| {
+            ui.fonts_mut(|f| {
+                texts
+                    .map(|t| {
+                        f.layout_no_wrap(t, font.clone(), Color32::PLACEHOLDER)
+                            .size()
+                            .x
+                    })
+                    .fold(0.0, f32::max)
+            })
+        };
+        let channels = rec.channels();
+        let columns = Columns {
+            name: widest(&mut channels.iter().map(|c| c.name.clone())),
+            kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
+            unit: widest(&mut channels.iter().map(|c| c.tile_unit().to_owned())),
+            rate: widest(&mut channels.iter().map(|c| rate_text(rec.grid(c.grid).rate()))),
+        };
+        ui.data_mut(|d| {
+            d.insert_temp(
+                key,
+                Measured {
+                    font,
+                    pixels_per_point,
+                    columns,
+                },
+            )
+        });
+        columns
+    }
+}
+
+fn rate_text(rate: f64) -> String {
+    format!("{rate} Hz")
+}
+
+/// All channels, drawing only the rows in view, in columns as wide as the widest entry of
+/// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
+/// it), whether it is bad, its type, unit and rate.
 fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
     let rec = &document.recording;
+    let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
+    let gap = 8.0;
     ScrollArea::vertical().auto_shrink(false).show_rows(
         ui,
         row_height,
         rec.channels().len(),
         |ui, rows| {
-            egui::Grid::new("channels")
-                .num_columns(6)
-                .striped(true)
-                .min_row_height(row_height)
-                // The checkbox and bad columns only as wide as their widgets.
-                .min_col_width(0.0)
-                .spacing([8.0, ui.spacing().item_spacing.y])
-                .show(ui, |ui| {
-                    // Every column at its full width; a narrow panel clips the right ones.
-                    let cell = |ui: &mut Ui, text: RichText| {
-                        ui.add(Label::new(text).extend());
-                    };
-                    for i in rows {
-                        let id = ChannelId(i as u32);
-                        let channel = rec.channel(id);
-                        let name = &channel.name;
-                        let mut shown = view.is_shown(id);
-                        let response = ui.add(Checkbox::without_text(&mut shown));
-                        accessible_label(ui, &response, format!("Show {name}"));
-                        if response.changed() {
-                            view.set_shown(id, shown);
-                        }
+            for i in rows {
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
+                if i % 2 == 1 {
+                    let stripe = rect.expand2(vec2(0.0, ui.spacing().item_spacing.y / 2.0));
+                    ui.painter()
+                        .rect_filled(stripe, 0.0, ui.visuals().faint_bg_color);
+                }
+                // A narrow panel clips the columns on the right.
+                let mut row = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                row.spacing_mut().item_spacing.x = gap;
+                let ui = &mut row;
+                // A cell of exactly `width`, the label at its left.
+                let cell = |ui: &mut Ui, width: f32, label: Label| {
+                    let (_, rect) = ui.allocate_space(vec2(width, row_height));
+                    // A child that leaves the row's cursor after the whole cell.
+                    let builder = UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::left_to_right(Align::Center));
+                    ui.new_child(builder).add(label)
+                };
 
-                        let bad = view.is_bad(id);
-                        let color = if bad {
-                            bad_color(ui.visuals())
-                        } else if !shown {
-                            ui.visuals().weak_text_color()
-                        } else {
-                            trace_color(channel.kind, ui.visuals())
-                        };
-                        let response = ui.add(
-                            Label::new(RichText::new(name).color(color))
-                                .sense(Sense::click())
-                                .extend(),
-                        );
-                        if shown {
-                            let response = response.on_hover_cursor(CursorIcon::PointingHand);
-                            if response.clicked() {
-                                view.scroll_to(id);
-                            }
-                        }
+                let id = ChannelId(i as u32);
+                let channel = rec.channel(id);
+                let name = &channel.name;
+                let mut shown = view.is_shown(id);
+                let response = ui.add(Checkbox::without_text(&mut shown));
+                accessible_label(ui, &response, format!("Show {name}"));
+                if response.changed() {
+                    view.set_shown(id, shown);
+                }
 
-                        let response = ui.add(Button::selectable(bad, {
-                            let text = RichText::new("bad").small();
-                            if bad { text } else { text.weak() }
-                        }));
-                        accessible_label(ui, &response, format!("{name} bad"));
-                        if response.clicked() {
-                            view.toggle_bad(id);
-                        }
-
-                        let rate = rec.grid(channel.grid).rate();
-                        cell(ui, RichText::new(kind_name(channel.kind)).weak());
-                        cell(ui, RichText::new(&channel.unit.label).weak());
-                        cell(ui, RichText::new(format!("{rate} Hz")).weak());
-                        ui.end_row();
+                let bad = view.is_bad(id);
+                let color = if bad {
+                    bad_color(ui.visuals())
+                } else if !shown {
+                    ui.visuals().weak_text_color()
+                } else {
+                    trace_color(channel.kind, ui.visuals())
+                };
+                let label = Label::new(RichText::new(name).color(color))
+                    .sense(Sense::click())
+                    .extend();
+                let response = cell(ui, columns.name, label);
+                if shown {
+                    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+                    if response.clicked() {
+                        view.scroll_to(id);
                     }
-                });
+                }
+
+                let response = ui.add(Button::selectable(bad, {
+                    let text = RichText::new("bad").small();
+                    if bad { text } else { text.weak() }
+                }));
+                accessible_label(ui, &response, format!("{name} bad"));
+                if response.clicked() {
+                    view.toggle_bad(id);
+                }
+
+                let weak = |text: String| Label::new(RichText::new(text).weak()).extend();
+                cell(ui, columns.kind, weak(kind_name(channel.kind).to_owned()));
+                cell(ui, columns.unit, weak(channel.tile_unit().to_owned()));
+                let rate = rec.grid(channel.grid).rate();
+                cell(ui, columns.rate, weak(rate_text(rate)));
+            }
         },
     );
 }
