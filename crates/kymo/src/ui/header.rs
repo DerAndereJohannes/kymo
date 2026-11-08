@@ -189,7 +189,7 @@ fn rate_text(rate: f64) -> String {
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
 /// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
-/// it), whether it is bad, its type, unit and rate.
+/// it), whether it is bad, its type, unit and rate (right-aligned).
 fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
@@ -216,15 +216,15 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
                 );
                 row.spacing_mut().item_spacing.x = gap;
                 let ui = &mut row;
-                // A cell of exactly `width`, the label at its left.
-                let cell = |ui: &mut Ui, width: f32, label: Label| {
+                // A cell of exactly `width`, the label at its left, or at its right with
+                // `Layout::right_to_left`.
+                let cell = |ui: &mut Ui, width: f32, layout: Layout, label: Label| {
                     let (_, rect) = ui.allocate_space(vec2(width, row_height));
                     // A child that leaves the row's cursor after the whole cell.
-                    let builder = UiBuilder::new()
-                        .max_rect(rect)
-                        .layout(Layout::left_to_right(Align::Center));
+                    let builder = UiBuilder::new().max_rect(rect).layout(layout);
                     ui.new_child(builder).add(label)
                 };
+                let left = Layout::left_to_right(Align::Center);
 
                 let id = ChannelId(i as u32);
                 let channel = rec.channel(id);
@@ -247,7 +247,7 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
                 let label = Label::new(RichText::new(name).color(color))
                     .sense(Sense::click())
                     .extend();
-                let response = cell(ui, columns.name, label);
+                let response = cell(ui, columns.name, left, label);
                 if shown {
                     let response = response.on_hover_cursor(CursorIcon::PointingHand);
                     if response.clicked() {
@@ -265,10 +265,16 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState) {
                 }
 
                 let weak = |text: String| Label::new(RichText::new(text).weak()).extend();
-                cell(ui, columns.kind, weak(kind_name(channel.kind).to_owned()));
-                cell(ui, columns.unit, weak(channel.tile_unit().to_owned()));
+                cell(
+                    ui,
+                    columns.kind,
+                    left,
+                    weak(kind_name(channel.kind).to_owned()),
+                );
+                cell(ui, columns.unit, left, weak(channel.tile_unit().to_owned()));
                 let rate = rec.grid(channel.grid).rate();
-                cell(ui, columns.rate, weak(rate_text(rate)));
+                let right = Layout::right_to_left(Align::Center);
+                cell(ui, columns.rate, right, weak(rate_text(rate)));
             }
         },
     );

@@ -53,13 +53,12 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Gain and offset that turn the values in this channel's tiles into the values shown.
-    /// Tiles hold native values, so these are [`gain`](Self::gain) and
-    /// [`offset`](Self::offset), except for a channel with a
-    /// [`trigger_mask`](Self::trigger_mask): its tiles hold the masked codes, shown as they
-    /// are (1 and 0), as MNE shows BDF stim channels.
+    /// Gain and offset that turn the values in this channel's tiles into the values shown:
+    /// [`gain`](Self::gain) and [`offset`](Self::offset), except for stim channels, whose
+    /// tiles hold codes, shown as they are (1 and 0), as MNE shows stim channels. Those are
+    /// the digital values, masked for a channel with a [`trigger_mask`](Self::trigger_mask).
     pub fn tile_scaling(&self) -> (f64, f64) {
-        if self.trigger_mask.is_some() {
+        if self.kind == ChannelKind::Stim {
             (1.0, 0.0)
         } else {
             (self.gain, self.offset)
@@ -67,10 +66,10 @@ impl Channel {
     }
 
     /// The unit of the values shown from this channel's tiles: [`unit`](Self::unit)'s
-    /// label, or none for a channel with a [`trigger_mask`](Self::trigger_mask), whose
-    /// tiles hold codes (BioSemi files call the unit of their Status channel "Boolean").
+    /// label, or none for stim channels, whose tiles hold codes (BioSemi files call the unit
+    /// of their Status channel "Boolean").
     pub fn tile_unit(&self) -> &str {
-        if self.trigger_mask.is_some() {
+        if self.kind == ChannelKind::Stim {
             ""
         } else {
             &self.unit.label

@@ -794,6 +794,34 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
+/// Rates of different lengths ("64 Hz", "256 Hz") end at the same edge; an EDF stim channel
+/// shows no unit either.
+#[test]
+fn the_channel_list_right_aligns_rates() {
+    use egui::accesskit::Role;
+    let file = TempFile::preset("edf+d-mixed");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    let rights: Vec<(String, f32)> = ["64 Hz", "256 Hz", "512 Hz"]
+        .iter()
+        .flat_map(|rate| {
+            harness
+                .query_all_by_role_and_label(Role::Label, rate)
+                .map(|n| (rate.to_string(), n.rect().right()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(rights.len(), 7, "{rights:?}");
+    assert!(rights.iter().all(|r| r.1 == rights[0].1), "{rights:?}");
+    let lefts: Vec<f32> = ["64 Hz", "256 Hz"]
+        .iter()
+        .map(|rate| harness.get_all_by_label(rate).next().unwrap().rect().left())
+        .collect();
+    assert!(lefts[0] > lefts[1], "{lefts:?}");
+    assert!(harness.query_by_label("TRIGGER").is_some());
+    assert!(harness.query_by_label("Boolean").is_none());
+}
+
 #[test]
 fn the_sidebar_hides_and_shows() {
     let file = TempFile::preset("bdf+c-small");

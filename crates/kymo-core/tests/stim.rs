@@ -559,3 +559,67 @@ fn stim_tiles_hold_the_codes() {
         "mean {mean}, want {want}"
     );
 }
+
+/// An EDF stim channel shows its digital values as codes, with no unit, as MNE does,
+/// whatever its physical range: its tiles hold the codes and draw at gain 1 and offset 0.
+#[test]
+fn edf_stim_channels_show_their_digital_codes() {
+    use kymo_core::tile::compute_raw;
+    use kymo_core::tile::{CHANNEL_BLOCK, ChannelBlock, SignalVersion, TILE_LEN, TileKey};
+
+    let mut spec = Spec::preset("edf+d-mixed").unwrap();
+    // Without gaps, sample indices in the grid are the spec's.
+    spec.gaps.clear();
+    let c = spec.channels.iter().position(|ch| ch.trigger).unwrap();
+    let trigger = &mut spec.channels[c];
+    trigger.physical_min = 2.0 * f64::from(trigger.digital_min) + 100.0;
+    trigger.physical_max = 2.0 * f64::from(trigger.digital_max) + 100.0;
+    let file = TempFile::written(&spec);
+    let rec = Recording::new(kymo_core::open(file.path()).unwrap())
+        .unwrap()
+        .0;
+    let id = ChannelId(c as u32);
+    let channel = rec.channel(id);
+    assert_eq!(channel.kind, ChannelKind::Stim);
+    assert_eq!(channel.trigger_mask, None);
+    assert!((channel.gain - 2.0).abs() < 1e-9 && (channel.offset - 100.0).abs() < 1e-6);
+    assert_eq!(channel.tile_scaling(), (1.0, 0.0));
+    assert_eq!(channel.tile_unit(), "");
+    assert_eq!(channel.unit.label, "Boolean");
+    let eeg = rec.channel(ChannelId(0));
+    assert_eq!(eeg.kind, ChannelKind::Eeg);
+    assert_eq!(eeg.tile_scaling(), (eeg.gain, eeg.offset));
+    assert_eq!(eeg.tile_unit(), eeg.unit.label);
+    assert!(!eeg.tile_unit().is_empty());
+
+    let grid = rec.grid(channel.grid);
+    let row = grid.channels().iter().position(|&x| x == id).unwrap();
+    let block = ChannelBlock {
+        grid: channel.grid,
+        index: (row / CHANNEL_BLOCK) as u32,
+    };
+    let r = row % CHANNEL_BLOCK;
+    let (gain, offset) = channel.tile_scaling();
+    let mut checked = 0;
+    for time in 0..grid.len().div_ceil(TILE_LEN) {
+        let key = TileKey {
+            version: SignalVersion::RAW,
+            level: Level::RAW,
+            block,
+            time,
+        };
+        let tile = compute_raw(&rec, key).unwrap();
+        let TileData::I16(d) = tile.data() else {
+            panic!("EDF tiles are int16");
+        };
+        let per = d.len() / tile.channels();
+        for (j, &x) in d[r * per..r * per + tile.len()].iter().enumerate() {
+            let i = time * TILE_LEN + j as u64;
+            if let Some(code) = spec.trigger_code(c, i) {
+                assert_eq!(f64::from(x) * gain + offset, f64::from(code), "sample {i}");
+                checked += usize::from(code != 0);
+            }
+        }
+    }
+    assert!(checked > 0);
+}
