@@ -45,6 +45,15 @@ impl TempFile {
     }
 }
 
+/// A preset without its trigger channel, so only the file's annotations are shown.
+fn without_triggers(name: &str) -> TempFile {
+    let mut spec = kymo_testgen::Spec::preset(name).unwrap();
+    spec.channels.retain(|c| !c.trigger);
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, &file.0).unwrap();
+    file
+}
+
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
@@ -104,6 +113,12 @@ fn step_until(harness: &mut Harness<'_, KymoApp>, what: &str, done: impl Fn(&Kym
         std::thread::sleep(Duration::from_millis(5));
     }
     harness.step();
+}
+
+/// Whether the status line reads a value in uV; the annotations under the pointer may
+/// follow it.
+fn has_reading(status: &str) -> bool {
+    status.split(" · ").any(|part| part.ends_with(" uV"))
 }
 
 /// Opens the recording and waits for the pyramid build and every tile of the view.
@@ -315,10 +330,15 @@ fn hovering_reads_the_value_under_the_pointer() {
     hover(&mut harness, egui::pos2(layout.traces.center().x, y));
     // The tiles may still be arriving; the text settles once they are cached.
     step_until(&mut harness, "a reading", |app| {
-        app.viewer().unwrap().status().left.ends_with(" uV")
+        has_reading(&app.viewer().unwrap().status().left)
     });
     let left = viewer(&harness).status().left.clone();
     assert!(left.starts_with("0:10.000 · A1 "), "{left}");
+    // The trigger that starts at 10 s (Status, channel 4, at 512 Hz).
+    let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    let code = spec.trigger_code(4, 5120).unwrap();
+    assert_ne!(spec.trigger_code(4, 5119), Some(code));
+    assert!(left.ends_with(&format!(" uV · {code}")), "{left}");
     harness.get_by_label(&left);
 
     // Off the traces, the time goes away.
@@ -545,7 +565,7 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
     );
     hover(&mut harness, a1_row);
     step_until(&mut harness, "a reading", |app| {
-        app.viewer().unwrap().status().left.ends_with(" uV")
+        has_reading(&app.viewer().unwrap().status().left)
     });
     let raw = reading_numbers(&viewer(&harness).status().left);
     assert!(raw.iter().all(|&x| x < -20_000.0), "{raw:?}");
@@ -834,7 +854,7 @@ fn the_legend_shows_and_hides_annotations() {
     // In the first 20 s: "event 0" (an event, colour 0), "sleep stage N2" (2.5 s, colour 1),
     // and "eyes closed" and "Elektrodenprüfung µV" (events at 15 s, colours 2 and 3; one
     // label, as the second would overlap the first).
-    let file = TempFile::preset("edf+d-mixed");
+    let file = without_triggers("edf+d-mixed");
     let mut harness = window(&file.0);
     ready(&mut harness);
     // 20 "event k", 7 "stim k", and three more.
@@ -918,7 +938,7 @@ fn the_legend_shows_and_hides_annotations() {
 fn the_status_line_names_the_annotations_under_the_pointer() {
     // "sleep stage N2" from 7.625 s to 10.125 s; "eyes closed" and "Elektrodenprüfung µV",
     // events at 15 s.
-    let file = TempFile::preset("edf+d-mixed");
+    let file = without_triggers("edf+d-mixed");
     let mut harness = window(&file.0);
     ready(&mut harness);
     let traces = viewer(&harness).layout().unwrap().traces;
@@ -965,11 +985,12 @@ fn the_status_line_names_the_annotations_under_the_pointer() {
     assert_eq!(status(&harness), "");
 }
 
-/// Without annotations there is no legend.
+/// Without annotations or stim channels there is no legend.
 #[test]
 fn recordings_without_annotations_have_no_legend() {
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     spec.annotations.clear();
+    spec.channels.retain(|c| !c.trigger);
     let file = TempFile::new(spec.format.extension());
     kymo_testgen::write(&spec, &file.0).unwrap();
     let mut harness = window(&file.0);
@@ -984,6 +1005,218 @@ fn recordings_without_annotations_have_no_legend() {
         viewer(&harness).marks(),
         &kymo::annotations::Marks::default()
     );
+}
+
+/// The stim events of `spec`'s Status channel (channel 4, 512 Hz), brute force from the
+/// codes it was written with: onsets and codes, in time order, where `event(before, now)`
+/// says whether a change is one.
+fn expected_events(
+    spec: &kymo_testgen::Spec,
+    event: fn(i32, i32) -> bool,
+    initial: bool,
+) -> Vec<(f64, String)> {
+    let mut events = Vec::new();
+    let mut before = None;
+    for i in 0..60 * 512 {
+        let code = spec.trigger_code(4, i).unwrap();
+        let is_event = match before {
+            None => initial && code != 0,
+            Some(b) => b != code && code != 0 && event(b, code),
+        };
+        if is_event {
+            events.push((i as f64 / 512.0, code.to_string()));
+        }
+        before = Some(code);
+    }
+    events
+}
+
+/// The viewer's stim events, onsets and codes; each must belong to Status alone and last
+/// no time.
+fn stim_events(harness: &Harness<'_, KymoApp>) -> Vec<(f64, String)> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::Stim)
+        .map(|a| {
+            assert_eq!(a.data.channels, [kymo_core::ChannelId(4)]);
+            assert_eq!(a.data.duration, 0.0);
+            (a.data.onset, a.data.description.clone())
+        })
+        .collect()
+}
+
+fn assert_events(got: &[(f64, String)], want: &[(f64, String)]) {
+    assert_eq!(got.len(), want.len(), "{got:?}\n{want:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (g.0 - w.0).abs() < 1e-9 && g.1 == w.1,
+            "{g:?} instead of {w:?}"
+        );
+    }
+}
+
+fn file_annotations(harness: &Harness<'_, KymoApp>) -> Vec<kymo_core::Annotation> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin == kymo_core::Origin::File)
+        .cloned()
+        .collect()
+}
+
+/// Opens View → Stim Events.
+fn open_events_menu(harness: &mut Harness<'_, KymoApp>) {
+    harness.get_by_label("View").click();
+    harness.run_steps(2);
+    harness.get_by_label("Stim Events").click();
+    harness.run_steps(2);
+}
+
+/// Whether `item` in View → Stim Events is enabled and checked; leaves the menus closed.
+fn event_item(harness: &mut Harness<'_, KymoApp>, item: &str) -> (bool, bool) {
+    open_events_menu(harness);
+    let node = harness.get_by_label(item);
+    let enabled = !node.accesskit_node().is_disabled();
+    let checked = node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True);
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label(item).is_none(),
+        "the menu stayed open"
+    );
+    (enabled, checked)
+}
+
+fn choose_events(harness: &mut Harness<'_, KymoApp>, item: &str) {
+    open_events_menu(harness);
+    harness.get_by_label(item).click();
+    harness.run_steps(2);
+}
+
+/// Whether a stim channel's code changes to a non-zero one are events, by rule.
+fn every_change(_: i32, _: i32) -> bool {
+    true
+}
+fn from_zero(before: i32, _: i32) -> bool {
+    before == 0
+}
+fn increasing(before: i32, now: i32) -> bool {
+    now > before
+}
+
+#[test]
+fn stim_events_follow_the_rule_and_keep_the_file_annotations() {
+    use egui::accesskit::Role;
+    // A seed whose first code is not 0, so Initial Event makes a difference.
+    let seed = (0..)
+        .find(|&seed| {
+            let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+            spec.seed ^= seed;
+            spec.trigger_code(4, 0) != Some(0)
+        })
+        .unwrap();
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.seed ^= seed;
+    let file = TempFile::seeded("bdf+c-small", seed);
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+
+    let want = expected_events(&spec, every_change, false);
+    assert!(want.len() > 20, "{} events", want.len());
+    assert_events(&stim_events(&harness), &want);
+    assert_eq!(event_item(&mut harness, "Every Change"), (true, true));
+    assert_eq!(event_item(&mut harness, "Initial Event"), (true, false));
+    // The legend lists the codes after the file's descriptions, all shown.
+    let legend = viewer(&harness).legend();
+    let codes: std::collections::BTreeSet<&str> = want.iter().map(|w| w.1.as_str()).collect();
+    for code in &codes {
+        let entry = legend.entry(code).unwrap();
+        assert!(entry.shown && entry.count > 0, "{entry:?}");
+    }
+    assert_eq!(legend.shown_count(), (12 + codes.len(), 12 + codes.len()));
+
+    // The file's annotations and the legend's choices stay through rule changes.
+    click_in_list(&mut harness, Role::CheckBox, "Show trigger 0");
+    let files = file_annotations(&harness);
+    assert_eq!(files.len(), 12);
+    for (item, event) in [
+        ("From Zero", from_zero as fn(i32, i32) -> bool),
+        ("Increasing", increasing),
+    ] {
+        choose_events(&mut harness, item);
+        assert_events(
+            &stim_events(&harness),
+            &expected_events(&spec, event, false),
+        );
+        assert_eq!(event_item(&mut harness, item), (true, true));
+        assert_eq!(event_item(&mut harness, "Every Change"), (true, false));
+        assert_eq!(file_annotations(&harness), files);
+        assert!(!viewer(&harness).legend().entry("trigger 0").unwrap().shown);
+    }
+    choose_events(&mut harness, "Initial Event");
+    let initial = expected_events(&spec, increasing, true);
+    assert_eq!(initial[0].0, 0.0);
+    assert_events(&stim_events(&harness), &initial);
+    assert_eq!(event_item(&mut harness, "Initial Event"), (true, true));
+
+    // The recording opened next keeps the rule.
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open(&ctx, file.0.clone());
+    ready(&mut harness);
+    assert_events(&stim_events(&harness), &initial);
+    assert_eq!(event_item(&mut harness, "Increasing"), (true, true));
+}
+
+#[test]
+fn stim_event_items_need_stim_channels() {
+    let file = without_triggers("bdf+c-small");
+    let mut harness = window(&file.0);
+    ready(&mut harness);
+    assert!(stim_events(&harness).is_empty());
+    for item in ["Every Change", "From Zero", "Increasing", "Initial Event"] {
+        assert!(!event_item(&mut harness, item).0, "{item}");
+    }
+}
+
+/// A reopened recording has its events from its sidecar in its first frame.
+#[test]
+fn stim_events_come_with_the_sidecar() {
+    let file = TempFile::preset("bdf+c-small");
+    let dir = TempFile::new("sidecars");
+    std::fs::create_dir(&dir.0).unwrap();
+    let open = |path: &Path| {
+        let path = path.to_owned();
+        let sidecars = dir.0.clone();
+        Harness::builder().with_size(SIZE).build_eframe(move |cc| {
+            KymoApp::new(
+                &cc.egui_ctx,
+                Gpu::none("no GPU in this test"),
+                Options {
+                    sidecar_dir: Some(sidecars),
+                    ..options()
+                },
+                Some(path),
+            )
+        })
+    };
+    let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    let want = expected_events(&spec, every_change, false);
+    {
+        let mut harness = open(&file.0);
+        ready(&mut harness);
+        assert_events(&stim_events(&harness), &want);
+    }
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1, "no sidecar");
+
+    let mut harness = open(&file.0);
+    step_until(&mut harness, "the recording", |app| app.viewer().is_some());
+    assert!(!viewer(&harness).status().right.contains("Building"));
+    assert_events(&stim_events(&harness), &want);
+    drop(harness);
+    std::fs::remove_dir_all(&dir.0).unwrap();
 }
 
 #[test]
@@ -1212,6 +1445,8 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
     let file = offset_preset("bdf+c-small", -21_000.0);
     let mut harness = gpu_window(&file.0, setup);
     ready(&mut harness);
+    // Without the annotations' labels, some of which are near the trace colour.
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
     let trace = harness.ctx.global_style().visuals.text_color();
     // Pixels of the first row (A1) in the trace colour.
     let a1_pixels = |harness: &mut Harness<'_, KymoApp>| {

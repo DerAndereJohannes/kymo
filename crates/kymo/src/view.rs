@@ -284,7 +284,11 @@ impl ViewState {
             | Action::Settings
             | Action::Shortcuts
             | Action::About
-            | Action::ToggleSidebar => return false,
+            | Action::ToggleSidebar
+            | Action::EventsEveryChange
+            | Action::EventsFromZero
+            | Action::EventsIncreasing
+            | Action::ToggleInitialEvent => return false,
         }
         true
     }

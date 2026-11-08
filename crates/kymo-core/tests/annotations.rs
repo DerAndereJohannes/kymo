@@ -147,6 +147,44 @@ fn failed_operations_leave_the_store_unchanged() {
     );
 }
 
+#[test]
+fn replace_origin_swaps_one_origin_and_fails_without_a_trace() {
+    let stim = |onset: f64, code: &str| AnnotationData {
+        origin: Origin::Stim,
+        ..data(onset, 0.0, code)
+    };
+    let mut store = AnnotationStore::from_data(vec![data(1.0, 2.0, "file"), stim(0.5, "old")]);
+    store
+        .replace_origin(Origin::Stim, vec![stim(3.0, "b"), stim(0.0, "a")])
+        .unwrap();
+    assert_eq!(descriptions(store.iter()), ["a", "file", "b"]);
+    let ids: Vec<u64> = store.iter().map(|a| a.id.0).collect();
+    assert_eq!(ids, [3, 0, 2], "fresh ids in the given order");
+    assert!(store.get(AnnotationId(1)).is_none());
+    assert_eq!(descriptions(store.query(2.5..4.0)), ["file", "b"]);
+
+    let before = snapshot(&store);
+    let wrong = vec![stim(1.0, "fine"), data(2.0, 0.0, "from the file")];
+    assert!(matches!(
+        store.replace_origin(Origin::Stim, wrong),
+        Err(AnnotationError::Invalid { .. })
+    ));
+    let invalid = vec![stim(f64::NAN, "bad")];
+    assert!(matches!(
+        store.replace_origin(Origin::Stim, invalid),
+        Err(AnnotationError::Invalid { .. })
+    ));
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(
+        store.new_id(),
+        AnnotationId(4),
+        "failed calls use up no ids"
+    );
+
+    store.replace_origin(Origin::Stim, vec![]).unwrap();
+    assert_eq!(descriptions(store.iter()), ["file"]);
+}
+
 // ---------- property tests against a reference model ----------
 
 /// Onsets and durations on a coarse grid, so ties and touching edges are common.
@@ -168,21 +206,21 @@ fn annotation_data() -> impl Strategy<Value = AnnotationData> {
         duration,
         "[a-z]{0,3}",
         proptest::collection::vec(0u32..4, 0..3),
-        any::<bool>(),
+        origin(),
     )
         .prop_map(
-            |(onset, duration, description, channels, from_file)| AnnotationData {
+            |(onset, duration, description, channels, origin)| AnnotationData {
                 onset,
                 duration,
                 description,
                 channels: channels.into_iter().map(ChannelId).collect(),
-                origin: if from_file {
-                    Origin::File
-                } else {
-                    Origin::Viewer
-                },
+                origin,
             },
         )
+}
+
+fn origin() -> impl Strategy<Value = Origin> {
+    prop_oneof![Just(Origin::File), Just(Origin::Viewer), Just(Origin::Stim)]
 }
 
 /// An edit, resolved against the current state when applied.
@@ -335,5 +373,44 @@ proptest! {
             store.apply(redo).unwrap();
         }
         prop_assert_eq!(snapshot(&store), end);
+    }
+}
+
+proptest! {
+    #[test]
+    fn replace_origin_matches_model(
+        initial in proptest::collection::vec(annotation_data(), 0..30),
+        rounds in proptest::collection::vec(
+            (origin(), proptest::collection::vec(annotation_data(), 0..20)),
+            1..5,
+        ),
+        queries in proptest::collection::vec((time(), time()).prop_map(|(a, b)| a..b), 1..8),
+    ) {
+        let mut store = AnnotationStore::from_data(initial.clone());
+        let mut model: Model = initial
+            .into_iter()
+            .zip(0..)
+            .map(|(d, i)| (AnnotationId(i), d))
+            .collect();
+        let mut seen: Vec<AnnotationId> = model.keys().copied().collect();
+        for (origin, items) in rounds {
+            let items: Vec<AnnotationData> = items
+                .into_iter()
+                .map(|d| AnnotationData { origin, ..d })
+                .collect();
+            store.replace_origin(origin, items.clone()).unwrap();
+            model.retain(|_, d| d.origin != origin);
+            let mut fresh: Vec<&Annotation> =
+                store.iter().filter(|a| a.data.origin == origin).collect();
+            fresh.sort_by_key(|a| a.id);
+            let data: Vec<AnnotationData> = fresh.iter().map(|a| a.data.clone()).collect();
+            prop_assert_eq!(data, items, "the new items, ids in the given order");
+            for a in fresh {
+                prop_assert!(!seen.contains(&a.id), "id {:?} used before", a.id);
+                seen.push(a.id);
+                model.insert(a.id, a.data.clone());
+            }
+            check_against_model(&store, &model, &queries)?;
+        }
     }
 }

@@ -1,6 +1,8 @@
 //! What the user can ask for: discrete actions (keys, menu items) and continuous gestures
 //! (scrolling, pinching).
 
+use kymo_core::stim::{EventOptions, EventRule};
+
 /// A command from a key or a menu item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
@@ -41,10 +43,18 @@ pub enum Action {
     ToggleBad,
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
+    /// Stim events at every change to a non-zero code (see [`EventRule`]).
+    EventsEveryChange,
+    /// Stim events only at changes from 0.
+    EventsFromZero,
+    /// Stim events only at changes to a larger code.
+    EventsIncreasing,
+    /// Whether a code at a stim channel's first sample is an event.
+    ToggleInitialEvent,
 }
 
 impl Action {
-    pub const ALL: [Action; 29] = [
+    pub const ALL: [Action; 33] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -74,6 +84,10 @@ impl Action {
         Action::ToggleDc,
         Action::ToggleBad,
         Action::ToggleSidebar,
+        Action::EventsEveryChange,
+        Action::EventsFromZero,
+        Action::EventsIncreasing,
+        Action::ToggleInitialEvent,
     ];
 
     /// The name in menus and the shortcut overview.
@@ -108,6 +122,49 @@ impl Action {
             Action::ToggleDc => "Remove DC",
             Action::ToggleBad => "Toggle Bad Channel",
             Action::ToggleSidebar => "Show Sidebar",
+            Action::EventsEveryChange => "Every Change",
+            Action::EventsFromZero => "From Zero",
+            Action::EventsIncreasing => "Increasing",
+            Action::ToggleInitialEvent => "Initial Event",
+        }
+    }
+
+    /// Whether menus show the action with a checkmark when it is on.
+    pub fn checkable(self) -> bool {
+        matches!(
+            self,
+            Action::ToggleDc
+                | Action::ToggleSidebar
+                | Action::EventsEveryChange
+                | Action::EventsFromZero
+                | Action::EventsIncreasing
+                | Action::ToggleInitialEvent
+        )
+    }
+
+    /// The stim event options after this action, if it is one of the stim event items.
+    pub fn event_options(self, options: EventOptions) -> Option<EventOptions> {
+        let rule = |rule| EventOptions { rule, ..options };
+        match self {
+            Action::EventsEveryChange => Some(rule(EventRule::EveryChange)),
+            Action::EventsFromZero => Some(rule(EventRule::FromZero)),
+            Action::EventsIncreasing => Some(rule(EventRule::Increasing)),
+            Action::ToggleInitialEvent => Some(EventOptions {
+                initial_event: !options.initial_event,
+                ..options
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the action is on under the stim event `options`, if it is one of their items.
+    pub fn event_checked(self, options: EventOptions) -> Option<bool> {
+        match self {
+            Action::EventsEveryChange => Some(options.rule == EventRule::EveryChange),
+            Action::EventsFromZero => Some(options.rule == EventRule::FromZero),
+            Action::EventsIncreasing => Some(options.rule == EventRule::Increasing),
+            Action::ToggleInitialEvent => Some(options.initial_event),
+            _ => None,
         }
     }
 

@@ -92,40 +92,7 @@ impl NativeMenu {
         let mut items = Vec::new();
         for description in menu_bar(platform) {
             let submenu = Submenu::new(description.title, true);
-            for item in &description.items {
-                match item {
-                    Item::Action {
-                        action,
-                        label,
-                        shortcut,
-                        attached,
-                        checkable,
-                    } => {
-                        let text = match shortcut {
-                            Some(chord) if !platform.menu_takes_shortcuts() => {
-                                format!("{label}\t{}", chord.display(platform))
-                            }
-                            _ => (*label).to_owned(),
-                        };
-                        let accelerator = shortcut.filter(|_| *attached).and_then(key_accelerator);
-                        let entry = if *checkable {
-                            let item =
-                                CheckMenuItem::with_id(action_id(*action), text, true, false, None);
-                            item.set_key_accelerator(accelerator)?;
-                            submenu.append(&item)?;
-                            Entry::Check(item)
-                        } else {
-                            let item = MenuItem::with_id(action_id(*action), text, true, None);
-                            item.set_key_accelerator(accelerator)?;
-                            submenu.append(&item)?;
-                            Entry::Plain(item)
-                        };
-                        items.push((*action, entry));
-                    }
-                    Item::System(system) => submenu.append(&system_item(*system))?,
-                    Item::Separator => submenu.append(&PredefinedMenuItem::separator())?,
-                }
-            }
+            append(&submenu, &description.items, platform, &mut items)?;
             menu.append(&submenu)?;
             #[cfg(target_os = "macos")]
             match description.role {
@@ -200,6 +167,54 @@ impl NativeMenu {
             self.shown.insert(*action, now);
         }
     }
+}
+
+/// Appends `items` to `submenu`, and their action items to `entries`.
+fn append(
+    submenu: &Submenu,
+    items: &[Item],
+    platform: Platform,
+    entries: &mut Vec<(Action, Entry)>,
+) -> muda::Result<()> {
+    for item in items {
+        match item {
+            Item::Action {
+                action,
+                label,
+                shortcut,
+                attached,
+                checkable,
+            } => {
+                let text = match shortcut {
+                    Some(chord) if !platform.menu_takes_shortcuts() => {
+                        format!("{label}\t{}", chord.display(platform))
+                    }
+                    _ => (*label).to_owned(),
+                };
+                let accelerator = shortcut.filter(|_| *attached).and_then(key_accelerator);
+                let entry = if *checkable {
+                    let item = CheckMenuItem::with_id(action_id(*action), text, true, false, None);
+                    item.set_key_accelerator(accelerator)?;
+                    submenu.append(&item)?;
+                    Entry::Check(item)
+                } else {
+                    let item = MenuItem::with_id(action_id(*action), text, true, None);
+                    item.set_key_accelerator(accelerator)?;
+                    submenu.append(&item)?;
+                    Entry::Plain(item)
+                };
+                entries.push((*action, entry));
+            }
+            Item::System(system) => submenu.append(&system_item(*system))?,
+            Item::Separator => submenu.append(&PredefinedMenuItem::separator())?,
+            Item::Submenu { title, items } => {
+                let inner = Submenu::new(*title, true);
+                append(&inner, items, platform, entries)?;
+                submenu.append(&inner)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn system_item(item: SystemItem) -> PredefinedMenuItem {

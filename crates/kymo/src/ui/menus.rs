@@ -22,43 +22,57 @@ pub fn egui_menu_bar(ui: &mut Ui, platform: Platform, state: &dyn MenuState) -> 
     egui::MenuBar::new().ui(ui, |ui| {
         for menu in menu_bar(platform) {
             ui.menu_button(menu.title, |ui| {
-                for item in &menu.items {
-                    match item {
-                        Item::Action {
-                            action,
-                            label,
-                            shortcut,
-                            ..
-                        } => {
-                            let mut button = match state.checked(*action) {
-                                Some(on) => Button::selectable(on, *label),
-                                None => Button::new(*label),
-                            };
-                            if let Some(chord) = shortcut {
-                                button = button.shortcut_text(chord.display(platform));
-                            }
-                            if ui.add_enabled(state.enabled(*action), button).clicked() {
-                                clicked = Some(*action);
-                                ui.close();
-                            }
-                        }
-                        // Only macOS has system items, and its menus are native.
-                        Item::System(SystemItem::About) => {
-                            if ui.button(SystemItem::About.label()).clicked() {
-                                clicked = Some(Action::About);
-                                ui.close();
-                            }
-                        }
-                        Item::System(_) => {}
-                        Item::Separator => {
-                            ui.separator();
-                        }
-                    }
-                }
+                menu_items(ui, &menu.items, platform, state, &mut clicked);
             });
         }
     });
     clicked
+}
+
+/// Draws `items` into an open menu; `clicked` gets the action of a clicked item.
+fn menu_items(
+    ui: &mut Ui,
+    items: &[Item],
+    platform: Platform,
+    state: &dyn MenuState,
+    clicked: &mut Option<Action>,
+) {
+    for item in items {
+        match item {
+            Item::Action {
+                action,
+                label,
+                shortcut,
+                ..
+            } => {
+                let mut button = match state.checked(*action) {
+                    Some(on) => Button::selectable(on, *label),
+                    None => Button::new(*label),
+                };
+                if let Some(chord) = shortcut {
+                    button = button.shortcut_text(chord.display(platform));
+                }
+                if ui.add_enabled(state.enabled(*action), button).clicked() {
+                    *clicked = Some(*action);
+                    ui.close();
+                }
+            }
+            // Only macOS has system items, and its menus are native.
+            Item::System(SystemItem::About) => {
+                if ui.button(SystemItem::About.label()).clicked() {
+                    *clicked = Some(Action::About);
+                    ui.close();
+                }
+            }
+            Item::System(_) => {}
+            Item::Separator => {
+                ui.separator();
+            }
+            Item::Submenu { title, items } => {
+                ui.menu_button(*title, |ui| menu_items(ui, items, platform, state, clicked));
+            }
+        }
+    }
 }
 
 /// The shortcut overview, while `open`.

@@ -205,6 +205,43 @@ impl AnnotationStore {
         Ok(inverse)
     }
 
+    /// Replaces every annotation of `origin` with `items`, which get fresh ids in the given
+    /// order; the others keep theirs. Not an edit: there is no inverse, as it is meant for
+    /// annotations derived from something else, such as stim channel events as the pyramid
+    /// build finds them. On error (an item of another origin, or with invalid timing) the
+    /// store is unchanged and no ids are used up.
+    pub fn replace_origin(
+        &mut self,
+        origin: Origin,
+        items: Vec<AnnotationData>,
+    ) -> Result<(), AnnotationError> {
+        let first = self.next_id;
+        let items: Vec<Annotation> = items
+            .into_iter()
+            .zip(first..)
+            .map(|(data, id)| Annotation {
+                id: AnnotationId(id),
+                data,
+            })
+            .collect();
+        for a in &items {
+            if a.data.origin != origin {
+                return Err(AnnotationError::Invalid {
+                    id: a.id,
+                    reason: format!("origin {:?} instead of {origin:?}", a.data.origin),
+                });
+            }
+            check(a)?;
+        }
+        self.next_id = first + items.len() as u64;
+        self.items.retain(|a| a.data.origin != origin);
+        self.items.extend(items);
+        // Two sorted runs, which the sort merges.
+        self.items.sort_by(order);
+        self.reindex();
+        Ok(())
+    }
+
     fn position(&self, id: AnnotationId) -> Result<usize, AnnotationError> {
         self.positions
             .get(&id)

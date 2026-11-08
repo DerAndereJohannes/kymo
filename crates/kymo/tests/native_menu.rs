@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use eframe::egui::Key as EguiKey;
 use kymo::action::Action;
 use kymo::keymap::{BINDINGS, Chord, Platform};
-use kymo::menu::{Item, menu_bar};
+use kymo::menu::{Item, leaves, menu_bar};
 use kymo::native_menu::{action_id, key_accelerator};
 use muda::accelerator::{Key, KeyAccelerator, Modifiers, NamedKey};
 
@@ -25,7 +25,10 @@ fn every_shortcut_has_a_key_equivalent() {
     for (action, chord) in BINDINGS {
         assert!(key_accelerator(*chord).is_some(), "{action:?} {chord:?}");
     }
-    for item in menu_bar(Platform::Mac).iter().flat_map(|m| &m.items) {
+    for item in menu_bar(Platform::Mac)
+        .iter()
+        .flat_map(|m| leaves(&m.items))
+    {
         if let Item::Action {
             shortcut: Some(chord),
             attached: true,

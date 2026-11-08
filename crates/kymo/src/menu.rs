@@ -54,11 +54,27 @@ pub enum Item {
         /// Whether the native menu takes the shortcut as its key equivalent: on macOS, for
         /// shortcuts with ⌘ (all menu shortcuts; bare navigation keys have no menu item).
         attached: bool,
-        /// Shown with a checkmark when on ([`Action::ToggleDc`], [`Action::ToggleSidebar`]).
+        /// Shown with a checkmark when on (see [`Action::checkable`]).
         checkable: bool,
     },
     System(SystemItem),
     Separator,
+    Submenu {
+        title: &'static str,
+        items: Vec<Item>,
+    },
+}
+
+/// The items of `items` and of their submenus, depth first, without the submenus
+/// themselves.
+pub fn leaves(items: &[Item]) -> Vec<&Item> {
+    items
+        .iter()
+        .flat_map(|item| match item {
+            Item::Submenu { items, .. } => leaves(items),
+            item => vec![item],
+        })
+        .collect()
 }
 
 /// The role a menu plays for the system.
@@ -81,12 +97,14 @@ pub struct Menu {
 }
 
 impl Menu {
-    /// The actions in this menu.
+    /// The actions in this menu and its submenus.
     pub fn actions(&self) -> impl Iterator<Item = Action> + '_ {
-        self.items.iter().filter_map(|item| match item {
-            Item::Action { action, .. } => Some(*action),
-            _ => None,
-        })
+        leaves(&self.items)
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Action { action, .. } => Some(*action),
+                _ => None,
+            })
     }
 }
 
@@ -101,7 +119,7 @@ fn action(platform: Platform, action: Action) -> Item {
         label,
         shortcut,
         attached: platform.menu_takes_shortcuts() && shortcut.is_some_and(|c| c.command),
-        checkable: matches!(action, Action::ToggleDc | Action::ToggleSidebar),
+        checkable: action.checkable(),
     }
 }
 
@@ -164,6 +182,17 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::ToggleDc),
             a(Action::ToggleBad),
+            Item::Separator,
+            Item::Submenu {
+                title: "Stim Events",
+                items: vec![
+                    a(Action::EventsEveryChange),
+                    a(Action::EventsFromZero),
+                    a(Action::EventsIncreasing),
+                    Item::Separator,
+                    a(Action::ToggleInitialEvent),
+                ],
+            },
         ],
     });
     menus.push(Menu {
@@ -209,7 +238,7 @@ pub fn taken_chords(platform: Platform) -> Vec<Chord> {
     }
     menu_bar(platform)
         .iter()
-        .flat_map(|menu| &menu.items)
+        .flat_map(|menu| leaves(&menu.items))
         .filter_map(|item| match item {
             Item::Action {
                 shortcut: Some(chord),

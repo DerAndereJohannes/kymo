@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui::Modifiers;
 use kymo::action::Action;
 use kymo::keymap::{BINDINGS, Chord, Keymap, Platform};
-use kymo::menu::{Item, Role, SystemItem, menu_bar, taken_chords};
+use kymo::menu::{Item, Role, SystemItem, leaves, menu_bar, taken_chords};
 
 fn modifiers(platform: Platform, chord: Chord) -> Modifiers {
     let mac = platform == Platform::Mac;
@@ -22,10 +22,11 @@ fn modifiers(platform: Platform, chord: Chord) -> Modifiers {
     }
 }
 
+/// Every item of every menu and submenu, without the submenus themselves.
 fn items(platform: Platform) -> Vec<Item> {
     menu_bar(platform)
-        .into_iter()
-        .flat_map(|m| m.items)
+        .iter()
+        .flat_map(|m| leaves(&m.items).into_iter().cloned().collect::<Vec<_>>())
         .collect()
 }
 
@@ -86,6 +87,40 @@ fn follows_each_platforms_layout() {
     assert_eq!(windows[1].actions().collect::<Vec<_>>(), [Action::Settings]);
     assert!(windows[0].actions().any(|a| a == Action::Quit));
     assert!(menu_actions(Platform::Windows).contains(&Action::About));
+}
+
+#[test]
+fn view_has_the_stim_event_submenu() {
+    for platform in Platform::ALL {
+        let view = menu_bar(platform)
+            .into_iter()
+            .find(|m| m.title == "View")
+            .unwrap();
+        let Some(Item::Submenu { title, items }) = view.items.last() else {
+            panic!("{platform:?}: no submenu at the end of View");
+        };
+        assert_eq!(*title, "Stim Events");
+        let actions: Vec<Option<Action>> = items
+            .iter()
+            .map(|item| match item {
+                Item::Action { action, .. } => Some(*action),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                Some(Action::EventsEveryChange),
+                Some(Action::EventsFromZero),
+                Some(Action::EventsIncreasing),
+                None,
+                Some(Action::ToggleInitialEvent),
+            ]
+        );
+        assert_eq!(items[3], Item::Separator);
+        // Menu::actions sees into it.
+        assert!(view.actions().any(|a| a == Action::ToggleInitialEvent));
+    }
 }
 
 #[test]
@@ -181,7 +216,16 @@ fn only_command_shortcuts_are_attached() {
                 );
                 assert_eq!(
                     checkable,
-                    matches!(action, Action::ToggleDc | Action::ToggleSidebar)
+                    matches!(
+                        action,
+                        Action::ToggleDc
+                            | Action::ToggleSidebar
+                            | Action::EventsEveryChange
+                            | Action::EventsFromZero
+                            | Action::EventsIncreasing
+                            | Action::ToggleInitialEvent
+                    ),
+                    "{action:?}"
                 );
             }
         }

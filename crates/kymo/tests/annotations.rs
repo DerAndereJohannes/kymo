@@ -136,7 +136,8 @@ fn brute_force(view: &ViewState, store: &AnnotationStore, legend: &Legend, width
         if !entry.shown || d.onset >= t.end || d.end() < t.start {
             continue;
         }
-        let spans: Vec<Span> = if d.channels.is_empty() {
+        // Stim events mark a moment for all channels.
+        let spans: Vec<Span> = if d.channels.is_empty() || d.origin == Origin::Stim {
             vec![Span::All]
         } else {
             d.channels
@@ -223,6 +224,7 @@ fn check_labels(
         .filter(|a| legend.entry(&a.data.description).unwrap().shown)
         .filter(|a| {
             a.data.channels.is_empty()
+                || a.data.origin == Origin::Stim
                 || a.data.channels.iter().any(|&c| {
                     view.row_of(c)
                         .is_some_and(|r| view.visible_rows().contains(&r))
@@ -252,7 +254,8 @@ fn check_labels(
 }
 
 /// A random annotation: onset in the recording, an event, a sliver or a band, one of 14
-/// descriptions (so colours repeat), for all channels or a few.
+/// descriptions (so colours repeat), for all channels or a few, or a stim event of a
+/// channel.
 fn annotation() -> impl Strategy<Value = AnnotationData> {
     (
         0.0..600.0f64,
@@ -262,9 +265,18 @@ fn annotation() -> impl Strategy<Value = AnnotationData> {
             2 => Just(vec![]),
             1 => proptest::collection::vec(0..8u32, 1..3),
         ],
+        0..8u32,
+        prop_oneof![3 => Just(false), 1 => Just(true)],
     )
-        .prop_map(|(onset, duration, d, channels)| {
-            data(onset, duration, &format!("d{d}"), &channels)
+        .prop_map(|(onset, duration, d, channels, stim_channel, stim)| {
+            if stim {
+                AnnotationData {
+                    origin: Origin::Stim,
+                    ..data(onset, 0.0, &format!("d{d}"), &[stim_channel])
+                }
+            } else {
+                data(onset, duration, &format!("d{d}"), &channels)
+            }
         })
 }
 
@@ -346,7 +358,7 @@ proptest! {
         let want: Vec<_> = store
             .iter()
             .filter(|a| {
-                let span = if a.data.channels.is_empty() {
+                let span = if a.data.channels.is_empty() || a.data.origin == Origin::Stim {
                     Span::All
                 } else if let Some(c) = channel.filter(|c| a.data.channels.contains(c)) {
                     Span::Row(view.row_of(c).unwrap())
@@ -424,4 +436,33 @@ fn channel_annotations_cover_their_rows() {
         }
     }
     assert_eq!(span_y(&view, Span::All, height), 0.0..height);
+}
+
+/// A stim event belongs to its stim channel but marks all rows, even with that channel off
+/// screen or hidden, and the pointer finds it on any of them.
+#[test]
+fn stim_events_mark_every_row() {
+    let rec = recording();
+    let mut view = ViewState::new(&rec);
+    view.set_rows(4);
+    view.set_shown(ChannelId(1), false);
+    let stim = |onset: f64, channel: u32| AnnotationData {
+        origin: Origin::Stim,
+        ..data(onset, 0.0, "7", &[channel])
+    };
+    let store = AnnotationStore::from_data(vec![stim(5.0, 6), stim(10.0, 1)]);
+    let legend = Legend::new(&store);
+    let marks = marks(&view, &store, &legend, 200, label_width);
+    let lines: Vec<_> = marks
+        .lines
+        .iter()
+        .map(|m| (m.columns.start, m.span))
+        .collect();
+    assert_eq!(lines, [(50, Span::All), (100, Span::All)]);
+    assert_eq!(marks.labels.len(), 2);
+    for channel in [None, Some(ChannelId(0)), Some(ChannelId(4))] {
+        let found = under(&view, &store, &legend, 200, 100.5, 0, channel);
+        assert_eq!(found.len(), 1, "{channel:?}");
+        assert_eq!(found[0].data.onset, 10.0);
+    }
 }

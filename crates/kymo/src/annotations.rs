@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId};
+use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId, Origin};
 
 use crate::view::ViewState;
 
@@ -148,8 +148,9 @@ pub struct Marks {
 /// The marks for `store`'s annotations in `view`, on a trace area `width_px` physical
 /// pixels wide, of the descriptions `legend` shows.
 ///
-/// An annotation of all channels spans the trace area's height; one tied to channels spans
-/// the rows of those on screen, and draws nothing if none is. Marks of the same colour over
+/// An annotation of all channels, or a stim event, spans the trace area's height (see
+/// [`spans_all`]); one tied to channels spans the rows of those on screen, and draws nothing
+/// if none is. Marks of the same colour over
 /// the same rows that would overlap are merged, so however many annotations there are,
 /// there are at most a few marks per pixel column, and none is lost: every pixel an
 /// annotation covers is covered by a mark of its colour.
@@ -179,7 +180,7 @@ pub fn marks(
             continue;
         };
         spans.clear();
-        if a.data.channels.is_empty() {
+        if spans_all(&a.data) {
             spans.push(Span::All);
         } else {
             spans.extend(
@@ -246,7 +247,7 @@ pub fn marks(
 
 /// The annotations under pixel column `x` of a trace area `width_px` physical pixels wide,
 /// by onset: those of the descriptions `legend` shows whose mark is within `slack` columns
-/// of `x`, and that apply to all channels or to `channel`, the one under the pointer.
+/// of `x`, and that span all rows or apply to `channel`, the one under the pointer.
 pub fn under<'s>(
     view: &ViewState,
     store: &'s AnnotationStore,
@@ -267,14 +268,19 @@ pub fn under<'s>(
     store
         .query(time)
         .filter(|a| legend.entry(&a.data.description).is_some_and(|e| e.shown))
-        .filter(|a| {
-            a.data.channels.is_empty() || channel.is_some_and(|c| a.data.channels.contains(&c))
-        })
+        .filter(|a| spans_all(&a.data) || channel.is_some_and(|c| a.data.channels.contains(&c)))
         .filter(|a| {
             let (columns, _) = columns(view, &a.data, width_px);
             columns.start < near.end && near.start < columns.end
         })
         .collect()
+}
+
+/// Whether `a`'s mark spans the trace area's height: if it applies to all channels, or is a
+/// stim event. Events belong to their stim channel, but mark a moment for all of them, as
+/// MNE draws them; and the stim row may well be off screen.
+pub fn spans_all(a: &AnnotationData) -> bool {
+    a.channels.is_empty() || a.origin == Origin::Stim
 }
 
 /// The pixel columns `a`'s mark covers on a trace area `width_px` (`> 0`) pixels wide, and

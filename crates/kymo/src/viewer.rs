@@ -2,17 +2,20 @@
 //! and scrollbars, and the status line.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use eframe::egui::{
     self, Align, Align2, Color32, Event, FontId, Pos2, Rangef, Rect, Sense, TextStyle, Ui, pos2,
 };
-use kymo_core::ChannelId;
 use kymo_core::service::TileService;
+use kymo_core::stim::EventOptions;
 use kymo_core::tile::query;
+use kymo_core::{ChannelId, ChannelKind, GridId};
 
 use crate::action::Action;
 use crate::annotations::{self, Legend, Marks};
 use crate::document::{Document, Summary};
+use crate::events::{StimEvents, Update};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
 use crate::ui::axis::{self, Clock};
@@ -93,14 +96,27 @@ pub struct Viewer {
     marks: Marks,
     /// The annotations under the pointer, as the status line shows them.
     pointed: String,
+    /// The stim channels' events, for recordings that have stim channels.
+    stim: Option<StimEvents>,
 }
 
 impl Viewer {
     /// A recording on screen with its tile service, showing `default_span` seconds at
-    /// first.
-    pub fn new(document: Document, service: TileService, default_span: f64) -> Viewer {
+    /// first, with stim events by `events`.
+    pub fn new(
+        document: Document,
+        service: TileService,
+        default_span: f64,
+        events: EventOptions,
+    ) -> Viewer {
         static SERIAL: AtomicU64 = AtomicU64::new(1);
+        let has_stim = document
+            .recording
+            .channels()
+            .iter()
+            .any(|c| c.kind == ChannelKind::Stim);
         Viewer {
+            stim: has_stim.then(|| StimEvents::new(events)),
             summary: document.summary(),
             legend: Legend::new(&document.annotations),
             view: ViewState::with_default_span(&document.recording, default_span),
@@ -159,6 +175,18 @@ impl Viewer {
         self.service().cache()
     }
 
+    /// Whether the recording has stim channels, whose events the rule picks.
+    pub fn has_stim(&self) -> bool {
+        self.stim.is_some()
+    }
+
+    /// Picks the stim events by `options` from the next frame on.
+    pub fn set_event_options(&mut self, options: EventOptions) {
+        if let Some(stim) = &mut self.stim {
+            stim.set_options(options);
+        }
+    }
+
     /// Seconds [`Action::DefaultWindow`] shows from now on.
     pub fn set_default_span(&mut self, seconds: f64) {
         self.view.set_default_span(seconds);
@@ -189,6 +217,7 @@ impl Viewer {
     /// Shows the recording in `ui`, with the sidebar if `sidebar`. Returns whether the
     /// sidebar's Open button was clicked.
     pub fn show(&mut self, ui: &mut Ui, gpu: &Gpu, keymap: &Keymap, sidebar: bool) -> bool {
+        self.sync_stim(ui.ctx());
         let mut open_clicked = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -226,6 +255,31 @@ impl Viewer {
             ui.ctx().request_repaint();
         }
         open_clicked
+    }
+
+    /// Brings the stim events up to the build and the rule, and the legend with them.
+    fn sync_stim(&mut self, ctx: &egui::Context) {
+        let Some(stim) = &mut self.stim else {
+            return;
+        };
+        let service = self
+            .service
+            .as_ref()
+            .expect("the tile service lives as long as the viewer");
+        let rec = &self.document.recording;
+        let changes = || -> Vec<kymo_core::stim::StimChanges> {
+            (0..rec.grids().len() as u32)
+                .filter_map(|grid| service.pyramid(GridId(grid)))
+                .flat_map(|pyramid| pyramid.stim_changes(rec))
+                .collect()
+        };
+        let done = service.progress().done;
+        let now = ctx.input(|i| i.time);
+        match stim.update(&mut self.document.annotations, rec, done, now, changes) {
+            Update::Changed => self.legend.sync(&self.document.annotations),
+            Update::Wait(seconds) => ctx.request_repaint_after(Duration::from_secs_f64(seconds)),
+            Update::Unchanged => {}
+        }
     }
 
     fn status_line(&self, gpu: &Gpu) -> StatusLine {

@@ -3,7 +3,7 @@
 
 use crate::action::Action;
 use crate::keymap::{BINDINGS, Keymap, Platform};
-use crate::menu::{Item, Role, menu_bar};
+use crate::menu::{Role, menu_bar};
 
 /// One line: the keys (or gesture) and what they do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,13 +32,10 @@ pub fn overview(platform: Platform) -> Vec<Section> {
             Role::App => "Kymo",
             _ => menu.title,
         };
+        // Submenus' items too.
         let rows: Vec<Row> = menu
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Action { action, .. } => row(platform, *action),
-                _ => None,
-            })
+            .actions()
+            .filter_map(|action| row(platform, action))
             .collect();
         listed.extend(menu.actions());
         if !rows.is_empty() {
