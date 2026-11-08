@@ -44,6 +44,8 @@ enum Op {
     Pushed(usize, AnnotationData),
     Undo,
     Redo,
+    /// Marks the current state saved.
+    Save,
     /// New stim annotations, which no undo touches.
     Stim(u8),
 }
@@ -59,6 +61,7 @@ fn any_op() -> impl Strategy<Value = Op> {
         1 => (any::<usize>(), any_data(), any_data()).prop_map(|(n, a, b)| Op::Twice(n, a, b)),
         3 => Just(Op::Undo),
         2 => Just(Op::Redo),
+        1 => Just(Op::Save),
         1 => (0u8..4).prop_map(Op::Stim),
     ]
 }
@@ -109,6 +112,8 @@ proptest! {
         // Every state the edits went through, and the one the store is at.
         let mut states = vec![edited(&store)];
         let mut at: usize = 0;
+        // The state saved, the opened one at first, while it can be reached.
+        let mut saved: Option<usize> = Some(0);
         for op in ops {
             let before = edited(&store);
             let ids: Vec<AnnotationId> = before.iter().map(|a| a.id).collect();
@@ -172,6 +177,10 @@ proptest! {
                     prop_assert_eq!(changed.is_some(), at + 1 < states.len());
                     at = (at + 1).min(states.len() - 1);
                 }
+                Op::Save => {
+                    history.mark_saved();
+                    saved = Some(at);
+                }
                 Op::Stim(k) => {
                     let events = (0..k)
                         .map(|i| data(f64::from(i), 0.0, &format!("{k}"), Origin::Stim))
@@ -192,12 +201,16 @@ proptest! {
                 // An edit: a new state, unless it changed nothing; redo is gone.
                 false if now != before => {
                     states.truncate(at + 1);
+                    if saved.is_some_and(|s| s > at) {
+                        saved = None;
+                    }
                     states.push(now);
                     at += 1;
                     prop_assert!(!history.can_redo());
                 }
                 false => prop_assert_eq!(&now, &states[at]),
             }
+            prop_assert_eq!(history.edited(), saved != Some(at));
         }
         let stim_now = stim(&store);
         // Undoing everything restores the start, redoing everything the end; stim

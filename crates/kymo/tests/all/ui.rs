@@ -1729,8 +1729,10 @@ fn press(harness: &mut Harness<'_, KymoApp>, modifiers: Modifiers, key: Key) {
     harness.step();
 }
 
-/// Types `text` into the description field, in place of what it held.
+/// Types `text` into the description of new annotations, in place of what it held,
+/// deselecting first: with a selection, the field edits the selected annotation's.
 fn describe(harness: &mut Harness<'_, KymoApp>, text: &str) {
+    press(harness, Modifiers::NONE, Key::Escape);
     let field = "Description of new annotations";
     harness.get_by_label(field).focus();
     harness.run_steps(2);
@@ -2025,13 +2027,8 @@ fn repeated_clicks_reach_every_annotation_under_the_pointer() {
     press(&mut harness, command(), Key::E);
     // "a" from 2 to 4.1 s and "b" from 4 to 6 s, back to back; "long" from 3 to 5.5 s,
     // longer than either and nowhere on its own.
-    let field = "Description of new annotations";
     for (description, from, to) in [("a", 2.0, 4.1), ("b", 4.0, 6.0), ("long", 3.0, 5.5)] {
-        harness.get_by_label(field).focus();
-        harness.run_steps(2);
-        press(&mut harness, command(), Key::A);
-        harness.get_by_label(field).type_text(description);
-        harness.run_steps(2);
+        describe(&mut harness, description);
         press(&mut harness, Modifiers::NONE, Key::Escape);
         let (a, b) = (at_time(&harness, from, 40.0), at_time(&harness, to, 40.0));
         drag(&mut harness, a, b);
@@ -2106,15 +2103,22 @@ fn the_description_field_names_new_annotations() {
     let got = made(&harness);
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].2, "spike");
-    // The drag took the keyboard from the field: ⌫ deletes the new annotation, and undo
-    // brings it back.
-    assert!(!harness.get_by_label(field).is_focused());
+    // The drag took the keyboard from the field, which now shows the new annotation's
+    // description: ⌫ deletes it, and undo brings it back.
+    let selected = "Description of the selected annotation";
+    assert!(!harness.get_by_label(selected).is_focused());
+    assert_eq!(
+        harness.get_by_label(selected).value().as_deref(),
+        Some("spike")
+    );
     press(&mut harness, Modifiers::NONE, Key::Backspace);
     assert!(made(&harness).is_empty());
     assert_eq!(viewer(&harness).description(), "spike");
     press(&mut harness, command(), Key::Z);
     assert_eq!(made(&harness).len(), 1);
-    // Typing doesn't touch the annotations: ⌘Z there leaves them.
+    // Typing new annotations' description doesn't touch the annotations: ⌘Z there leaves
+    // them.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.get_by_label(field).focus();
     harness.run_steps(2);
     harness.get_by_label(field).type_text("!");
@@ -2969,4 +2973,140 @@ fn stim_annotations_never_merge() {
     let d = selected_data(&harness).unwrap();
     assert_eq!(d.origin, kymo_core::Origin::Viewer);
     assert_span((d.onset, d.end()), (event.onset - 1.0, event.onset + 1.0));
+}
+
+/// The descriptions of the viewer's and the file's annotations, by onset.
+fn descriptions(harness: &Harness<'_, KymoApp>) -> Vec<(f64, f64, String)> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.origin != kymo_core::Origin::Stim)
+        .map(|a| (a.data.onset, a.data.end(), a.data.description.clone()))
+        .collect()
+}
+
+#[test]
+fn the_field_changes_the_selected_annotations_description() {
+    // A file annotation "trigger 3" from 15.5 to 16.5 s, and events.
+    let file = without_triggers("bdf+c-small");
+    let name = file
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert_eq!(harness.state().title(), format!("{name} – Kymo"));
+    assert_eq!(harness.state().window_title(), harness.state().title());
+    press(&mut harness, command(), Key::E);
+    let at = |harness: &Harness<'_, KymoApp>, t| at_time(harness, t, 40.0);
+    let (a, b) = (at(&harness, 2.0), at(&harness, 4.0));
+    drag(&mut harness, a, b);
+    assert_eq!(harness.state().title(), format!("{name} (edited) – Kymo"));
+    assert_eq!(harness.state().window_title(), harness.state().title());
+    let field = "Description of the selected annotation";
+    assert_eq!(harness.get_by_label(field).value().as_deref(), Some("BAD"));
+    let first = |harness: &Harness<'_, KymoApp>| made(harness)[0].2.clone();
+    let retype = |harness: &mut Harness<'_, KymoApp>, text: &str| {
+        harness.get_by_label(field).focus();
+        harness.run_steps(2);
+        press(harness, command(), Key::A);
+        harness.get_by_label(field).type_text(text);
+        harness.run_steps(2);
+    };
+
+    // Typed, it applies on Enter, not before: no legend entry per letter.
+    retype(&mut harness, "eye");
+    assert_eq!(first(&harness), "BAD");
+    assert!(viewer(&harness).legend().entry("e").is_none());
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(first(&harness), "eye");
+    assert_eq!(viewer(&harness).legend().entry("eye").unwrap().count, 1);
+    assert!(
+        viewer(&harness)
+            .legend()
+            .entries()
+            .all(|e| e.description != "BAD")
+    );
+    // New annotations keep theirs.
+    assert_eq!(viewer(&harness).description(), "BAD");
+    // One step.
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(first(&harness), "BAD");
+    assert_eq!(harness.get_by_label(field).value().as_deref(), Some("BAD"));
+    press(&mut harness, command() | Modifiers::SHIFT, Key::Z);
+    assert_eq!(first(&harness), "eye");
+    // Esc in the field takes back the typing, and keeps the selection.
+    retype(&mut harness, "zzz");
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert_eq!(first(&harness), "eye");
+    assert_eq!(harness.get_by_label(field).value().as_deref(), Some("eye"));
+    assert!(viewer(&harness).selected().is_some());
+    // An empty field changes nothing.
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    press(&mut harness, command(), Key::A);
+    press(&mut harness, Modifiers::NONE, Key::Backspace);
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(first(&harness), "eye");
+    assert_eq!(harness.get_by_label(field).value().as_deref(), Some("eye"));
+
+    // A click on another annotation applies the typing to the one it was typed for.
+    retype(&mut harness, "blink");
+    click_at_time(&mut harness, 16.0);
+    harness.run_steps(2);
+    assert_eq!(first(&harness), "blink");
+    assert_eq!(selected_data(&harness).unwrap().description, "trigger 3");
+    assert_eq!(
+        harness.get_by_label(field).value().as_deref(),
+        Some("trigger 3")
+    );
+    // Picked from the menu, it applies at once, to a file annotation as well.
+    harness.get_by_label("Descriptions").click();
+    harness.run_steps(2);
+    // Below the menu's fold: the trigger descriptions come first.
+    click_in_list(&mut harness, egui::accesskit::Role::Button, "blink");
+    harness.run_steps(2);
+    let d = selected_data(&harness).unwrap();
+    assert_eq!(
+        (d.description.as_str(), d.origin),
+        ("blink", kymo_core::Origin::File)
+    );
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(selected_data(&harness).unwrap().description, "trigger 3");
+
+    // Renamed into a kind it reaches, it merges, and a hidden description shows again.
+    describe(&mut harness, "x");
+    let (a, b) = (at(&harness, 3.0), at(&harness, 5.0));
+    drag(&mut harness, a, b);
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show blink");
+    assert!(!viewer(&harness).legend().entry("blink").unwrap().shown);
+    retype(&mut harness, "blink");
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert!(viewer(&harness).legend().entry("blink").unwrap().shown);
+    let blinks: Vec<_> = descriptions(&harness)
+        .into_iter()
+        .filter(|d| d.2 == "blink")
+        .collect();
+    assert_eq!(blinks.len(), 1, "{blinks:?}");
+    assert_span((blinks[0].0, blinks[0].1), (2.0, 5.0));
+    assert_span(selected_span(&harness), (2.0, 5.0));
+
+    // Undoing every edit takes the title back; redoing one marks it again.
+    while viewer(&harness).history().can_undo() {
+        press(&mut harness, command(), Key::Z);
+    }
+    assert_eq!(harness.state().title(), format!("{name} – Kymo"));
+    press(&mut harness, command() | Modifiers::SHIFT, Key::Z);
+    assert_eq!(harness.state().title(), format!("{name} (edited) – Kymo"));
+    // Closed, the title is the app's.
+    press(&mut harness, command(), Key::W);
+    assert_eq!(harness.state().title(), "Kymo");
+    assert_eq!(harness.state().window_title(), "Kymo");
 }

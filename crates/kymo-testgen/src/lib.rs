@@ -442,6 +442,11 @@ mod presets {
             "BDF+C, 5 channels at 512 Hz, 1 min, annotations, negative gain and a Status \
              channel",
         ),
+        (
+            "edf+c-annotations",
+            "EDF+C, 32 EEG channels at 256 Hz, 1 h, 10,000 annotations of 8 descriptions, \
+             overlapping, a fifth of them events (59 MB)",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -451,6 +456,7 @@ mod presets {
             "bdf-256ch-8h" => eeg(Format::Bdf, 256, 2048, 1.0, 8 * 3600),
             "edf+d-mixed" => edf_d_mixed(),
             "bdf+c-small" => bdf_c_small(),
+            "edf+c-annotations" => edf_c_annotations(),
             _ => return None,
         };
         Some(spec)
@@ -531,6 +537,30 @@ mod presets {
             })
             .collect();
         spec.seed = 7;
+        spec
+    }
+
+    /// Many annotations, for the annotation editing benchmark: one every 0.36 s, shifted
+    /// a little, up to 4.2 s long, so many overlap.
+    fn edf_c_annotations() -> Spec {
+        const DESCRIPTIONS: [&str; 8] = [
+            "BAD",
+            "blink",
+            "saccade",
+            "spindle",
+            "K-complex",
+            "arousal",
+            "T0",
+            "T1",
+        ];
+        let mut spec = eeg(Format::EdfPlusC, 32, 256, 1.0, 3600);
+        spec.annotations = (0..10_000u32)
+            .map(|k| Tal {
+                onset: f64::from(k) * 0.36 + f64::from(k * 37 % 30) / 100.0,
+                duration: (k % 5 != 0).then(|| f64::from(k % 7) * 0.7),
+                texts: vec![DESCRIPTIONS[k as usize % DESCRIPTIONS.len()].into()],
+            })
+            .collect();
         spec
     }
 

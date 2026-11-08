@@ -19,13 +19,37 @@ pub struct Change {
 pub type Step = Vec<Change>;
 
 /// The edits that can be undone and redone, most recent last.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct History {
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// How many steps were done at the saved state (at first, the opened one); `None` once
+    /// no undo or redo can return to it.
+    saved: Option<usize>,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            undo: Vec::new(),
+            redo: Vec::new(),
+            saved: Some(0),
+        }
+    }
 }
 
 impl History {
+    /// Whether the annotations differ from the saved state, the opened one until
+    /// [`mark_saved`](Self::mark_saved).
+    pub fn edited(&self) -> bool {
+        self.saved != Some(self.undo.len())
+    }
+
+    /// Makes the current state the saved one.
+    pub fn mark_saved(&mut self) {
+        self.saved = Some(self.undo.len());
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -49,6 +73,10 @@ impl History {
         step.retain(|c| c.before != c.after);
         if step.is_empty() {
             return false;
+        }
+        // The saved state was undone: with redo gone, it can't come back.
+        if self.saved.is_some_and(|saved| saved > self.undo.len()) {
+            self.saved = None;
         }
         self.undo.push(step);
         self.redo.clear();

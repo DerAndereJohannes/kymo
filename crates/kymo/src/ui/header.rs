@@ -30,7 +30,34 @@ pub fn within_width<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
 pub struct AnnotationPanel<'a> {
     pub legend: &'a mut Legend,
     pub colors: &'a mut AnnotationColors,
-    pub description: Option<&'a mut String>,
+    /// The description field, in annotation mode.
+    pub field: Option<DescriptionField<'a>>,
+}
+
+/// What the description field above the legend edits.
+pub enum DescriptionField<'a> {
+    /// The description new annotations get.
+    New(&'a mut String),
+    /// The selected annotation's, `current`, as typed into `draft`; the caller applies the
+    /// draft once the field gives up the keyboard, unless by Esc.
+    Selected {
+        current: &'a str,
+        draft: &'a mut String,
+    },
+}
+
+/// What the header panel asks for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HeaderResponse {
+    /// The Open button was clicked.
+    pub open: bool,
+    /// A description picked from the menu for the selected annotation.
+    pub relabel: Option<String>,
+}
+
+/// The description field's id, to know whether it has the keyboard.
+pub fn description_field_id() -> egui::Id {
+    egui::Id::unique("kymo description field")
 }
 
 /// Rows of the annotation legend shown before it scrolls.
@@ -40,9 +67,8 @@ const LEGEND_ROWS: f32 = 8.0;
 /// channel list shows and hides channels and marks them bad in `view`, in their types'
 /// colors (`type_colors` where picked); the legend shows and hides annotations by
 /// description in `annotations.legend`, and picks their colors in `annotations.colors`. In
-/// annotation mode, `annotations.description` is the one new annotations get, edited above
-/// the legend, which then shows even without annotations. Returns whether Open was
-/// clicked.
+/// annotation mode, `annotations.field` edits the description new annotations get, or the
+/// selected annotation's, above the legend, which then shows even without annotations.
 pub fn header_panel(
     ui: &mut Ui,
     document: &Document,
@@ -50,13 +76,14 @@ pub fn header_panel(
     view: &mut ViewState,
     type_colors: &TypeColors,
     annotations: AnnotationPanel<'_>,
-) -> bool {
+) -> HeaderResponse {
     let AnnotationPanel {
         legend,
         colors: annotation_colors,
-        description,
+        field,
     } = annotations;
     let mut open_clicked = false;
+    let mut relabel = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         // The button first, so a long file name truncates instead of pushing it out.
@@ -112,13 +139,13 @@ pub fn header_panel(
     ui.add_space(6.0);
     ui.separator();
     // The legend at the bottom, so the channel list fills the space below its types.
-    if !legend.is_empty() || description.is_some() {
+    if !legend.is_empty() || field.is_some() {
         egui::Panel::bottom("legend")
             .resizable(false)
             .frame(Frame::NONE.inner_margin(Margin::symmetric(0, 6)))
             .show(ui, |ui| {
-                if let Some(description) = description {
-                    description_row(ui, description, legend);
+                if let Some(field) = field {
+                    relabel = description_row(ui, field, legend);
                 }
                 if !legend.is_empty() {
                     legend_list(ui, legend, annotation_colors);
@@ -128,7 +155,10 @@ pub fn header_panel(
     kind_list(ui, view, type_colors);
     ui.separator();
     channel_list(ui, document, view, type_colors);
-    open_clicked
+    HeaderResponse {
+        open: open_clicked,
+        relabel,
+    }
 }
 
 /// A row per channel type in the recording: a checkbox, in the type's trace color, that
@@ -165,9 +195,10 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState, type_colors: &TypeColors) {
 /// Rows of descriptions the description menu shows before it scrolls.
 const DESCRIPTION_MENU_ROWS: f32 = 12.0;
 
-/// The description of new annotations: a text field, and a menu of the legend's
-/// descriptions to pick one from.
-fn description_row(ui: &mut Ui, description: &mut String, legend: &Legend) {
+/// The description field: the description of new annotations, or the selected one's, with
+/// a menu of the legend's descriptions to pick one from. Returns a description picked for
+/// the selected annotation.
+fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) -> Option<String> {
     let row_height = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
     let mut row = ui.new_child(
@@ -175,6 +206,16 @@ fn description_row(ui: &mut Ui, description: &mut String, legend: &Legend) {
             .max_rect(rect)
             .layout(Layout::right_to_left(Align::Center)),
     );
+    let (label, accessible, text, current) = match field {
+        DescriptionField::New(text) => ("New", "Description of new annotations", text, None),
+        DescriptionField::Selected { current, draft } => (
+            "Selected",
+            "Description of the selected annotation",
+            draft,
+            Some(current),
+        ),
+    };
+    let mut picked = None;
     // The menu first, at the right, so the field takes the rest.
     let descriptions: Vec<String> = legend.entries().map(|e| e.description.clone()).collect();
     let menu = row.add_enabled_ui(!descriptions.is_empty(), |ui| {
@@ -184,9 +225,9 @@ fn description_row(ui: &mut Ui, description: &mut String, legend: &Legend) {
             .height(DESCRIPTION_MENU_ROWS * row_height)
             .show_ui(ui, |ui| {
                 for d in descriptions {
-                    let current = *description == d;
-                    if ui.selectable_label(current, &d).clicked() {
-                        *description = d;
+                    let chosen = *text == d;
+                    if ui.selectable_label(chosen, &d).clicked() {
+                        picked = Some(d);
                     }
                 }
             })
@@ -194,15 +235,28 @@ fn description_row(ui: &mut Ui, description: &mut String, legend: &Legend) {
     });
     accessible_label(&row, &menu.inner, "Descriptions".to_owned());
     row.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        ui.add(Label::new(RichText::new("New").weak()).extend());
+        ui.add(Label::new(RichText::new(label).weak()).extend());
+        let id = description_field_id();
         let field = ui.add(
-            egui::TextEdit::singleline(description)
+            egui::TextEdit::singleline(text)
+                .id(id)
                 .hint_text("Description")
                 .desired_width(f32::INFINITY),
         );
-        accessible_label(ui, &field, "Description of new annotations".to_owned());
+        accessible_label(ui, &field, accessible.to_owned());
     });
     ui.add_space(4.0);
+    match (picked, current) {
+        (Some(d), None) => {
+            *text = d;
+            None
+        }
+        (Some(d), Some(_)) => {
+            *text = d.clone();
+            Some(d)
+        }
+        (None, _) => None,
+    }
 }
 
 /// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how

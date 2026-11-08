@@ -24,7 +24,9 @@ use crate::scale;
 use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
-use crate::ui::header::{AnnotationPanel, header_panel, within_width};
+use crate::ui::header::{
+    AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
+};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{readout, scrollbar, status};
 use crate::view::{Area, ViewState};
@@ -177,6 +179,10 @@ pub struct Viewer {
     drag: Option<Drag>,
     /// The description of annotations created from now on.
     description: String,
+    /// The selected annotation's description as the field edits it.
+    draft: Option<String>,
+    /// Whether the description field had the keyboard at the last frame.
+    typing: bool,
     history: History,
 }
 
@@ -219,6 +225,8 @@ impl Viewer {
             outline: None,
             drag: None,
             description: DEFAULT_DESCRIPTION.to_owned(),
+            draft: None,
+            typing: false,
             history: History::default(),
         }
     }
@@ -267,6 +275,11 @@ impl Viewer {
     /// The description new annotations get.
     pub fn description(&self) -> &str {
         &self.description
+    }
+
+    /// Whether the annotations differ from the opened ones.
+    pub fn edited(&self) -> bool {
+        self.history.edited()
     }
 
     /// The annotation edits that can be undone and redone.
@@ -403,29 +416,41 @@ impl Viewer {
         })
     }
 
+    /// Whether the description field had the keyboard at the last frame: an Esc now left
+    /// it, and is not for the traces.
+    pub fn was_typing(&self) -> bool {
+        self.typing
+    }
+
     /// Whether a drag is creating, moving or resizing an annotation.
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// Ends a drag: merges its annotation with those of its kind it overlaps or touches
-    /// (see [`annotations::merge`]), records all as one edit, and selects it. A drag that
-    /// changed nothing records nothing and merges nothing.
+    /// Ends a drag, recording it (see [`record`](Self::record)).
     fn finish_drag(&mut self) {
         let Some(drag) = self.drag.take() else {
             return;
         };
+        self.record(drag.id, drag.before);
+    }
+
+    /// Records the edit of annotation `id`, already in the store, from `before`: merges it
+    /// with those of its kind it overlaps or touches (see [`annotations::merge`]), records
+    /// all as one step, and selects it. An edit that changed nothing records nothing and
+    /// merges nothing.
+    fn record(&mut self, edited: AnnotationId, before: Option<AnnotationData>) {
         let store = &mut self.document.annotations;
-        let after = store.get(drag.id).map(|a| a.data.clone());
-        if after.is_none() || after == drag.before {
+        let after = store.get(edited).map(|a| a.data.clone());
+        if after.is_none() || after == before {
             return;
         }
         let mut step = vec![Change {
-            id: drag.id,
-            before: drag.before,
+            id: edited,
+            before,
             after,
         }];
-        for (id, data) in annotations::merge(store, drag.id) {
+        for (id, data) in annotations::merge(store, edited) {
             let before = store.get(id).map(|a| a.data.clone());
             history::set(store, id, data.clone()).expect("merged annotations are valid");
             step.push(Change {
@@ -436,7 +461,53 @@ impl Viewer {
         }
         self.history.push(step);
         self.legend.sync(store);
-        self.selected = Some(drag.id);
+        self.selected = Some(edited);
+    }
+
+    /// When the description field gives up the keyboard (Enter, a press in the traces,
+    /// which selects only on release), the selected annotation gets what was typed, unless
+    /// Esc took the keyboard (egui does that before any widget sees the key); while it
+    /// doesn't have it, it shows the selected annotation's description.
+    fn sync_draft(&mut self, ctx: &egui::Context) {
+        let typing = ctx.memory(|m| m.has_focus(description_field_id()));
+        let stopped = std::mem::replace(&mut self.typing, typing) && !typing;
+        if typing {
+            return;
+        }
+        let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let typed = self.draft.take();
+        if stopped
+            && !escaped
+            && let (Some(typed), Some(id)) = (typed, self.selected)
+        {
+            self.relabel(id, typed);
+        }
+        self.draft = self
+            .selected
+            .filter(|_| self.editing)
+            .and_then(|id| self.document.annotations.get(id))
+            .map(|a| a.data.description.clone());
+    }
+
+    /// Gives annotation `id` the description `description`, unless it is empty, as one
+    /// step; it merges as any edit does, and its description is shown.
+    fn relabel(&mut self, id: AnnotationId, description: String) {
+        let Some(a) = self.document.annotations.get(id) else {
+            return;
+        };
+        if description.is_empty() || a.data.description == description {
+            return;
+        }
+        let before = a.data.clone();
+        let after = AnnotationData {
+            description: description.clone(),
+            ..before.clone()
+        };
+        history::set(&mut self.document.annotations, id, Some(after))
+            .expect("a new description keeps it valid");
+        self.legend.sync(&self.document.annotations);
+        self.legend.set_shown(&description, true);
+        self.record(id, Some(before));
     }
 
     /// Puts the annotation of a drag back as it was before; returns whether there was one.
@@ -479,6 +550,7 @@ impl Viewer {
             self.selected = None;
         }
         let mut open_clicked = false;
+        let mut relabel = None;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(color) = self.status.swatch {
@@ -500,7 +572,7 @@ impl Viewer {
                 .min_size(SIDEBAR_MIN_WIDTH)
                 .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
                 .show(ui, |ui| {
-                    open_clicked = within_width(ui, |ui| {
+                    let response = within_width(ui, |ui| {
                         header_panel(
                             ui,
                             &self.document,
@@ -510,13 +582,30 @@ impl Viewer {
                             AnnotationPanel {
                                 legend: &mut self.legend,
                                 colors: annotation_colors,
-                                description: self.editing.then_some(&mut self.description),
+                                field: self.editing.then(|| match &mut self.draft {
+                                    Some(draft) => DescriptionField::Selected {
+                                        current: self
+                                            .selected
+                                            .and_then(|id| self.document.annotations.get(id))
+                                            .map_or("", |a| &a.data.description),
+                                        draft,
+                                    },
+                                    None => DescriptionField::New(&mut self.description),
+                                }),
                             },
                         )
                     });
+                    open_clicked = response.open;
+                    relabel = response.relabel;
                 });
+            if let Some(description) = relabel
+                && let Some(id) = self.selected
+            {
+                self.relabel(id, description);
+            }
         }
         egui::CentralPanel::default().show(ui, |ui| self.trace_region(ui, gpu, keymap));
+        self.sync_draft(ui.ctx());
 
         // The status line was laid out before the traces moved; show the new texts in the
         // next frame, and only ask for one if they changed.

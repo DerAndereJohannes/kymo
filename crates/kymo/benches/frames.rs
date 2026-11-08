@@ -3,7 +3,7 @@
 //! public API and egui's input, as the keys and the trackpad do:
 //!
 //! ```text
-//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]
+//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]
 //! ```
 //!
 //! The window (1280×800, vsync off, drawing continuously) opens FILE at the default view
@@ -21,6 +21,14 @@
 //! - **glide:** [`GLIDE_FRAMES`] scrolls of 1/100 of the window to later times;
 //! - **pinch out, pinch in:** pinches of 2^(1/16) around the middle of the traces until the
 //!   whole recording shows, and as many back.
+//!
+//! With `--edit`, then annotation editing, one input per frame (for the phase 3 target of
+//! 60 Hz with 10,000 annotations, `kymo-testgen edf+c-annotations`): annotation mode on,
+//!
+//! - **create:** a drag of [`EDIT_FRAMES`] points creating an annotation;
+//! - **move:** a drag of its middle by half as far;
+//! - **resize:** a drag of its end by [`EDIT_FRAMES`] points;
+//! - **undo:** [`UNDO_STEPS`] × Undo and Redo, alternating, so each changes the store.
 //!
 //! Without `--fresh` the sidecar in the user's cache directory is used, built first (and
 //! then the benchmark started again, so the build doesn't count towards peak memory); with
@@ -52,6 +60,9 @@ const PAN_STEPS: usize = 40;
 const GLIDE_FRAMES: usize = 300;
 /// Pinches per doubling of the window.
 const PINCHES_PER_DOUBLING: f32 = 16.0;
+/// Frames of each editing drag, moving the pointer a point per frame.
+const EDIT_FRAMES: usize = 120;
+const UNDO_STEPS: usize = 20;
 
 fn main() {
     // `cargo bench` passes `--bench`.
@@ -60,23 +71,26 @@ fn main() {
         .filter(|a| a != "--bench")
         .collect();
     let fresh = args.iter().any(|a| a == "--fresh");
+    let edit = args.iter().any(|a| a == "--edit");
     let settings = Settings {
         antialias: args.iter().any(|a| a == "--antialias"),
         ..Settings::default()
     };
     let files: Vec<PathBuf> = args
         .iter()
-        .filter(|a| *a != "--fresh" && *a != "--antialias")
+        .filter(|a| !matches!(a.as_str(), "--fresh" | "--antialias" | "--edit"))
         .map(PathBuf::from)
         .collect();
     let [path] = &files[..] else {
         if args.is_empty() {
             eprintln!(
-                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]`"
+                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]`"
             );
             return;
         }
-        eprintln!("usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias]");
+        eprintln!(
+            "usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]"
+        );
         std::process::exit(2);
     };
 
@@ -101,7 +115,7 @@ fn main() {
         }
     };
 
-    let report = run(path, sidecar_dir, settings);
+    let report = run(path, sidecar_dir, settings, edit);
     if let Some(dir) = fresh_dir {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -150,7 +164,7 @@ fn build_sidecar(dir: &Path, path: &Path) -> bool {
 }
 
 /// Opens the window, runs the sequence and returns what it measured.
-fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings) -> Report {
+fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool) -> Report {
     let report = Rc::new(RefCell::new(Report::default()));
     let out = Rc::clone(&report);
     let path = path.to_owned();
@@ -175,7 +189,7 @@ fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings) -> Report {
                 annotation_colors: Default::default(),
             };
             let app = KymoApp::new(&cc.egui_ctx, gpu, options, Some(path));
-            Ok(Box::new(Bench::new(app, out)))
+            Ok(Box::new(Bench::new(app, out, edit)))
         }),
     )
     .unwrap();
@@ -193,11 +207,16 @@ enum Phase {
     Glide,
     PinchOut,
     PinchIn,
+    EditMode,
+    Create,
+    Move,
+    Resize,
+    Undo,
     Done,
 }
 
 impl Phase {
-    const MEASURED: [Phase; 8] = [
+    const MEASURED: [Phase; 13] = [
         Phase::Pan,
         Phase::ZoomOut,
         Phase::ZoomIn,
@@ -206,6 +225,11 @@ impl Phase {
         Phase::Glide,
         Phase::PinchOut,
         Phase::PinchIn,
+        Phase::EditMode,
+        Phase::Create,
+        Phase::Move,
+        Phase::Resize,
+        Phase::Undo,
     ];
 
     fn name(self) -> &'static str {
@@ -219,13 +243,26 @@ impl Phase {
             Phase::Glide => "glide",
             Phase::PinchOut => "pinch out",
             Phase::PinchIn => "pinch in",
+            Phase::EditMode => "edit mode",
+            Phase::Create => "create",
+            Phase::Move => "move",
+            Phase::Resize => "resize",
+            Phase::Undo => "undo",
             Phase::Done => "done",
         }
     }
 
     /// One input per frame, without waiting for a complete view.
     fn continuous(self) -> bool {
-        matches!(self, Phase::Glide | Phase::PinchOut | Phase::PinchIn)
+        !matches!(
+            self,
+            Phase::Opening
+                | Phase::Pan
+                | Phase::ZoomOut
+                | Phase::ZoomIn
+                | Phase::PageDown
+                | Phase::PageUp
+        )
     }
 
     fn after(self) -> Phase {
@@ -238,7 +275,12 @@ impl Phase {
             Phase::PageUp => Phase::Glide,
             Phase::Glide => Phase::PinchOut,
             Phase::PinchOut => Phase::PinchIn,
-            Phase::PinchIn | Phase::Done => Phase::Done,
+            Phase::PinchIn => Phase::EditMode,
+            Phase::EditMode => Phase::Create,
+            Phase::Create => Phase::Move,
+            Phase::Move => Phase::Resize,
+            Phase::Resize => Phase::Undo,
+            Phase::Undo | Phase::Done => Phase::Done,
         }
     }
 }
@@ -251,6 +293,32 @@ enum Input {
     Scroll(Vec2),
     /// A pinch by this factor (above 1 spreads).
     Pinch(f32),
+    /// The pointer at a position, pressing or releasing the primary button there.
+    Pointer {
+        pos: Pos2,
+        press: Option<bool>,
+    },
+}
+
+/// Step `count` of a drag from `from` that moves the pointer `offset(step)` points to the
+/// right at each of [`EDIT_FRAMES`] steps: the press, the moves, the release.
+fn drag_step(count: usize, from: Pos2, offset: impl Fn(usize) -> f32) -> Option<Input> {
+    let at = |c: usize| from + Vec2::new(offset(c), 0.0);
+    match count {
+        0 => Some(Input::Pointer {
+            pos: from,
+            press: Some(true),
+        }),
+        c if c <= EDIT_FRAMES => Some(Input::Pointer {
+            pos: at(c),
+            press: None,
+        }),
+        c if c == EDIT_FRAMES + 1 => Some(Input::Pointer {
+            pos: at(EDIT_FRAMES),
+            press: Some(false),
+        }),
+        _ => None,
+    }
 }
 
 /// The sequence, decided one step at a time from the view.
@@ -260,12 +328,18 @@ struct Script {
     count: usize,
     /// Steps of the phase before, to undo in this one.
     undo: usize,
+    /// Whether annotation editing follows the view phases.
+    edit: bool,
 }
 
 impl Script {
-    /// The next step and its phase, or `None` at the end. `width` is the traces' width.
-    fn next(&mut self, view: &ViewState, width: f32) -> Option<(Phase, Input)> {
+    /// The next step and its phase, or `None` at the end, on traces at `traces`.
+    fn next(&mut self, view: &ViewState, traces: egui::Rect) -> Option<(Phase, Input)> {
+        let width = traces.width();
         let whole = view.span() >= view.duration();
+        // The new annotation spans `EDIT_FRAMES` points from here, then half as many later.
+        let start = traces.left_center() + Vec2::new(0.3 * width, 0.0);
+        let frames = EDIT_FRAMES as f32;
         let pinch = (1.0 / PINCHES_PER_DOUBLING).exp2();
         loop {
             let input = match self.phase {
@@ -282,6 +356,22 @@ impl Script {
                     .then_some(Input::Scroll(Vec2::new(-width / 100.0, 0.0))),
                 Phase::PinchOut => (!whole).then_some(Input::Pinch(1.0 / pinch)),
                 Phase::PinchIn => (self.count < self.undo).then_some(Input::Pinch(pinch)),
+                Phase::EditMode if !self.edit => return None,
+                Phase::EditMode => (self.count == 0).then_some(Input::Key(Action::ToggleEditing)),
+                Phase::Create => drag_step(self.count, start, |c| c as f32),
+                Phase::Move => drag_step(self.count, start + Vec2::new(frames / 2.0, 0.0), |c| {
+                    c as f32 / 2.0
+                }),
+                Phase::Resize => drag_step(self.count, start + Vec2::new(1.5 * frames, 0.0), |c| {
+                    c as f32
+                }),
+                Phase::Undo => (self.count < 2 * UNDO_STEPS).then_some(Input::Key(
+                    if self.count.is_multiple_of(2) {
+                        Action::Undo
+                    } else {
+                        Action::Redo
+                    },
+                )),
                 Phase::Done => return None,
             };
             if let Some(input) = input {
@@ -304,6 +394,8 @@ struct Report {
     /// phases drawn partly from coarser tiles.
     incomplete: Vec<Phase>,
     opening: Option<f64>,
+    /// Annotations at the start and at the end, with `--edit`.
+    annotations: Option<(usize, usize)>,
 }
 
 impl Report {
@@ -321,6 +413,9 @@ impl Report {
             .map(|&p| (p.name(), vec![p]))
             .chain([("all", Phase::MEASURED.to_vec())]);
         for (name, phases) in rows {
+            if !self.frames.iter().any(|(p, _)| phases.contains(p)) {
+                continue;
+            }
             let pick = |v: &[(Phase, f64)]| -> Vec<f64> {
                 v.iter()
                     .filter(|(p, _)| phases.contains(p))
@@ -345,6 +440,9 @@ impl Report {
                 ms(steps.p99),
                 ms(steps.max),
             );
+        }
+        if let Some((start, end)) = self.annotations {
+            println!("annotations: {start} at the start, {end} after editing");
         }
         println!(
             "frames: from one frame's start to the next. steps: from the change to a complete \
@@ -399,18 +497,19 @@ struct Bench {
     step: Option<(Phase, Instant)>,
     /// The middle of the traces, where the pointer is kept for scrolls and pinches.
     pointer: Option<Pos2>,
-    /// A scroll or pinch for the next frame's input.
+    /// A scroll, pinch or button for the next frame's input.
     event: Option<Event>,
 }
 
 impl Bench {
-    fn new(app: KymoApp, report: Rc<RefCell<Report>>) -> Bench {
+    fn new(app: KymoApp, report: Rc<RefCell<Report>>, edit: bool) -> Bench {
         Bench {
             app,
             script: Script {
                 phase: Phase::Opening,
                 count: 0,
                 undo: 0,
+                edit,
             },
             report,
             started: Instant::now(),
@@ -430,7 +529,7 @@ impl Bench {
             return;
         };
         self.pointer = Some(layout.traces.center());
-        match self.script.next(viewer.view(), layout.traces.width()) {
+        match self.script.next(viewer.view(), layout.traces) {
             Some((phase, input)) => {
                 match input {
                     Input::Key(action) => self.app.perform(ctx, action),
@@ -444,10 +543,28 @@ impl Bench {
                         });
                     }
                     Input::Pinch(factor) => self.event = Some(Event::Zoom(factor)),
+                    Input::Pointer { pos, press } => {
+                        self.pointer = Some(pos);
+                        self.event = press.map(|pressed| Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
                 }
                 self.step = Some((phase, Instant::now()));
             }
-            None => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {
+                if self.script.edit {
+                    // The edits happened: one undo step each, the last redone.
+                    assert!(viewer.edited() && viewer.history().can_undo());
+                    let mut report = self.report.borrow_mut();
+                    let start = report.annotations.map_or(0, |(start, _)| start);
+                    report.annotations = Some((start, viewer.document().annotations.len()));
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 }
@@ -488,6 +605,11 @@ impl eframe::App for Bench {
                     return;
                 }
                 report.opening = complete.then_some(waited.as_secs_f64());
+                let count = self
+                    .app
+                    .viewer()
+                    .map_or(0, |v| v.document().annotations.len());
+                report.annotations = Some((count, count));
             }
             Some((phase, _)) if phase.continuous() => {
                 if !complete {

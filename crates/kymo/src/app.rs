@@ -77,6 +77,8 @@ pub struct KymoApp {
     pick_file: bool,
     /// Whether a frame has been shown yet.
     shown: bool,
+    /// The window title last set.
+    title: String,
 }
 
 /// A recording ready to show, as the loading thread hands it over.
@@ -110,6 +112,8 @@ impl KymoApp {
             settings_open: false,
             pick_file: path.is_none(),
             shown: false,
+            // As the window opens.
+            title: APP_NAME.to_owned(),
         };
         if let Some(path) = path {
             app.open(ctx, path);
@@ -228,9 +232,28 @@ impl KymoApp {
         }
     }
 
+    /// The window title: the recording's file name, with "(edited)" while its annotations
+    /// differ from the opened ones, and the app's name.
+    pub fn title(&self) -> String {
+        let Some(path) = self.current_path() else {
+            return APP_NAME.to_owned();
+        };
+        let edited = if self.viewer().is_some_and(Viewer::edited) {
+            " (edited)"
+        } else {
+            ""
+        };
+        format!("{}{edited} – {APP_NAME}", file_name(path))
+    }
+
+    /// The title last sent to the window, which [`title`](Self::title) gives at the end of
+    /// each frame.
+    pub fn window_title(&self) -> &str {
+        &self.title
+    }
+
     /// Opens `path` on a background thread, with its tile service.
     pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
-        set_title(ctx, Some(&file_name(&path)));
         let store = match &self.options.sidecar_dir {
             Some(dir) => PyramidStore::Sidecar {
                 dir: dir.clone(),
@@ -258,7 +281,7 @@ impl KymoApp {
     /// One frame: picks up a finished open, handles keys, and draws the window.
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        self.poll_loading(&ctx);
+        self.poll_loading();
         // The startup dialog is modal: show it once the window has been drawn and has focus.
         // On macOS a panel opened before the app is active is canceled at once; gaining
         // focus repaints, which brings us back here.
@@ -343,6 +366,11 @@ impl KymoApp {
         if open_clicked {
             self.pick_and_open(&ctx);
         }
+        let title = self.title();
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
     }
 
     /// Carries out `action`, unless it is disabled now.
@@ -362,7 +390,6 @@ impl KymoApp {
             Action::Open => self.pick_and_open(ctx),
             Action::Close => {
                 self.state = State::Empty;
-                set_title(ctx, None);
             }
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
@@ -392,7 +419,8 @@ impl KymoApp {
         if ctx.egui_wants_keyboard_input() {
             return Vec::new();
         }
-        let popup = egui::Popup::is_any_open(ctx);
+        // Esc in a text field: egui took the keyboard back before this frame's widgets.
+        let popup = egui::Popup::is_any_open(ctx) || self.viewer().is_some_and(Viewer::was_typing);
         let actions: Vec<Action> = ctx.input(|i| {
             i.events
                 .iter()
@@ -441,7 +469,7 @@ impl KymoApp {
         }
     }
 
-    fn poll_loading(&mut self, ctx: &egui::Context) {
+    fn poll_loading(&mut self) {
         let State::Loading(loading) = &self.state else {
             return;
         };
@@ -450,7 +478,6 @@ impl KymoApp {
         };
         self.state = match result {
             Ok((document, service)) => {
-                set_title(ctx, Some(&document.name()));
                 let mut viewer = Viewer::new(
                     document,
                     service,
@@ -554,14 +581,6 @@ pub fn text_field_key(action: Action) -> Option<Event> {
         repeat: false,
         modifiers,
     })
-}
-
-fn set_title(ctx: &egui::Context, file: Option<&str>) {
-    let title = match file {
-        Some(file) => format!("{file} – {APP_NAME}"),
-        None => APP_NAME.to_owned(),
-    };
-    ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 }
 
 /// A message with an optional detail and an Open button, centered. Returns whether the
