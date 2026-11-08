@@ -39,3 +39,11 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+# Peak resident memory for the frames benchmark.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "frames"
+harness = false

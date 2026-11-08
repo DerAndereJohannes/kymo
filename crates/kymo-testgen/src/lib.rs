@@ -424,6 +424,11 @@ mod presets {
             "EDF, 64 EEG channels at 1000 Hz, 1 h (461 MB)",
         ),
         (
+            "edf-306ch-1h",
+            "EDF, 306 EEG channels at 1000 Hz, 1 h, standing in for a 306-channel MEG \
+             recording (2 GB)",
+        ),
+        (
             "bdf-256ch-8h",
             "BDF, 256 EEG channels at 2048 Hz, 8 h (45 GB)",
         ),
@@ -442,6 +447,7 @@ mod presets {
     pub fn get(name: &str) -> Option<Spec> {
         let spec = match name {
             "edf-64ch-1h" => eeg(Format::Edf, 64, 1000, 1.0, 3600),
+            "edf-306ch-1h" => eeg(Format::Edf, 306, 1000, 1.0, 3600),
             "bdf-256ch-8h" => eeg(Format::Bdf, 256, 2048, 1.0, 8 * 3600),
             "edf+d-mixed" => edf_d_mixed(),
             "bdf+c-small" => bdf_c_small(),

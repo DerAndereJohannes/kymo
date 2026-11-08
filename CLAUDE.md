@@ -43,7 +43,7 @@ docs/phase2-plan.md  agreed plan for phase 2 (the viewer)
 
 - Stable Rust, edition 2024. `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must be clean.
 - Error handling: `thiserror` in `kymo-core`, `anyhow` only in binaries. No `unwrap()` on file input.
-- `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires), with a `// SAFETY:` comment.
+- `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires; reading peak memory in the frames benchmark), with a `// SAFETY:` comment.
 - Tests are behavioral: they check outputs (decoded samples, tile values, annotations), not internal structure.
   Use `proptest` to compare tiles against a brute-force min/max pass.
 - Integration tests live in one binary per crate, `tests/all/`, a module per area (`main.rs` lists them), so they link once
@@ -64,6 +64,8 @@ cargo run -p kymo --release -- file.bdf
 cargo bench -p kymo-core                   # build and decode benches on generated files
 KYMO_BENCH_BDF=big.bdf cargo bench -p kymo-core --bench query   # big.bdf from `kymo-testgen bdf-256ch-8h`
 cargo run --release -p kymo-core --example pyramid -- file.bdf [--sidecar DIR]   # build speed
+cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--views views.tsv]   # viewer frame times, memory
+uv run --no-project --with mne --with mne-qt-browser --with pyqt6 python scripts/bench_mne_qt.py file.bdf views.tsv   # the same views in mne-qt-browser
 python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
 python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne
