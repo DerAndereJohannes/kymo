@@ -200,6 +200,7 @@ impl KymoApp {
             typing: ctx.egui_wants_keyboard_input(),
             editing: viewer.is_some_and(Viewer::editing),
             selected: viewer.is_some_and(|v| v.selected().is_some()),
+            dragging: viewer.is_some_and(Viewer::dragging),
             can_undo: viewer.is_some_and(|v| v.history().can_undo()),
             can_redo: viewer.is_some_and(|v| v.history().can_redo()),
             sidebar: self.show_sidebar,
@@ -491,6 +492,9 @@ struct AppMenuState {
     /// Whether annotation mode is on, and an annotation selected.
     editing: bool,
     selected: bool,
+    /// Whether a drag is changing an annotation: until it ends, nothing else may, and Esc
+    /// takes it back.
+    dragging: bool,
     can_undo: bool,
     can_redo: bool,
     sidebar: bool,
@@ -508,9 +512,10 @@ impl MenuState for AppMenuState {
         // Toggle Bad needs a channel to act on.
         let now = match action {
             Action::ToggleBad => self.channel,
-            Action::Undo => self.can_undo || self.typing,
-            Action::Redo => self.can_redo || self.typing,
-            Action::DeleteAnnotation | Action::Deselect => self.selected,
+            Action::Undo => self.can_undo && !self.dragging || self.typing,
+            Action::Redo => self.can_redo && !self.dragging || self.typing,
+            Action::DeleteAnnotation => self.selected && !self.dragging,
+            Action::Deselect => self.selected || self.dragging,
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,
             _ => true,
         };

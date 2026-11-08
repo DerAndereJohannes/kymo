@@ -495,3 +495,158 @@ fn bands_come_in_a_fixed_order() {
         assert_eq!(marks(&view, &store, &legend, 300, label_width), first);
     }
 }
+
+#[test]
+fn a_press_grabs_the_edges_within_reach_and_the_body_between() {
+    use kymo::annotations::Grip::{Body, End, Start};
+    let wide = |x| kymo::annotations::grip(0.0, 100.0, x, 4.0, 0.5);
+    let found: Vec<_> = [-4.5, -4.0, 0.0, 4.0, 4.5, 50.0, 95.5, 96.0, 104.0, 104.5]
+        .map(wide)
+        .into();
+    assert_eq!(
+        found,
+        [
+            None,
+            Some(Start),
+            Some(Start),
+            Some(Start),
+            Some(Body),
+            Some(Body),
+            Some(Body),
+            Some(End),
+            Some(End),
+            None
+        ]
+    );
+    // Short: the edges reach a third of the way in, leaving the middle to move by.
+    let short = |x| kymo::annotations::grip(0.0, 6.0, x, 4.0, 0.5);
+    assert_eq!(short(2.0), Some(Start));
+    assert_eq!(short(3.0), Some(Body));
+    assert_eq!(short(4.0), Some(End));
+    assert_eq!(short(-4.0), Some(Start));
+    // Narrower than a line: moved only, within reach of its middle.
+    let line = |x| kymo::annotations::grip(10.0, 10.2, x, 4.0, 0.5);
+    assert_eq!(line(10.1), Some(Body));
+    assert_eq!(line(5.85), Some(Body));
+    assert_eq!(line(14.35), Some(Body));
+    assert_eq!(line(5.8), None);
+    assert_eq!(line(14.4), None);
+}
+
+/// The closed intervals `items` cover, joined where they overlap or touch.
+fn union(mut items: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in items {
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+/// Annotations on a grid of quarter seconds, so ends that touch are exactly equal; few
+/// descriptions and channel sets, so many are of a kind.
+fn any_mergeable() -> impl Strategy<Value = AnnotationData> {
+    (
+        0u8..40,
+        0u8..12,
+        prop_oneof![Just("BAD"), Just("x")],
+        prop_oneof![
+            Just(vec![]),
+            Just(vec![1]),
+            Just(vec![1, 2]),
+            Just(vec![2, 1])
+        ],
+        prop_oneof![
+            3 => Just(Origin::File),
+            3 => Just(Origin::Viewer),
+            1 => Just(Origin::Stim)
+        ],
+    )
+        .prop_map(
+            |(onset, duration, description, channels, origin)| AnnotationData {
+                origin,
+                ..data(
+                    f64::from(onset) / 4.0,
+                    f64::from(duration) / 4.0,
+                    description,
+                    &channels,
+                )
+            },
+        )
+}
+
+/// Whether `a` and `b` merge, without `annotations::same_kind`: the same description and
+/// channels as sets, neither from the stim channel.
+fn of_a_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
+    let set = |d: &AnnotationData| d.channels.iter().copied().collect::<BTreeSet<_>>();
+    a.origin != Origin::Stim
+        && b.origin != Origin::Stim
+        && a.description == b.description
+        && set(a) == set(b)
+}
+
+proptest! {
+    #[test]
+    fn merging_joins_exactly_the_annotations_of_a_kind_it_reaches(
+        items in proptest::collection::vec(any_mergeable(), 1..30),
+        n: usize,
+    ) {
+        use kymo::annotations::merge;
+        let store = AnnotationStore::from_data(items);
+        let all: Vec<Annotation> = store.iter().cloned().collect();
+        let edited = all[n % all.len()].clone();
+        let changes = merge(&store, edited.id);
+        let mut after = store.clone();
+        for (id, data) in &changes {
+            kymo::history::set(&mut after, *id, data.clone()).unwrap();
+        }
+        if edited.data.origin == Origin::Stim {
+            prop_assert!(changes.is_empty());
+            return Ok(());
+        }
+        // The edited one grows; the rest of the changes remove annotations of its kind.
+        if let Some((first, rest)) = changes.split_first() {
+            prop_assert_eq!(first.0, edited.id);
+            prop_assert!(first.1.is_some());
+            for (id, data) in rest {
+                prop_assert!(data.is_none());
+                prop_assert!(of_a_kind(&edited.data, &store.get(*id).unwrap().data));
+            }
+        }
+        let grown = after.get(edited.id).unwrap().data.clone();
+        prop_assert_eq!(
+            AnnotationData { onset: 0.0, duration: 0.0, ..grown.clone() },
+            AnnotationData { onset: 0.0, duration: 0.0, ..edited.data.clone() }
+        );
+        // It overlaps and touches nothing of its kind any more.
+        for b in after.iter() {
+            prop_assert!(
+                b.id == edited.id
+                    || !of_a_kind(&grown, &b.data)
+                    || b.data.onset > grown.end()
+                    || b.data.end() < grown.onset,
+                "{:?} still reaches {:?}", b, grown
+            );
+        }
+        // Its kind covers the same time as before, and every other annotation is as it was.
+        let covered = |s: &AnnotationStore| {
+            union(
+                s.iter()
+                    .filter(|b| of_a_kind(&edited.data, &b.data))
+                    .map(|b| (b.data.onset, b.data.end()))
+                    .collect(),
+            )
+        };
+        prop_assert_eq!(covered(&after), covered(&store));
+        let others = |s: &AnnotationStore| {
+            s.iter()
+                .filter(|b| !of_a_kind(&edited.data, &b.data))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        prop_assert_eq!(others(&after), others(&store));
+    }
+}

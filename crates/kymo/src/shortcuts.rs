@@ -95,6 +95,10 @@ fn gestures(platform: Platform) -> Vec<Row> {
             "Create an annotation",
         ),
         row("Click an annotation in annotation mode".into(), "Select it"),
+        row(
+            "Drag the selected annotation".into(),
+            "Move it, or resize it at an edge",
+        ),
         row("Click a channel name".into(), "Toggle bad channel"),
     ]
 }

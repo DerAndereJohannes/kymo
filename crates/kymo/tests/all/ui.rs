@@ -1729,6 +1729,16 @@ fn press(harness: &mut Harness<'_, KymoApp>, modifiers: Modifiers, key: Key) {
     harness.step();
 }
 
+/// Types `text` into the description field, in place of what it held.
+fn describe(harness: &mut Harness<'_, KymoApp>, text: &str) {
+    let field = "Description of new annotations";
+    harness.get_by_label(field).focus();
+    harness.run_steps(2);
+    press(harness, command(), Key::A);
+    harness.get_by_label(field).type_text(text);
+    harness.run_steps(2);
+}
+
 fn selected_data(harness: &Harness<'_, KymoApp>) -> Option<kymo_core::AnnotationData> {
     let viewer = viewer(harness);
     let id = viewer.selected()?;
@@ -1934,8 +1944,13 @@ fn clicks_select_the_shortest_editable_annotation() {
     let mut harness = window(file.path());
     ready(&mut harness);
     press(&mut harness, command(), Key::E);
+    // Of another description, or the two would merge.
+    describe(&mut harness, "long");
     let (a, b) = (at_time(&harness, 12.0, 40.0), at_time(&harness, 19.0, 40.0));
     drag(&mut harness, a, b);
+    describe(&mut harness, "BAD");
+    // Inside the selected one, a drag would move it.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
     let (a, b) = (at_time(&harness, 13.0, 40.0), at_time(&harness, 14.0, 40.0));
     drag(&mut harness, a, b);
     assert_eq!(made(&harness).len(), 2);
@@ -1946,10 +1961,10 @@ fn clicks_select_the_shortest_editable_annotation() {
     use kymo_core::Origin::{File, Viewer};
     // The new one is selected, so a click on it selects the next longer one there.
     assert_eq!(selected_data(&harness).unwrap().duration.round(), 1.0);
-    assert_eq!(pick(&mut harness, 13.5), Some(("BAD".into(), 7.0, Viewer)));
+    assert_eq!(pick(&mut harness, 13.5), Some(("long".into(), 7.0, Viewer)));
     press(&mut harness, Modifiers::NONE, Key::Escape);
     assert_eq!(pick(&mut harness, 13.5), Some(("BAD".into(), 1.0, Viewer)));
-    assert_eq!(pick(&mut harness, 12.5), Some(("BAD".into(), 7.0, Viewer)));
+    assert_eq!(pick(&mut harness, 12.5), Some(("long".into(), 7.0, Viewer)));
     // A file annotation inside the long one is shorter.
     assert_eq!(
         pick(&mut harness, 16.0),
@@ -1975,11 +1990,11 @@ fn clicks_select_the_shortest_editable_annotation() {
     assert_eq!(pick(&mut harness, stim), None);
 
     // A hidden description can't be selected, and hiding it deselects.
-    assert!(pick(&mut harness, 13.5).is_some());
+    assert_eq!(pick(&mut harness, 13.5).unwrap().0, "BAD");
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
     harness.step();
     assert_eq!(viewer(&harness).selected(), None);
-    assert_eq!(pick(&mut harness, 13.5), None);
+    assert_eq!(pick(&mut harness, 13.5).unwrap().0, "long");
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
     assert!(pick(&mut harness, 13.5).is_some());
     // Creating one with a hidden description shows them.
@@ -2017,6 +2032,7 @@ fn repeated_clicks_reach_every_annotation_under_the_pointer() {
         press(&mut harness, command(), Key::A);
         harness.get_by_label(field).type_text(description);
         harness.run_steps(2);
+        press(&mut harness, Modifiers::NONE, Key::Escape);
         let (a, b) = (at_time(&harness, from, 40.0), at_time(&harness, to, 40.0));
         drag(&mut harness, a, b);
     }
@@ -2599,4 +2615,358 @@ fn renders_the_window() {
     let mut ppm = format!("P6 {} {} 255\n", image.width(), image.height()).into_bytes();
     ppm.extend(image.pixels().flat_map(|p| [p[0], p[1], p[2]]));
     std::fs::write(dir.join("window.ppm"), ppm).unwrap();
+}
+
+/// The selected annotation's onset and end.
+fn selected_span(harness: &Harness<'_, KymoApp>) -> (f64, f64) {
+    let d = selected_data(harness).expect("a selection");
+    (d.onset, d.end())
+}
+
+#[track_caller]
+fn assert_span(got: (f64, f64), want: (f64, f64)) {
+    assert!(
+        (got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3,
+        "{got:?} != {want:?}"
+    );
+}
+
+fn cursor(harness: &Harness<'_, KymoApp>) -> egui::CursorIcon {
+    harness.output().platform_output.cursor_icon
+}
+
+#[test]
+fn dragging_the_selected_annotation_moves_and_resizes_it() {
+    let file = without_triggers("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let at = |harness: &Harness<'_, KymoApp>, t| at_time(harness, t, 40.0);
+    let (a, b) = (at(&harness, 2.0), at(&harness, 6.0));
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (2.0, 6.0));
+    // Inside, it moves; at an edge, or just outside, the edge moves.
+    let (a, b) = (at(&harness, 4.0), at(&harness, 5.0));
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (3.0, 7.0));
+    let (a, b) = (at(&harness, 7.0), at(&harness, 8.0));
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (3.0, 8.0));
+    // The edge keeps its distance to the pointer.
+    let outside = egui::vec2(3.0, 0.0);
+    let (a, b) = (at(&harness, 3.0) - outside, at(&harness, 2.5) - outside);
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (2.5, 8.0));
+    // Past the other edge, they swap.
+    let (a, b) = (at(&harness, 8.0), at(&harness, 1.0));
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (1.0, 2.5));
+    assert_eq!(made(&harness).len(), 1);
+    // Each drag is one step.
+    for want in [(2.5, 8.0), (3.0, 8.0), (3.0, 7.0), (2.0, 6.0)] {
+        press(&mut harness, command(), Key::Z);
+        assert_span(selected_span(&harness), want);
+    }
+    press(&mut harness, Modifiers::SHIFT | command(), Key::Z);
+    assert_span(selected_span(&harness), (3.0, 7.0));
+    // Moving stops at the start, keeping the duration.
+    let (a, b) = (at(&harness, 5.0), at(&harness, 0.0) - egui::vec2(60.0, 0.0));
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (0.0, 4.0));
+    // So does an edge grabbed from inside, which keeps its distance to the pointer.
+    let inside = egui::vec2(3.0, 0.0);
+    let (a, b) = (
+        at(&harness, 0.0) + inside,
+        at(&harness, 0.0) - egui::vec2(60.0, 0.0),
+    );
+    drag(&mut harness, a, b);
+    assert_eq!(selected_span(&harness).0, 0.0);
+    // And at the end.
+    press(&mut harness, Modifiers::NONE, Key::End);
+    let (a, b) = (at(&harness, 50.0), at(&harness, 55.0));
+    drag(&mut harness, a, b);
+    let (a, b) = (
+        at(&harness, 52.0),
+        at(&harness, 60.0) + egui::vec2(60.0, 0.0),
+    );
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (55.0, 60.0));
+    // A resize stops there too.
+    let (a, b) = (
+        at(&harness, 55.0),
+        at(&harness, 60.0) + egui::vec2(60.0, 0.0),
+    );
+    drag(&mut harness, a, b);
+    assert_span(selected_span(&harness), (60.0, 60.0));
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(made(&harness).len(), 2);
+
+    // The pointer shows what a drag would do.
+    for (t, icon) in [
+        (57.5, egui::CursorIcon::Grab),
+        (55.0, egui::CursorIcon::ResizeHorizontal),
+        (60.0, egui::CursorIcon::ResizeHorizontal),
+        (45.0, egui::CursorIcon::Crosshair),
+    ] {
+        let p = at(&harness, t) - egui::vec2(if t == 60.0 { 1.0 } else { 0.0 }, 0.0);
+        hover(&mut harness, p);
+        harness.step();
+        assert_eq!(cursor(&harness), icon, "{t}");
+    }
+    let p = at(&harness, 57.5);
+    harness.drag_at(p);
+    harness.step();
+    hover(&mut harness, p + egui::vec2(20.0, 0.0));
+    assert_eq!(cursor(&harness), egui::CursorIcon::Grabbing);
+    harness.drop_at(p + egui::vec2(20.0, 0.0));
+    harness.step();
+}
+
+#[test]
+fn a_drag_taken_back_or_cancelled_changes_nothing() {
+    let file = without_triggers("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let at = |harness: &Harness<'_, KymoApp>, t| at_time(harness, t, 40.0);
+    let (a, b) = (at(&harness, 2.0), at(&harness, 6.0));
+    drag(&mut harness, a, b);
+    // Out and back: it moves while dragged, and ends where it was, with no step.
+    let p = at(&harness, 4.0);
+    hover(&mut harness, p);
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 5.0);
+    hover(&mut harness, q);
+    assert_span(selected_span(&harness), (3.0, 7.0));
+    hover(&mut harness, p + egui::vec2(1.0, 0.0));
+    harness.drop_at(p + egui::vec2(1.0, 0.0));
+    harness.step();
+    assert_span(selected_span(&harness), (2.0, 6.0));
+    // Undo takes back the create, so the drag recorded nothing.
+    press(&mut harness, command(), Key::Z);
+    assert!(made(&harness).is_empty());
+    press(&mut harness, Modifiers::SHIFT | command(), Key::Z);
+
+    // Esc puts it back and ends the drag, keeping the selection; again, it deselects.
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 5.0);
+    hover(&mut harness, q);
+    // Undo and Delete wait for the drag to end.
+    press(&mut harness, command(), Key::Z);
+    press(&mut harness, Modifiers::NONE, Key::Backspace);
+    assert_span(selected_span(&harness), (3.0, 7.0));
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_span(selected_span(&harness), (2.0, 6.0));
+    let q = at(&harness, 6.0);
+    hover(&mut harness, q);
+    harness.drop_at(at(&harness, 6.0));
+    harness.step();
+    assert_span(selected_span(&harness), (2.0, 6.0));
+    press(&mut harness, command(), Key::Z);
+    assert!(made(&harness).is_empty());
+    press(&mut harness, Modifiers::SHIFT | command(), Key::Z);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(viewer(&harness).selected(), None);
+
+    // Leaving annotation mode during a drag keeps it, as one step.
+    click_at_time(&mut harness, 4.0);
+    let p = at(&harness, 4.0);
+    hover(&mut harness, p);
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 5.0);
+    hover(&mut harness, q);
+    press(&mut harness, command(), Key::E);
+    harness.drop_at(q);
+    harness.step();
+    assert_span(
+        (
+            made(&harness)[0].0,
+            made(&harness)[0].0 + made(&harness)[0].1,
+        ),
+        (3.0, 7.0),
+    );
+    press(&mut harness, command(), Key::Z);
+    assert_span(
+        (
+            made(&harness)[0].0,
+            made(&harness)[0].0 + made(&harness)[0].1,
+        ),
+        (2.0, 6.0),
+    );
+    press(&mut harness, command(), Key::E);
+
+    // Esc takes back a create as well.
+    let p = at(&harness, 10.0);
+    hover(&mut harness, p);
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 12.0);
+    hover(&mut harness, q);
+    assert_eq!(made(&harness).len(), 2);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(made(&harness).len(), 1);
+    let q = at(&harness, 13.0);
+    hover(&mut harness, q);
+    harness.drop_at(at(&harness, 13.0));
+    harness.step();
+    assert_eq!(made(&harness).len(), 1);
+
+    // An annotation that isn't selected isn't grabbed: a drag over it creates one.
+    describe(&mut harness, "x");
+    let (a, b) = (at(&harness, 3.0), at(&harness, 4.0));
+    drag(&mut harness, a, b);
+    let got = made(&harness);
+    assert_eq!(got.len(), 2);
+    assert_span((got[0].0, got[0].0 + got[0].1), (2.0, 6.0));
+    assert_eq!(got[1].2, "x");
+}
+
+/// The viewer's and the file's annotations of `description`, as onset and end, by onset.
+fn spans(harness: &Harness<'_, KymoApp>, description: &str) -> Vec<(f64, f64, kymo_core::Origin)> {
+    viewer(harness)
+        .document()
+        .annotations
+        .iter()
+        .filter(|a| a.data.description == description)
+        .map(|a| (a.data.onset, a.data.end(), a.data.origin))
+        .collect()
+}
+
+#[track_caller]
+fn assert_spans(got: Vec<(f64, f64, kymo_core::Origin)>, want: &[(f64, f64)]) {
+    assert_eq!(got.len(), want.len(), "{got:?} != {want:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert_span((g.0, g.1), *w);
+    }
+}
+
+#[test]
+fn edits_merge_annotations_of_a_kind_they_reach() {
+    use kymo_core::Origin::File;
+    // BAD from the file, overlapping, from 22 to 24 s and from 23 to 25 s.
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.channels.retain(|c| !c.trigger);
+    spec.annotations = [(22.0, "BAD"), (23.0, "BAD"), (30.0, "x")]
+        .map(|(onset, text)| kymo_testgen::Tal {
+            onset,
+            duration: Some(2.0),
+            texts: vec![text.into()],
+        })
+        .into();
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let at = |harness: &Harness<'_, KymoApp>, t| at_time(harness, t, 40.0);
+    let create = |harness: &mut Harness<'_, KymoApp>, description: &str, from, to| {
+        describe(harness, description);
+        press(harness, Modifiers::NONE, Key::Escape);
+        let (a, b) = (at(harness, from), at(harness, to));
+        drag(harness, a, b);
+    };
+    create(&mut harness, "BAD", 2.0, 4.0);
+    create(&mut harness, "BAD", 6.0, 8.0);
+    create(&mut harness, "BAD", 10.0, 11.0);
+    create(&mut harness, "x", 4.5, 5.5);
+    assert_spans(
+        spans(&harness, "BAD"),
+        &[
+            (2.0, 4.0),
+            (6.0, 8.0),
+            (10.0, 11.0),
+            (22.0, 24.0),
+            (23.0, 25.0),
+        ],
+    );
+    // A new one reaching two of them becomes one with them; "x" stays apart.
+    create(&mut harness, "BAD", 3.0, 7.0);
+    let merged = [(2.0, 8.0), (10.0, 11.0), (22.0, 24.0), (23.0, 25.0)];
+    assert_spans(spans(&harness, "BAD"), &merged);
+    assert_span(selected_span(&harness), (2.0, 8.0));
+    assert_spans(spans(&harness, "x"), &[(4.5, 5.5), (30.0, 32.0)]);
+    // One step: undo brings all three back.
+    press(&mut harness, command(), Key::Z);
+    assert_spans(
+        spans(&harness, "BAD"),
+        &[
+            (2.0, 4.0),
+            (6.0, 8.0),
+            (10.0, 11.0),
+            (22.0, 24.0),
+            (23.0, 25.0),
+        ],
+    );
+    press(&mut harness, Modifiers::SHIFT | command(), Key::Z);
+    assert_spans(spans(&harness, "BAD"), &merged);
+    assert_span(selected_span(&harness), (2.0, 8.0));
+    // A resize that reaches one merges as well.
+    let (a, b) = (at(&harness, 8.0), at(&harness, 10.5));
+    drag(&mut harness, a, b);
+    assert_spans(
+        spans(&harness, "BAD"),
+        &[(2.0, 11.0), (22.0, 24.0), (23.0, 25.0)],
+    );
+    press(&mut harness, command(), Key::Z);
+    assert_spans(spans(&harness, "BAD"), &merged);
+
+    // The file's overlapping ones stay apart until one of them is edited: moved, it
+    // merges with the other, keeping its origin.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    press(&mut harness, Modifiers::ALT, Key::ArrowRight);
+    assert_eq!(viewer(&harness).view().time(), 20.0..40.0);
+    click_at_time(&mut harness, 22.5);
+    assert_span(selected_span(&harness), (22.0, 24.0));
+    // Dragged out and back, it is unchanged and merges nothing.
+    let p = at(&harness, 22.5);
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 23.5);
+    hover(&mut harness, q);
+    hover(&mut harness, p);
+    harness.drop_at(p);
+    harness.step();
+    assert_eq!(spans(&harness, "BAD").len(), 4);
+    let (a, b) = (at(&harness, 22.5), at(&harness, 22.0));
+    drag(&mut harness, a, b);
+    let got = spans(&harness, "BAD");
+    assert_spans(got.clone(), &[(2.0, 8.0), (10.0, 11.0), (21.5, 25.0)]);
+    assert_eq!(got[2].2, File);
+    assert_span(selected_span(&harness), (21.5, 25.0));
+}
+
+#[test]
+fn stim_annotations_never_merge() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    let stim = |harness: &Harness<'_, KymoApp>| {
+        viewer(harness)
+            .document()
+            .annotations
+            .iter()
+            .filter(|a| a.data.origin == kymo_core::Origin::Stim)
+            .map(|a| a.data.clone())
+            .collect::<Vec<_>>()
+    };
+    let before = stim(&harness);
+    let event = before
+        .iter()
+        .find(|a| (2.0..18.0).contains(&a.onset))
+        .expect("a stim annotation in view")
+        .clone();
+    // A new annotation of its description over it.
+    describe(&mut harness, &event.description);
+    let (a, b) = (
+        at_time(&harness, event.onset - 1.0, 40.0),
+        at_time(&harness, event.onset + 1.0, 40.0),
+    );
+    drag(&mut harness, a, b);
+    assert_eq!(stim(&harness), before);
+    let d = selected_data(&harness).unwrap();
+    assert_eq!(d.origin, kymo_core::Origin::Viewer);
+    assert_span((d.onset, d.end()), (event.onset - 1.0, event.onset + 1.0));
 }

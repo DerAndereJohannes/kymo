@@ -389,3 +389,95 @@ pub fn span_y(view: &ViewState, span: Span, height: f64) -> Range<f64> {
 fn column(x: f64, last: u32) -> u32 {
     x.floor().clamp(0.0, f64::from(last)) as u32
 }
+
+/// The part of an annotation a press grabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grip {
+    /// Its onset, to resize it.
+    Start,
+    /// Its end, to resize it.
+    End,
+    /// The rest, to move it.
+    Body,
+}
+
+/// What a press at `x` grabs of an annotation drawn from `left` to `right` (any unit, say
+/// points): within `edge` of an edge, that edge, except that the edges reach at most a
+/// third of the way in, so a short annotation keeps a middle to move it by; inside, the
+/// body. An annotation narrower than `line` is a line, moved only, grabbed within `edge`.
+pub fn grip(left: f64, right: f64, x: f64, edge: f64, line: f64) -> Option<Grip> {
+    if right - left < line {
+        let center = (left + right) / 2.0;
+        return ((x - center).abs() <= edge + line / 2.0).then_some(Grip::Body);
+    }
+    let inner = edge.min((right - left) / 3.0);
+    if x < left - edge || x > right + edge {
+        None
+    } else if x <= left + inner {
+        Some(Grip::Start)
+    } else if x >= right - inner {
+        Some(Grip::End)
+    } else {
+        Some(Grip::Body)
+    }
+}
+
+/// Whether `a` and `b` are of a kind that merges: the same description and the same
+/// channels, neither a stim annotation.
+pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
+    let sorted = |c: &[ChannelId]| {
+        let mut c = c.to_vec();
+        c.sort();
+        c.dedup();
+        c
+    };
+    a.origin != Origin::Stim
+        && b.origin != Origin::Stim
+        && a.description == b.description
+        && sorted(&a.channels) == sorted(&b.channels)
+}
+
+/// The changes that merge annotation `id` with every annotation of its kind (see
+/// [`same_kind`]) that overlaps or touches it, and then with those that overlap or touch
+/// the result, until none does: `id` grows to cover them all and the others are removed.
+/// Empty if there is nothing to merge, `id` isn't there or is a stim annotation.
+pub fn merge(
+    store: &AnnotationStore,
+    id: AnnotationId,
+) -> Vec<(AnnotationId, Option<AnnotationData>)> {
+    let Some(edited) = store.get(id) else {
+        return Vec::new();
+    };
+    let mut data = edited.data.clone();
+    let (mut start, mut end) = (data.onset, data.end());
+    let mut merged: Vec<AnnotationId> = Vec::new();
+    loop {
+        // Closed intervals: an annotation that ends at `start` or starts at `end` touches.
+        let found: Vec<&Annotation> = store
+            .query(start..end.next_up())
+            .filter(|b| {
+                b.id != id
+                    && !merged.contains(&b.id)
+                    && b.data.onset <= end
+                    && b.data.end() >= start
+                    && same_kind(&data, &b.data)
+            })
+            .collect();
+        if found.is_empty() {
+            break;
+        }
+        for b in found {
+            start = start.min(b.data.onset);
+            end = end.max(b.data.end());
+            merged.push(b.id);
+        }
+    }
+    if merged.is_empty() {
+        return Vec::new();
+    }
+    data.onset = start;
+    data.duration = end - start;
+    std::iter::once((id, Some(data)))
+        .chain(merged.into_iter().map(|b| (b, None)))
+        .collect()
+}

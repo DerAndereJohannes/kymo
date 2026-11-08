@@ -51,21 +51,60 @@ const ANNOTATION_LABEL_GAP: f32 = 8.0;
 const POINTER_SLACK: f32 = 2.0;
 /// The share of the tile cache that tiles beyond the screen may take.
 const PREFETCH_SHARE: usize = 2;
-/// How far a drag must reach sideways, in points, to create an annotation.
+/// How far a drag must reach sideways, in points, to create, move or resize an annotation.
 const MIN_DRAG: f32 = 3.0;
+/// How near an edge of the selected annotation, in points, a drag resizes it.
+const EDGE_GRIP: f32 = 4.0;
 /// Width of the selected annotation's outline, in points.
 const OUTLINE_WIDTH: f32 = 2.0;
 /// The description new annotations start with: MNE treats descriptions starting with
 /// "BAD" as bad segments.
 pub const DEFAULT_DESCRIPTION: &str = "BAD";
 
-/// An annotation being created by a drag.
+/// What a drag in annotation mode holds of its annotation.
 #[derive(Clone, Copy, Debug)]
-struct Creating {
+enum Hold {
+    /// All of it, to move it by as much as the pointer moved.
+    Body,
+    /// The edge that was at `edge`, to move it by as much as the pointer moved while the
+    /// one at `anchor` stays; past it, they swap. Creating holds a new annotation's end.
+    Edge { anchor: f64, edge: f64 },
+}
+
+/// An annotation being created, moved or resized by a drag.
+#[derive(Clone, Debug)]
+struct Drag {
+    id: AnnotationId,
+    /// Its content before the drag; `None` when creating it.
+    before: Option<AnnotationData>,
+    /// Its content but for the times the drag sets.
+    base: AnnotationData,
     /// The time the drag started at.
-    anchor: f64,
-    /// Its id, once the drag reached far enough to make it.
-    id: Option<AnnotationId>,
+    press: f64,
+    hold: Hold,
+}
+
+impl Drag {
+    /// The annotation after the pointer moved by `delta` seconds, within a recording
+    /// `duration` seconds long: moved annotations keep their duration.
+    fn at(&self, delta: f64, duration: f64) -> AnnotationData {
+        let (onset, length) = match self.hold {
+            Hold::Body => {
+                let length = self.base.duration;
+                let latest = (duration - length).max(0.0);
+                ((self.base.onset + delta).clamp(0.0, latest), length)
+            }
+            Hold::Edge { anchor, edge } => {
+                let edge = (edge + delta).clamp(0.0, duration);
+                (anchor.min(edge), (edge - anchor).abs())
+            }
+        };
+        AnnotationData {
+            onset,
+            duration: length,
+            ..self.base.clone()
+        }
+    }
 }
 
 /// What the pointer is over.
@@ -134,8 +173,8 @@ pub struct Viewer {
     selected: Option<AnnotationId>,
     /// Where the selection's outline was drawn at the last frame, in points.
     outline: Option<Rect>,
-    /// The annotation a drag is creating.
-    creating: Option<Creating>,
+    /// The annotation a drag is creating, moving or resizing.
+    drag: Option<Drag>,
     /// The description of annotations created from now on.
     description: String,
     history: History,
@@ -178,7 +217,7 @@ impl Viewer {
             editing: false,
             selected: None,
             outline: None,
-            creating: None,
+            drag: None,
             description: DEFAULT_DESCRIPTION.to_owned(),
             history: History::default(),
         }
@@ -301,7 +340,7 @@ impl Viewer {
                 return true;
             }
             Action::ToggleEditing => {
-                self.finish_creating();
+                self.finish_drag();
                 self.editing = !self.editing;
                 self.selected = None;
                 return true;
@@ -326,8 +365,11 @@ impl Viewer {
                 }
                 return true;
             }
+            // Esc first takes back a drag.
             Action::Deselect => {
-                self.selected = None;
+                if !self.cancel_drag() {
+                    self.selected = None;
+                }
                 return true;
             }
             Action::ScaleUp | Action::ScaleDown | Action::DefaultScale => self.auto_scale = false,
@@ -361,19 +403,61 @@ impl Viewer {
         })
     }
 
-    /// Ends the drag creating an annotation: records it as one edit, and selects it.
-    fn finish_creating(&mut self) {
-        let Some(Creating { id: Some(id), .. }) = self.creating.take() else {
+    /// Whether a drag is creating, moving or resizing an annotation.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Ends a drag: merges its annotation with those of its kind it overlaps or touches
+    /// (see [`annotations::merge`]), records all as one edit, and selects it. A drag that
+    /// changed nothing records nothing and merges nothing.
+    fn finish_drag(&mut self) {
+        let Some(drag) = self.drag.take() else {
             return;
         };
-        if let Some(a) = self.document.annotations.get(id) {
-            self.history.push(vec![Change {
-                id,
-                before: None,
-                after: Some(a.data.clone()),
-            }]);
-            self.selected = Some(id);
+        let store = &mut self.document.annotations;
+        let after = store.get(drag.id).map(|a| a.data.clone());
+        if after.is_none() || after == drag.before {
+            return;
         }
+        let mut step = vec![Change {
+            id: drag.id,
+            before: drag.before,
+            after,
+        }];
+        for (id, data) in annotations::merge(store, drag.id) {
+            let before = store.get(id).map(|a| a.data.clone());
+            history::set(store, id, data.clone()).expect("merged annotations are valid");
+            step.push(Change {
+                id,
+                before,
+                after: data,
+            });
+        }
+        self.history.push(step);
+        self.legend.sync(store);
+        self.selected = Some(drag.id);
+    }
+
+    /// Puts the annotation of a drag back as it was before; returns whether there was one.
+    fn cancel_drag(&mut self) -> bool {
+        let Some(drag) = self.drag.take() else {
+            return false;
+        };
+        let store = &mut self.document.annotations;
+        history::set(store, drag.id, drag.before).expect("its state before the drag is valid");
+        self.legend.sync(store);
+        true
+    }
+
+    /// What a press `x` points from the trace area's left edge grabs of the selected
+    /// annotation, on an area `width` points wide with `ppp` pixels per point.
+    fn grip_at(&self, x: f64, width: f64, ppp: f32) -> Option<(AnnotationData, annotations::Grip)> {
+        let a = &self.document.annotations.get(self.selected?)?.data;
+        let left = self.view.x_at(a.onset, width);
+        let right = self.view.x_at(a.end(), width);
+        let grip = annotations::grip(left, right, x, f64::from(EDGE_GRIP), f64::from(1.0 / ppp))?;
+        Some((a.clone(), grip))
     }
 
     /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
@@ -849,58 +933,84 @@ impl Viewer {
         }
     }
 
-    /// Annotation mode's gestures on the traces: a drag creates an annotation of all
-    /// channels with the current description, a click selects the annotation under the
-    /// pointer, the next one there on the selected one (see [`annotations::pick`]), or,
-    /// away from them, deselects.
+    /// Annotation mode's gestures on the traces: a drag on the selected annotation moves
+    /// it, or near an edge resizes it; elsewhere it creates an annotation of all channels
+    /// with the current description. A click selects the annotation under the pointer, the
+    /// next one there on the selected one (see [`annotations::pick`]), or, away from them,
+    /// deselects.
     fn edit_input(&mut self, ui: &Ui, response: &egui::Response, traces: Rect, width_px: u32) {
-        if response.hovered() || response.dragged() {
-            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-        }
         let width = f64::from(traces.width());
         let duration = self.view.duration();
+        let ppp = ui.pixels_per_point();
         let x_of = |p: Pos2| f64::from(p.x - traces.left());
         if response.drag_started()
-            && !self.description.is_empty()
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         {
-            self.finish_creating();
-            self.creating = Some(Creating {
-                // The window lies within the recording.
-                anchor: self.view.time_at(x_of(origin), width),
-                id: None,
-            });
+            self.finish_drag();
+            // The window lies within the recording.
+            let press = self.view.time_at(x_of(origin), width);
+            self.drag = match self.grip_at(x_of(origin), width, ppp) {
+                Some((a, grip)) => Some(Drag {
+                    id: self.selected.expect("a grip is on the selected annotation"),
+                    hold: match grip {
+                        annotations::Grip::Start => Hold::Edge {
+                            anchor: a.end(),
+                            edge: a.onset,
+                        },
+                        annotations::Grip::End => Hold::Edge {
+                            anchor: a.onset,
+                            edge: a.end(),
+                        },
+                        annotations::Grip::Body => Hold::Body,
+                    },
+                    before: Some(a.clone()),
+                    base: a,
+                    press,
+                }),
+                None if !self.description.is_empty() => Some(Drag {
+                    id: self.document.annotations.new_id(),
+                    before: None,
+                    base: AnnotationData {
+                        onset: press,
+                        duration: 0.0,
+                        description: self.description.clone(),
+                        channels: Vec::new(),
+                        origin: Origin::Viewer,
+                    },
+                    press,
+                    hold: Hold::Edge {
+                        anchor: press,
+                        edge: press,
+                    },
+                }),
+                None => None,
+            };
         }
         if response.dragged()
-            && let Some(creating) = &mut self.creating
+            && let Some(drag) = &self.drag
             && let Some(p) = response.interact_pointer_pos()
         {
-            let anchor = creating.anchor;
             let time = self.view.time_at(x_of(p), width).clamp(0.0, duration);
-            let reach = self.view.x_at(time, width) - self.view.x_at(anchor, width);
-            // Too short a drag makes nothing, or takes back what it made.
-            let data = (reach.abs() >= f64::from(MIN_DRAG)).then(|| AnnotationData {
-                onset: anchor.min(time),
-                duration: (time - anchor).abs(),
-                description: self.description.clone(),
-                channels: Vec::new(),
-                origin: Origin::Viewer,
-            });
+            let reach = self.view.x_at(time, width) - self.view.x_at(drag.press, width);
+            // Too short a drag changes nothing, or takes back what it changed.
+            let data = if reach.abs() >= f64::from(MIN_DRAG) {
+                Some(drag.at(time - drag.press, duration))
+            } else {
+                drag.before.clone()
+            };
             let store = &mut self.document.annotations;
-            if data.is_some() || creating.id.is_some() {
-                let id = *creating.id.get_or_insert_with(|| store.new_id());
-                history::set(store, id, data).expect("times within the recording are valid");
-                self.legend.sync(store);
-                self.legend.set_shown(&self.description, true);
+            history::set(store, drag.id, data).expect("times within the recording are valid");
+            self.legend.sync(store);
+            if drag.before.is_none() && store.get(drag.id).is_some() {
+                self.legend.set_shown(&drag.base.description, true);
             }
         }
         if response.drag_stopped() {
-            self.finish_creating();
+            self.finish_drag();
         }
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
-            let ppp = ui.pixels_per_point();
             let channel = self
                 .view
                 .channel_at(f64::from(p.y - traces.top()), f64::from(traces.height()));
@@ -914,6 +1024,26 @@ impl Viewer {
                 channel,
                 self.selected,
             );
+        }
+        // The pointer shows what a drag would do, or does.
+        let cursor = match &self.drag {
+            Some(Drag {
+                hold: Hold::Body, ..
+            }) => Some(CursorIcon::Grabbing),
+            Some(Drag {
+                before: Some(_), ..
+            }) => Some(CursorIcon::ResizeHorizontal),
+            Some(_) => Some(CursorIcon::Crosshair),
+            None => response.hover_pos().map(|p| {
+                match self.grip_at(x_of(p), width, ppp).map(|(_, g)| g) {
+                    Some(annotations::Grip::Body) => CursorIcon::Grab,
+                    Some(_) => CursorIcon::ResizeHorizontal,
+                    None => CursorIcon::Crosshair,
+                }
+            }),
+        };
+        if let Some(cursor) = cursor {
+            ui.ctx().set_cursor_icon(cursor);
         }
     }
 
