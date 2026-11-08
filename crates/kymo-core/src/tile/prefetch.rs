@@ -19,11 +19,11 @@ pub enum Direction {
 
 /// The tiles `view` needs, then those it may need next, most urgent first:
 ///
-/// 1. the tiles on screen ([`tiles_for_view`]), nearest to the screen's centre first;
+/// 1. the tiles on screen ([`tiles_for_view`]), nearest to the screen's center first;
 /// 2. the margins at the same level, one screen width ahead in `direction` and half a
 ///    screen behind, nearest to the screen first;
 /// 3. the level above over the screen and margins, for zooming out;
-/// 4. the level below over the screen, from its centre outwards, for zooming in.
+/// 4. the level below over the screen, from its center outwards, for zooming in.
 ///
 /// The tiles after the screen's stop before their estimated memory ([`tile_bytes`]) would
 /// pass `max_bytes`, so a smaller budget gives a prefix of a larger one's list. Every tile

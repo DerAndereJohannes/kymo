@@ -6,7 +6,7 @@ use eframe::egui::Key;
 use crate::action::Action;
 use crate::keymap::{Chord, Keymap, Platform};
 
-/// Items the system provides on macOS, with their standard behaviour.
+/// Items the system provides on macOS, with their standard behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemItem {
     About,

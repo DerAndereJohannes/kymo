@@ -175,7 +175,7 @@ impl Coefficients {
 /// One channel of a tile to draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDraw {
-    /// The channel's row in the tile (and its neighbours: the same channel block).
+    /// The channel's row in the tile (and its neighbors: the same channel block).
     pub row: u32,
     pub coefficients: Coefficients,
     /// Premultiplied RGBA.
@@ -194,7 +194,7 @@ pub struct Part {
     pub tile: Arc<Tile>,
     /// The items the query placed this tile for.
     pub items: RangeInclusive<u32>,
-    /// An item near the screen (or near the seam, for a neighbour), for precise positions.
+    /// An item near the screen (or near the seam, for a neighbor), for precise positions.
     pub anchor: u32,
     pub anchor_x: f32,
     /// Pixels per item.
@@ -208,7 +208,7 @@ pub struct Part {
 ///
 /// The shader reads the three as one run of items, so lines and envelopes run on across
 /// tile boundaries, and anti-aliasing sees the trace on either side of a pixel whichever
-/// tile it comes from. Neighbours may be at another level (a coarser tile standing in for a
+/// tile it comes from. Neighbors may be at another level (a coarser tile standing in for a
 /// missing one); a level-0 line doesn't run on into an envelope, but an envelope runs on
 /// into whatever follows.
 #[derive(Clone, Debug)]
@@ -216,7 +216,7 @@ pub struct TileDraw {
     pub part: Part,
     pub prev: Option<Part>,
     pub next: Option<Part>,
-    /// Pixel columns this draw fills. Neighbouring draws of a block never share one: where
+    /// Pixel columns this draw fills. Neighboring draws of a block never share one: where
     /// a tile meets the next, the column holding the next tile's first item is this draw's
     /// ([`seam`](Self::seam)), so no pixel is drawn twice (which anti-aliasing would show
     /// as a darker column).
@@ -419,7 +419,7 @@ fn tile_draw(
     };
     let domain = [x(samples.start), end];
     let tolerance = f64::from(EDGE_TOLERANCE);
-    // The column holding the next tile's first item ends this draw. Without a neighbour,
+    // The column holding the next tile's first item ends this draw. Without a neighbor,
     // anti-aliased traces reach a column past the samples.
     let reach = pixels.reach;
     let seam = next.map(|_| end.floor());

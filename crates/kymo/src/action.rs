@@ -175,7 +175,7 @@ impl Action {
         }
     }
 
-    /// Whether the action needs an open recording; menu items for it are greyed out
+    /// Whether the action needs an open recording; menu items for it are grayed out
     /// without one.
     pub fn needs_recording(self) -> bool {
         !matches!(

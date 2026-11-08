@@ -371,13 +371,13 @@ impl TraceRenderer {
             }
             let tile = &draw.part.tile;
             let own = self.resident(device, tile);
-            let neighbour = |r: &mut Self, part: &Option<Part>| {
+            let neighbor = |r: &mut Self, part: &Option<Part>| {
                 part.as_ref()
                     .filter(|p| !p.tile.is_empty())
                     .map(|p| (r.resident(device, &p.tile), part_params(p)))
             };
-            let prev = neighbour(self, &draw.prev);
-            let next = neighbour(self, &draw.next);
+            let prev = neighbor(self, &draw.prev);
+            let next = neighbor(self, &draw.next);
             let buffers = [
                 prev.as_ref().map_or(&own, |(b, _)| b),
                 &own,

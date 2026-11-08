@@ -522,7 +522,7 @@ fn reading_numbers(status: &str) -> Vec<f64> {
 }
 
 #[test]
-fn dc_removal_centres_each_trace_on_its_window_mean() {
+fn dc_removal_centers_each_trace_on_its_window_mean() {
     let file = offset_preset("bdf+c-small", -21_000.0);
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -550,9 +550,9 @@ fn dc_removal_centres_each_trace_on_its_window_mean() {
     step_until(&mut harness, "the means", baselines_are_window_means);
     let mean = viewer(&harness).baseline(a1);
     assert!((-21_100.0..-20_900.0).contains(&mean), "{mean}");
-    let centred = reading_numbers(&viewer(&harness).status().left);
-    assert_eq!(centred.len(), raw.len());
-    for (r, c) in raw.iter().zip(&centred) {
+    let centered = reading_numbers(&viewer(&harness).status().left);
+    assert_eq!(centered.len(), raw.len());
+    for (r, c) in raw.iter().zip(&centered) {
         // Four significant digits of the raw value: within 10 uV.
         assert!((r - mean - c).abs() <= 10.0, "{r} − {mean} ≠ {c}");
     }
@@ -630,7 +630,7 @@ fn stim_channels_read_their_codes_with_and_without_dc_removal() {
     assert_eq!(readings(&mut harness), raw);
 }
 
-/// bdf+c-small with its channels relabelled to five types: A1 and A2 (EEG), "EOG L",
+/// bdf+c-small with its channels relabeled to five types: A1 and A2 (EEG), "EOG L",
 /// "ECG" and Status (stim).
 fn typed_preset() -> TempFile {
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
@@ -641,7 +641,7 @@ fn typed_preset() -> TempFile {
     file
 }
 
-/// Clicks the sidebar widget labelled `label` (exactly, with `role`).
+/// Clicks the sidebar widget labeled `label` (exactly, with `role`).
 fn click_in_list(harness: &mut Harness<'_, KymoApp>, role: egui::accesskit::Role, label: &str) {
     harness.get_by_role_and_label(role, label).click();
     harness.run_steps(2);
@@ -825,8 +825,8 @@ fn the_channel_list_right_aligns_rates() {
 #[test]
 fn the_legend_shows_and_hides_annotations() {
     use egui::accesskit::{Role, Toggled};
-    // In the first 20 s: "event 0" (an event, colour 0), "sleep stage N2" (2.5 s, colour 1),
-    // and "eyes closed" and "Elektrodenprüfung µV" (events at 15 s, colours 2 and 3; one
+    // In the first 20 s: "event 0" (an event, color 0), "sleep stage N2" (2.5 s, color 1),
+    // and "eyes closed" and "Elektrodenprüfung µV" (events at 15 s, colors 2 and 3; one
     // label, as the second would overlap the first).
     let file = without_triggers("edf+d-mixed");
     let mut harness = window(file.path());
@@ -1248,7 +1248,7 @@ fn window_with(path: &Path, settings: Settings) -> Harness<'static, KymoApp> {
     })
 }
 
-/// Sets the number field labelled `label` in the Settings window.
+/// Sets the number field labeled `label` in the Settings window.
 fn set_field(harness: &mut Harness<'_, KymoApp>, label: &str, value: f64) {
     harness
         .get_by_role_and_label(egui::accesskit::Role::SpinButton, label)
@@ -1439,7 +1439,7 @@ fn gpu_window(path: &Path, setup: egui_wgpu::WgpuSetup) -> Harness<'static, Kymo
         })
 }
 
-/// Turns anti-aliasing off, so every trace pixel has its colour exactly (anti-aliased edges
+/// Turns anti-aliasing off, so every trace pixel has its color exactly (anti-aliased edges
 /// blend with the background and the annotations behind).
 fn whole_pixels(harness: &mut Harness<'_, KymoApp>) {
     let settings = *harness.state().settings();
@@ -1468,23 +1468,23 @@ fn anti_aliased_traces_blend_their_edges() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
-    // Distinct colours in the trace area: whole pixels give the background, the grid and
-    // the traces' colours; anti-aliased edges give many shades between them.
-    let colours = |harness: &mut Harness<'_, KymoApp>| {
+    // Distinct colors in the trace area: whole pixels give the background, the grid and
+    // the traces' colors; anti-aliased edges give many shades between them.
+    let colors = |harness: &mut Harness<'_, KymoApp>| {
         traces_image(harness)
             .into_iter()
             .collect::<std::collections::HashSet<_>>()
             .len()
     };
-    let off = colours(&mut harness);
+    let off = colors(&mut harness);
     let ctx = harness.ctx.clone();
     harness.state_mut().perform(&ctx, Action::ToggleAntialias);
     harness.run_steps(2);
     assert!(harness.state().settings().antialias);
-    let on = colours(&mut harness);
+    let on = colors(&mut harness);
     assert!(
         on >= off + 20,
-        "{on} colours with anti-aliasing, {off} without"
+        "{on} colors with anti-aliasing, {off} without"
     );
 }
 
@@ -1518,10 +1518,10 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
     let file = offset_preset("bdf+c-small", -21_000.0);
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
-    // Without the annotations' labels, some of which are near the trace colour.
+    // Without the annotations' labels, some of which are near the trace color.
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
     let trace = harness.ctx.global_style().visuals.text_color();
-    // Pixels of the first row (A1) in the trace colour.
+    // Pixels of the first row (A1) in the trace color.
     let a1_pixels = |harness: &mut Harness<'_, KymoApp>| {
         let traces = viewer(harness).layout().unwrap().traces;
         let rows = viewer(harness).view().rows();
@@ -1564,7 +1564,7 @@ fn the_gpu_budget_follows_the_settings() {
 }
 
 #[test]
-fn traces_take_their_types_colours() {
+fn traces_take_their_types_colors() {
     let Some(setup) = gpu_setup() else { return };
     // TRIGGER, a flat EEG signal, is stim too, but without a trigger mask.
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
@@ -1586,7 +1586,7 @@ fn traces_take_their_types_colours() {
         kymo_core::ChannelKind::Stim,
     ];
     let colors: Vec<_> = kinds.iter().map(|&k| trace_color(k, &visuals)).collect();
-    // Per row, the pixels in each type's colour.
+    // Per row, the pixels in each type's color.
     let counts = |harness: &mut Harness<'_, KymoApp>| {
         let traces = viewer(harness).layout().unwrap().traces;
         let width = traces.width() as usize;
@@ -1613,7 +1613,7 @@ fn traces_take_their_types_colours() {
         }
     }
 
-    // A bad channel is greyed out, whatever its type.
+    // A bad channel is grayed out, whatever its type.
     harness.get_by_label("ECG bad").click();
     harness.run_steps(2);
     let after = counts(&mut harness);
@@ -1630,10 +1630,10 @@ fn stim_traces_stay_in_their_row() {
     ready(&mut harness);
     whole_pixels(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
-    let grey = trace_color(kymo_core::ChannelKind::Stim, &visuals);
+    let gray = trace_color(kymo_core::ChannelKind::Stim, &visuals);
     let text = visuals.text_color();
-    // Per row, the pixels in the stim colour and in the text colour; and the pixel line of
-    // the last row with the most stim-coloured pixels, from the row's top.
+    // Per row, the pixels in the stim color and in the text color; and the pixel line of
+    // the last row with the most stim-colored pixels, from the row's top.
     let counts = |harness: &mut Harness<'_, KymoApp>| {
         let traces = viewer(harness).layout().unwrap().traces;
         let rows = viewer(harness).view().rows();
@@ -1645,12 +1645,12 @@ fn stim_traces_stay_in_their_row() {
             .map(|row| {
                 let pixels = &image[row * row_height * width..(row + 1) * row_height * width];
                 let count = |c| pixels.iter().filter(|p| near(p, c)).count();
-                (count(grey), count(text))
+                (count(gray), count(text))
             })
             .collect();
         let lines = image[4 * row_height * width..5 * row_height * width].chunks_exact(width);
         let busiest = lines
-            .map(|line| line.iter().filter(|p| near(p, grey)).count())
+            .map(|line| line.iter().filter(|p| near(p, gray)).count())
             .enumerate()
             .max_by_key(|&(_, n)| n)
             .unwrap()
@@ -1660,8 +1660,8 @@ fn stim_traces_stay_in_their_row() {
     let check = |(counts, busiest): &(Vec<(usize, usize)>, f32)| {
         let (status, _) = counts[4];
         assert!(status > 500, "{counts:?}");
-        for &(grey, text) in &counts[..4] {
-            assert!(grey < status / 50, "{counts:?}");
+        for &(gray, text) in &counts[..4] {
+            assert!(gray < status / 50, "{counts:?}");
             assert!(text > 200, "{counts:?}");
         }
         // Mostly code 0, in the middle of the row.
@@ -1677,13 +1677,13 @@ fn stim_traces_stay_in_their_row() {
     check(&counts(&mut harness));
 }
 
-/// Bands tint the background behind the traces, which keep their colour; event lines are
+/// Bands tint the background behind the traces, which keep their color; event lines are
 /// solid.
 #[test]
 fn annotations_lie_behind_the_traces() {
     let Some(setup) = gpu_setup() else { return };
-    // In the first 20 s: "trigger 0" at 0.5 s (colour 0), "trigger 1" from 5.5 s to 6.5 s
-    // (colour 1), and so on.
+    // In the first 20 s: "trigger 0" at 0.5 s (color 0), "trigger 1" from 5.5 s to 6.5 s
+    // (color 1), and so on.
     let file = TempFile::preset("bdf+c-small");
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
@@ -1723,7 +1723,7 @@ fn annotations_lie_behind_the_traces() {
         tinted != background && distance(tinted, band_color) < distance(background, band_color),
         "band {tinted:?}, background {background:?}"
     );
-    // The traces cross the band in their own colour.
+    // The traces cross the band in their own color.
     let trace = trace_color(kymo_core::ChannelKind::Eeg, &visuals);
     let on_top = band
         .columns

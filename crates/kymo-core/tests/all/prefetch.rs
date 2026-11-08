@@ -1,4 +1,4 @@
-//! The prefetch list: the screen first, then margins and neighbouring levels, within a budget.
+//! The prefetch list: the screen first, then margins and neighboring levels, within a budget.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -85,7 +85,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn covers_screen_margins_and_neighbouring_levels(
+    fn covers_screen_margins_and_neighboring_levels(
         (shape, view) in grids().prop_flat_map(|g| (Just(g.clone()), view_of(&g))),
         direction in directions(),
     ) {
@@ -158,7 +158,7 @@ fn example(direction: Direction) -> (Recording, Vec<TileKey>) {
 #[test]
 fn orders_by_distance_from_the_screen() {
     let (_, list) = example(Direction::Forward);
-    // Screen: from the tile holding the centre (120 s, tile 29) outwards.
+    // Screen: from the tile holding the center (120 s, tile 29) outwards.
     assert_eq!(list[0], raw(29));
     let screen: HashSet<TileKey> = (24..=34).map(raw).collect();
     assert_eq!(list[..11].iter().copied().collect::<HashSet<_>>(), screen);

@@ -82,7 +82,7 @@ impl Level {
 /// wider than a pixel and every peak lands in its own pixel. Below 32 samples per pixel
 /// (and for invalid input) that is level 0, raw samples.
 ///
-/// Neighbouring buckets per pixel: 1 to 4 at levels ≥ 1, up to 31 raw samples at level 0.
+/// Neighboring buckets per pixel: 1 to 4 at levels ≥ 1, up to 31 raw samples at level 0.
 pub fn choose_level(samples_per_px: f64) -> Level {
     let mut level = Level::RAW;
     while let Some(up) = level.up() {

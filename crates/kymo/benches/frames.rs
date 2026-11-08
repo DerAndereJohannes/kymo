@@ -554,7 +554,7 @@ fn peak_resident_bytes() -> Option<u64> {
 #[allow(unsafe_code)]
 fn peak_footprint_bytes() -> Option<u64> {
     let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
-    // SAFETY: `proc_pid_rusage` fills the struct of the flavour it is given (V4 here) and
+    // SAFETY: `proc_pid_rusage` fills the struct of the flavor it is given (V4 here) and
     // reads nothing else.
     let info = unsafe {
         let buffer = info.as_mut_ptr().cast::<libc::rusage_info_t>();

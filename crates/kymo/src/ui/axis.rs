@@ -2,7 +2,7 @@
 //!
 //! Times are seconds from the recording start. A view ending before a minute writes them as
 //! seconds ("12.5 s"); longer ones as minutes or hours ("2:30", "1:02:03.5"). The decimals
-//! follow the tick step, so neighbouring labels always differ.
+//! follow the tick step, so neighboring labels always differ.
 
 use std::ops::Range;
 

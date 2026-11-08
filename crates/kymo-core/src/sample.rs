@@ -109,7 +109,7 @@ impl_sample!(i32, I32, i32::MAX, i32::MIN);
 impl_sample!(f32, F32, f32::INFINITY, f32::NEG_INFINITY);
 
 /// What tiles, the pyramid build and stim scans need of each native sample type, one
-/// implementation per type so that the build's kernels vectorise.
+/// implementation per type so that the build's kernels vectorize.
 pub(crate) trait NativeSample: Sample {
     fn into_data(values: Box<[Self]>) -> TileData;
     /// The value with only the bits of `mask` kept, as a stim code.

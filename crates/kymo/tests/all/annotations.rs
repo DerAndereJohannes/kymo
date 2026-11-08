@@ -42,7 +42,7 @@ fn colors(legend: &Legend) -> Vec<(String, usize, usize)> {
 }
 
 #[test]
-fn colours_follow_first_appearance_and_never_change() {
+fn colors_follow_first_appearance_and_never_change() {
     let mut store = AnnotationStore::from_data(vec![
         data(5.0, 0.0, "b", &[]),
         data(1.0, 2.0, "a", &[]),
@@ -52,7 +52,7 @@ fn colours_follow_first_appearance_and_never_change() {
     let own = |d: &str, c: usize, n: usize| (d.to_owned(), c, n);
     assert_eq!(colors(&legend), [own("a", 0, 1), own("b", 1, 2)]);
 
-    // New descriptions take the next colours, even when they come earlier in time; the
+    // New descriptions take the next colors, even when they come earlier in time; the
     // known ones keep theirs, and their shown state.
     legend.set_shown("b", false);
     insert(&mut store, data(0.5, 0.0, "c", &[]));
@@ -71,7 +71,7 @@ fn colours_follow_first_appearance_and_never_change() {
     assert!(!legend.entry("b").unwrap().shown);
     assert!(legend.entry("d").unwrap().shown);
 
-    // A description whose annotations are all gone leaves the legend and keeps its colour.
+    // A description whose annotations are all gone leaves the legend and keeps its color.
     let ids: Vec<_> = store
         .iter()
         .filter(|a| a.data.description == "a")
@@ -89,7 +89,7 @@ fn colours_follow_first_appearance_and_never_change() {
     legend.sync(&store);
     assert_eq!(legend.entry("a").unwrap().color, 0);
 
-    // Colours cycle: a, b, d and c take 0 to 3, x0 to x5 take 4 to 9, x6 takes 0 again.
+    // Colors cycle: a, b, d and c take 0 to 3, x0 to x5 take 4 to 9, x6 takes 0 again.
     for k in 0..COLORS {
         insert(
             &mut store,
@@ -119,7 +119,7 @@ fn descriptions_show_and_hide() {
     assert!(Legend::new(&AnnotationStore::default()).is_empty());
 }
 
-/// Columns of each colour and span, from bands and lines separately.
+/// Columns of each color and span, from bands and lines separately.
 type Coverage = HashMap<(usize, Span), (BTreeSet<u32>, BTreeSet<u32>)>;
 
 /// What `marks` must cover, from every annotation in turn.
@@ -179,7 +179,7 @@ fn check(marks: &Marks, cover: &Coverage, width: u32) -> Result<(), TestCaseErro
             .0
             .extend(band.columns.clone());
     }
-    // Bands of a colour and span neither overlap nor touch.
+    // Bands of a color and span neither overlap nor touch.
     for bands in by_key.values_mut() {
         bands.sort_by_key(|b| b.columns.start);
         for pair in bands.windows(2) {
@@ -251,7 +251,7 @@ fn check_labels(
 }
 
 /// A random annotation: onset in the recording, an event, a sliver or a band, one of 14
-/// descriptions (so colours repeat), for all channels or a few, or a stim annotation of a
+/// descriptions (so colors repeat), for all channels or a few, or a stim annotation of a
 /// channel.
 fn annotation() -> impl Strategy<Value = AnnotationData> {
     (
@@ -305,8 +305,8 @@ fn view(rec: &Recording) -> impl Strategy<Value = ViewState> + use<> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Every pixel column a shown annotation touches holds a mark of its colour over its
-    /// rows, and no other column does; marks of a colour and span never overlap.
+    /// Every pixel column a shown annotation touches holds a mark of its color over its
+    /// rows, and no other column does; marks of a color and span never overlap.
     #[test]
     fn marks_cover_exactly_the_annotations_in_view(
         view in view(&recording()),

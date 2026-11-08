@@ -47,7 +47,7 @@ single_range_in_vec_init = "allow"
 [profile.release]
 debug = "line-tables-only"
 
-# Tests and debug runs: optimised dependencies (egui, wgpu) draw and link much faster, and
+# Tests and debug runs: optimized dependencies (egui, wgpu) draw and link much faster, and
 # the tests' builds and brute-force checks run several times faster at level 1, which
 # leaves incremental builds of kymo-core and kymo as quick as at level 0.
 [profile.dev.package."*"]

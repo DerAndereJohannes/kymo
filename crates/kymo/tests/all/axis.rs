@@ -37,7 +37,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 
     #[test]
-    fn ticks_are_round_spaced_and_labelled_with_their_times(
+    fn ticks_are_round_spaced_and_labeled_with_their_times(
         start in prop_oneof![Just(0.0), 0.0..100_000.0f64],
         span_log in -3.0..5.5f64,
         width in 50.0..4000.0f64,
@@ -49,7 +49,7 @@ proptest! {
         let step = step(span, width, min_spacing).unwrap();
         prop_assert!(is_round(step), "step {step}");
         // Never denser than asked, and never more than 2.5 times sparser (the largest
-        // ratio between neighbouring round steps).
+        // ratio between neighboring round steps).
         let px = step / span * width;
         prop_assert!(px >= min_spacing * (1.0 - 1e-9), "{px} px apart");
         prop_assert!(px <= min_spacing * 2.5 * (1.0 + 1e-9), "{px} px apart");

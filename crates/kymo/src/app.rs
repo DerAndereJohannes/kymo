@@ -243,7 +243,7 @@ impl KymoApp {
         let ctx = ui.ctx().clone();
         self.poll_loading(&ctx);
         // The startup dialog is modal: show it once the window has been drawn and has focus.
-        // On macOS a panel opened before the app is active is cancelled at once; gaining
+        // On macOS a panel opened before the app is active is canceled at once; gaining
         // focus repaints, which brings us back here.
         if self.pick_file {
             let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
@@ -484,7 +484,7 @@ fn set_title(ctx: &egui::Context, file: Option<&str>) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 }
 
-/// A message with an optional detail and an Open button, centred. Returns whether the
+/// A message with an optional detail and an Open button, centered. Returns whether the
 /// button was clicked.
 fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32)>) -> bool {
     let mut clicked = false;

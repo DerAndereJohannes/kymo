@@ -295,7 +295,7 @@ impl ViewState {
     }
 
     /// Applies a gesture made over a trace area of size `area`, with the pointer at
-    /// `pointer_x` points from its left edge (zooming centres on the area without one).
+    /// `pointer_x` points from its left edge (zooming centers on the area without one).
     pub fn gesture(&mut self, gesture: Gesture, area: Area, pointer_x: Option<f64>) {
         match gesture {
             Gesture::Pan { points } => self.pan_points(points, area.width),

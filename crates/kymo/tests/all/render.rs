@@ -261,7 +261,7 @@ fn check_columns(
             ));
         }
     }
-    // Where the data runs on without a gap, neighbouring columns connect: their runs share
+    // Where the data runs on without a gap, neighboring columns connect: their runs share
     // a row.
     for range in columns {
         for x in range.start..range.end.saturating_sub(1) {
@@ -286,7 +286,7 @@ fn check_columns(
     Ok(())
 }
 
-/// Least cover of a pixel the trace passes through: its centre is at most √½ pixel away.
+/// Least cover of a pixel the trace passes through: its center is at most √½ pixel away.
 const MIN_COVER: f64 = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
 
 /// How much more than exactly the renderer may cover a pixel: it measures distances to
@@ -296,7 +296,7 @@ const OVER_COVER: f64 = 1.0 / 8.0;
 /// Checks an anti-aliased image against the same frame drawn in whole pixels (`whole`):
 /// every pixel lit there is covered at least [`MIN_COVER`], and no pixel is covered that
 /// isn't within one pixel of one lit there. Lines (level 0) are also checked pixel by pixel
-/// against the f64 reference: each pixel covered by 1 − its centre's distance to the line,
+/// against the f64 reference: each pixel covered by 1 − its center's distance to the line,
 /// or up to [`OVER_COVER`] more.
 fn check_antialiased(
     image: &Image,
@@ -903,9 +903,9 @@ fn loading_parts_are_hatched() {
     );
 
     for x in 0..SIZE[0] {
-        // Pixel centres decide.
-        let centre = f64::from(x) + 0.5;
-        let missing = a <= centre && centre <= b;
+        // Pixel centers decide.
+        let center = f64::from(x) + 0.5;
+        let missing = a <= center && center <= b;
         for y in 0..SIZE[1] {
             // Diagonal lines every 6 pixels, over the whole row.
             let line = (x + y) % 6 == 0;

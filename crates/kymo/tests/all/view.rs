@@ -173,7 +173,7 @@ fn pans_by_quarters_and_windows_within_the_recording() {
 }
 
 #[test]
-fn zooms_around_the_centre_down_to_ten_samples() {
+fn zooms_around_the_center_down_to_ten_samples() {
     let (_, mut view) = state();
     act(&mut view, Action::PageRight);
     act(&mut view, Action::ZoomIn);

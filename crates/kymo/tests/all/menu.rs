@@ -231,7 +231,7 @@ fn only_command_shortcuts_are_attached() {
 }
 
 #[test]
-fn greys_out_what_needs_a_recording() {
+fn grays_out_what_needs_a_recording() {
     for platform in Platform::ALL {
         let enabled: HashSet<Action> = menu_actions(platform)
             .into_iter()

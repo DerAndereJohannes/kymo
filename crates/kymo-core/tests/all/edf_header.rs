@@ -388,7 +388,7 @@ fn rejects_malformed_headers() {
             Box::new(move |e| invalid_field(e, "digital maximum of signal 3")),
         ),
         (
-            // Every data signal relabelled as annotations.
+            // Every data signal relabeled as annotations.
             Box::new(move |b| {
                 for i in 0..ns - 1 {
                     set_signal(b, ns, 0, i, b"EDF Annotations");

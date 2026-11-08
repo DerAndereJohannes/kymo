@@ -235,7 +235,7 @@ impl Truth {
     }
 
     /// The distance from `(x, y)` to the line through consecutive present samples (and to
-    /// samples without a present neighbour), looking at samples within `reach` pixels.
+    /// samples without a present neighbor), looking at samples within `reach` pixels.
     pub fn distance(&self, x: f64, y: f64, reach: f64) -> f64 {
         let inside = self.within(x - reach, x + reach);
         let from = inside.start.saturating_sub(1);

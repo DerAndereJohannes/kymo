@@ -105,7 +105,7 @@ pub fn header_panel(
     open_clicked
 }
 
-/// A row per channel type in the recording: a checkbox, in the type's trace colour, that
+/// A row per channel type in the recording: a checkbox, in the type's trace color, that
 /// shows or hides all of its channels (mixed while some are shown), and how many are shown.
 fn kind_list(ui: &mut Ui, view: &mut ViewState) {
     egui::Grid::new("kinds")
@@ -133,7 +133,7 @@ fn kind_list(ui: &mut Ui, view: &mut ViewState) {
 }
 
 /// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how
-/// many there are; then a row per description: a checkbox, its colour, the description and
+/// many there are; then a row per description: a checkbox, its color, the description and
 /// how many annotations have it. Counts are right-aligned. Scrolls beyond [`LEGEND_ROWS`]
 /// description rows.
 fn legend_list(ui: &mut Ui, legend: &mut Legend) {

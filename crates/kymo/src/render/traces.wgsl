@@ -1,20 +1,20 @@
 // Trace drawing. One instance per (channel, pixel column) of a tile draw: it finds the
 // samples or buckets that reach its column and draws a one-pixel-wide quad over the rows
 // they reach. Quad corners lie on pixel edges, so a peak can never fall between pixel
-// centres and vanish.
+// centers and vanish.
 //
 // A draw reads its tile and the tiles placed right before and after it (`parts`), as one
-// run of items (`fetch`), so lines and envelopes run on across tile boundaries. Neighbouring
+// run of items (`fetch`), so lines and envelopes run on across tile boundaries. Neighboring
 // draws never share a column.
 //
 // Without anti-aliasing, a column lights every row between the lowest and highest point
 // the trace reaches in it. With anti-aliasing, each pixel is covered by how close its
-// centre lies to the trace drawn one pixel wide: 1 − distance, so a pixel the trace runs
+// center lies to the trace drawn one pixel wide: 1 − distance, so a pixel the trace runs
 // through the middle of is covered fully and one a pixel away not at all. The trace is the
 // line through the samples at level 0; above, each bucket's envelope reaching to the next.
 //
 // The distance comes from slices: the vertex stage cuts the two pixels around a column's
-// centre into SLICES slices and records the y range the trace reaches in each, once per
+// center into SLICES slices and records the y range the trace reaches in each, once per
 // column; a pixel then takes its distance to those boxes. The trace runs through all of
 // each box's height, so this is the distance to the trace, or less by up to a slice's width:
 // a pixel is covered at most 1/SLICES more than exactly, never less, whatever the number
@@ -116,7 +116,7 @@ struct Out {
     @location(10) @interpolate(flat) s7: vec4<f32>,
 };
 
-// Slices across the two pixels around a column's centre.
+// Slices across the two pixels around a column's center.
 const SLICES: i32 = 16;
 
 const KIND_I16: u32 = 0u;
@@ -398,7 +398,7 @@ fn vs_trace(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     var hi: f32;
     var s: array<vec2<f32>, 16>;
     if aa {
-        // Anti-aliased pixels see the trace up to a pixel from their centres.
+        // Anti-aliased pixels see the trace up to a pixel from their centers.
         s = slices(slot, column - 0.5);
         lo = 3.0e38;
         hi = -3.0e38;
@@ -456,7 +456,7 @@ fn fs_trace(input: Out) -> @location(0) vec4<f32> {
     let bottom = min(slot.clip_bottom, globals.size.y + 4.0);
     let s = array<vec4<f32>, 8>(input.s0, input.s1, input.s2, input.s3, input.s4, input.s5,
         input.s6, input.s7);
-    // The two slices on either side of the pixel's centre: inside either, the pixel is
+    // The two slices on either side of the pixel's center: inside either, the pixel is
     // covered fully (in a tall envelope, most are).
     for (var i = SLICES / 2 - 1; i <= SLICES / 2; i++) {
         let v = s[i / 2];
@@ -479,7 +479,7 @@ fn fs_trace(input: Out) -> @location(0) vec4<f32> {
         let dy = max(max(clamp(range.x, top, bottom) - p.y, p.y - clamp(range.y, top, bottom)), 0.0);
         d = min(d, length(vec2<f32>(dx, dy)));
     }
-    // Premultiplied colours scale as a whole.
+    // Premultiplied colors scale as a whole.
     return input.color * clamp(1.0 - d, 0.0, 1.0);
 }
 

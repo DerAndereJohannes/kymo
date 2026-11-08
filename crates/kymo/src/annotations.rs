@@ -1,4 +1,4 @@
-//! The annotation overlay: the legend (which descriptions are shown, in which colour) and the
+//! The annotation overlay: the legend (which descriptions are shown, in which color) and the
 //! marks drawn for the annotations in view, thinned to what the screen can show.
 //!
 //! Marks are in physical pixel columns of the trace area and in rows, so this module needs
@@ -11,25 +11,25 @@ use kymo_core::{Annotation, AnnotationData, AnnotationStore, ChannelId, Origin};
 
 use crate::view::ViewState;
 
-/// Colours annotations cycle through (see `ui::palette::annotation_color`).
+/// Colors annotations cycle through (see `ui::palette::annotation_color`).
 pub const COLORS: usize = 10;
 
 /// One description in the legend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub description: String,
-    /// Index into the annotation colours, `< COLORS`.
+    /// Index into the annotation colors, `< COLORS`.
     pub color: usize,
     /// Annotations with this description in the store.
     pub count: usize,
     pub shown: bool,
 }
 
-/// The descriptions of a store's annotations, each with a colour that never changes, a
+/// The descriptions of a store's annotations, each with a color that never changes, a
 /// count, and whether it is shown.
 #[derive(Clone, Debug, Default)]
 pub struct Legend {
-    /// In order of first appearance. Entries are never removed, so their colours (by
+    /// In order of first appearance. Entries are never removed, so their colors (by
     /// position) never change.
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
@@ -44,7 +44,7 @@ impl Legend {
     }
 
     /// Counts `store`'s annotations per description. Descriptions not seen before are added
-    /// at the end, by onset, shown, each with the next colour; known ones keep their colour
+    /// at the end, by onset, shown, each with the next color; known ones keep their color
     /// and shown state, even while none of their annotations are left.
     pub fn sync(&mut self, store: &AnnotationStore) {
         for entry in &mut self.entries {
@@ -118,7 +118,7 @@ pub enum Span {
     Row(usize),
 }
 
-/// A band or line of one colour over whole pixel columns.
+/// A band or line of one color over whole pixel columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mark {
     /// Physical pixel columns of the trace area, never empty.
@@ -140,11 +140,11 @@ pub struct Label {
 /// What to draw for the annotations in view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Marks {
-    /// Translucent: annotations at least a pixel long. Bands of the same colour and span
+    /// Translucent: annotations at least a pixel long. Bands of the same color and span
     /// never overlap or touch; overlapping ones are merged.
     pub bands: Vec<Mark>,
     /// Solid, one column wide: annotations without or with less than a pixel's duration. At most one
-    /// per column, colour and span.
+    /// per column, color and span.
     pub lines: Vec<Mark>,
     /// From left to right, never overlapping.
     pub labels: Vec<Label>,
@@ -155,10 +155,10 @@ pub struct Marks {
 ///
 /// An annotation of all channels, or of a stim channel, spans the trace area's height (see
 /// [`spans_all`]); one tied to channels spans the rows of those on screen, and draws nothing
-/// if none is. Marks of the same colour over
+/// if none is. Marks of the same color over
 /// the same rows that would overlap are merged, so however many annotations there are,
 /// there are at most a few marks per pixel column, and none is lost: every pixel an
-/// annotation covers is covered by a mark of its colour.
+/// annotation covers is covered by a mark of its color.
 ///
 /// Each annotation drawn gets a label unless it would overlap the previous one;
 /// `label_width` gives the room a label takes, in pixels, the gap to the next included.
@@ -174,12 +174,12 @@ pub fn marks(
         return marks;
     }
     let rows = view.visible_rows();
-    // The band being extended and the last line, per colour and span.
+    // The band being extended and the last line, per color and span.
     let mut open: HashMap<(usize, Span), Range<u32>> = HashMap::new();
     let mut lines: HashMap<(usize, Span), u32> = HashMap::new();
     let mut next_label = f64::NEG_INFINITY;
     let mut spans = Vec::new();
-    // By onset, so marks of each colour and span come from left to right.
+    // By onset, so marks of each color and span come from left to right.
     for a in store.query(view.time()) {
         let Some(entry) = legend.entry(&a.data.description).filter(|e| e.shown) else {
             continue;

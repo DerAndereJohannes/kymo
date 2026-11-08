@@ -149,7 +149,7 @@ impl Viewer {
         self.hover
     }
 
-    /// The annotations' descriptions, colours and whether they are shown.
+    /// The annotations' descriptions, colors and whether they are shown.
     pub fn legend(&self) -> &Legend {
         &self.legend
     }
@@ -444,7 +444,7 @@ impl Viewer {
                 axis_rect.top()..=axis_rect.top() + TICK,
                 (1.0, label_color),
             );
-            // Centred on the tick; at the ends, shifted inward to stay whole.
+            // Centered on the tick; at the ends, shifted inward to stay whole.
             let galley = painter.layout_no_wrap(tick.label, small.clone(), label_color);
             let width = galley.size().x;
             let left =
@@ -522,7 +522,7 @@ impl Viewer {
             );
         }
 
-        // Channel names, centred on their rows.
+        // Channel names, centered on their rows.
         let names_painter = painter.with_clip_rect(names);
         let height = area.height;
         for (i, &channel) in self.view.visible_rows().zip(self.view.visible_channels()) {
@@ -542,7 +542,7 @@ impl Viewer {
         }
     }
 
-    /// The colour of a channel's trace and name: its type's, or greyed out if it is bad.
+    /// The color of a channel's trace and name: its type's, or grayed out if it is bad.
     fn channel_color(&self, channel: ChannelId, visuals: &egui::Visuals) -> Color32 {
         if self.view.is_bad(channel) {
             bad_color(visuals)
@@ -673,7 +673,7 @@ fn live(service: &Option<TileService>) -> &TileService {
         .expect("the tile service lives as long as the viewer")
 }
 
-/// An egui colour as the renderer's premultiplied RGBA.
+/// An egui color as the renderer's premultiplied RGBA.
 fn rgba(color: Color32) -> [f32; 4] {
     color.to_normalized_gamma_f32()
 }

@@ -55,7 +55,7 @@ proptest! {
         let baseline = (f64::from(at_baseline) + fraction) * gain + offset;
         let row = row(center, px_per_unit, baseline);
         let c = Coefficients::new(SampleType::I32, gain, offset, &row);
-        // Values whose y is within 4000 px of the centre.
+        // Values whose y is within 4000 px of the center.
         let reach = (4000.0 / (gain.abs() * px_per_unit)).min(1.0e6);
         for step in steps {
             let native = (f64::from(at_baseline) + step * reach).round() as i32;
@@ -98,7 +98,7 @@ fn larger_values_go_up_unless_the_gain_is_negative() {
     assert_eq!(up.y(Native::Int(10)), Some(90.0));
     let flipped = Coefficients::new(SampleType::I16, -0.5, 0.0, &r);
     assert_eq!(flipped.y(Native::Int(10)), Some(110.0));
-    // The baseline is drawn at the centre.
+    // The baseline is drawn at the center.
     let dc = Coefficients::new(SampleType::I16, 0.5, 3.0, &row(100.0, 2.0, 8.0));
     assert_eq!(dc.y(Native::Int(10)), Some(100.0));
 }
@@ -250,7 +250,7 @@ fn drawing_continues_into_the_next_tile() {
     let draw = frame.draws[0].clone();
     assert_eq!(draw.part.tile.key().level, Level::RAW);
     assert_eq!(*draw.part.items.end(), TILE_LEN as u32 - 1);
-    // The next tile is the draw's neighbour, from its first sample on, placed where its
+    // The next tile is the draw's neighbor, from its first sample on, placed where its
     // own draw places it.
     let next = draw.next.as_ref().unwrap();
     assert_eq!(next.tile.key(), frame.draws[1].part.tile.key());
@@ -284,7 +284,7 @@ fn drawing_continues_into_the_next_tile() {
     assert!((x0 - 200.0).abs() < 0.01 && x1 == 400.0, "{x0} {x1}");
     assert_eq!((y0, y1), (0.0, 100.0));
 
-    // A coarser stand-in is a neighbour too, before or after (the shader doesn't run a
+    // A coarser stand-in is a neighbor too, before or after (the shader doesn't run a
     // level-0 line on into an envelope, but does run an envelope on into a line).
     let frame = frame_of(
         fx,
@@ -307,7 +307,7 @@ fn drawing_continues_into_the_next_tile() {
         1
     );
 
-    // Zoomed out, the next tile of buckets is a neighbour as well.
+    // Zoomed out, the next tile of buckets is a neighbor as well.
     let n = 300_000u64;
     let mut rng = Rng::new(9);
     let long = Fixture::new(

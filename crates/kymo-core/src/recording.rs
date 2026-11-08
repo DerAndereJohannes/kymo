@@ -61,7 +61,7 @@ pub trait BlockReader: Send + Sync {
 
     /// Fetches `range` of `grid` from disk into the operating system's cache, so that a
     /// later [`read`](Self::read) of it does not wait for the disk. Blocks while it reads,
-    /// so callers run it on a helper thread. Only an optimisation: errors are ignored, and
+    /// so callers run it on a helper thread. Only an optimization: errors are ignored, and
     /// the default does nothing.
     ///
     /// [`Recording`] guarantees that the grid exists and that `range` is non-empty and lies
