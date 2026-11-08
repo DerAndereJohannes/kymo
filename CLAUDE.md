@@ -6,16 +6,16 @@ Later phases ship it in a Python wheel as an MNE-Python browser backend and laun
 
 **Read `docs/design.md` before changing anything architectural.** It is the source of truth.
 If an implementation detail has to deviate from it, say so explicitly and update the doc in the same change.
-Phase 2 work follows `docs/phase2-plan.md` (steps, decisions, controls, and what phase 1 provides).
+Phase 3 work follows `docs/phase3-plan.md` (viewer features); phase 2's plan, `docs/phase2-plan.md`, holds the controls and the decisions it settled.
 
 ## Current scope
 
-Phases 1 and 2 only (see "Plan" in `docs/design.md`):
+Phases 1 to 3 (see "Plan" in `docs/design.md`); phases 1 and 2 are done, phase 3 adds viewer features (anti-aliasing, automatic scale, colours, annotation editing with CSV save and load):
 
 1. `crates/kymo-core`: recording model, EDF/BDF reader, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.
 
-Out of scope for now: other file formats, filters/re-referencing/SSP, Python packaging, annotation editing.
+Out of scope for now: other file formats, filters/re-referencing (phase 4, `docs/phase4-plan.md`), Python packaging (phase 5). SSP and bipolar montages are out of scope altogether.
 But don't build anything that assumes EDF's record layout or a single sampling rate above the reader interface.
 
 ## Layout
@@ -26,7 +26,9 @@ crates/kymo          eframe/egui-wgpu viewer (`kymo path/to/file.bdf`); everythi
 crates/kymo-testgen  generates synthetic EDF/BDF files for tests and benchmarks
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff
-docs/phase2-plan.md  agreed plan for phase 2 (the viewer)
+docs/phase2-plan.md  plan for phase 2 (the viewer), done
+docs/phase3-plan.md  plan for phase 3 (viewer features)
+docs/phase4-plan.md  draft plan for phase 4 (derived signals)
 ```
 
 ## Non-negotiables
