@@ -1,7 +1,8 @@
 name: Binaries
 
 # Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64) and
-# uploads one artifact per platform, `kymo-<target>`. Run it by hand (Actions tab, or
+# uploads one artifact per platform, the archive itself (a .tar.gz, a .zip on Windows), not
+# zipped again: `kymo-<version>-<commit>-<target>.tar.gz`. Run it by hand (Actions tab, or
 # `gh workflow run binaries.yml`), or call it from another workflow (the release one) with
 # `uses: ./.github/workflows/binaries.yml` and download the artifacts in a later job.
 
@@ -74,9 +75,10 @@ jobs:
             tar czf "$name.tar.gz" "$name"
             echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
+      # Unarchived, the artifact is named after the file (`name` would be ignored).
       - uses: actions/upload-artifact@v7
         with:
-          name: kymo-${{ matrix.target }}
           path: ${{ steps.package.outputs.file }}
+          archive: false
           if-no-files-found: error
           retention-days: ${{ inputs.retention-days }}

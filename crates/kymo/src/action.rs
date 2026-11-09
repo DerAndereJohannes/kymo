@@ -194,6 +194,17 @@ impl Action {
         )
     }
 
+    /// Whether the checkable action is one choice of several that exclude each other (the
+    /// stim annotation rules), shown with a radio button in the egui menus. Native menus
+    /// keep the checkmark: macOS marks such choices that way too, and muda has no radio
+    /// items for Windows.
+    pub fn radio(self) -> bool {
+        matches!(
+            self,
+            Action::StimEveryChange | Action::StimFromZero | Action::StimIncreasing
+        )
+    }
+
     /// The stim annotation options after this action, if it is one of the Stim Annotations
     /// items.
     pub fn stim_options(self, options: EventOptions) -> Option<EventOptions> {

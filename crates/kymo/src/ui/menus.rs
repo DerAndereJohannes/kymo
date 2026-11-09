@@ -52,7 +52,7 @@ fn menu_items(
                 let shortcut = shortcut.map(|chord| chord.display(platform));
                 let enabled = state.enabled(*action);
                 let response = match state.checked(*action) {
-                    Some(on) => check_item(ui, enabled, on, label, shortcut),
+                    Some(on) => check_item(ui, enabled, on, action.radio(), label, shortcut),
                     None => {
                         let mut button = Button::new(*label);
                         if let Some(shortcut) = shortcut {
@@ -84,13 +84,15 @@ fn menu_items(
     }
 }
 
-/// A menu item with a checkbox, `on` or not, and its shortcut: a button, so it highlights
-/// as the other items do, with the box drawn into room left at its start (egui's
-/// selectable buttons only change their background, and its checkboxes have no shortcut).
+/// A menu item with a checkbox (or a radio button, if `radio`), `on` or not, and its
+/// shortcut: a button, so it highlights as the other items do, with the box drawn into room
+/// left at its start (egui's selectable buttons only change their background, and its
+/// checkboxes and radio buttons have no shortcut).
 fn check_item(
     ui: &mut Ui,
     enabled: bool,
     on: bool,
+    radio: bool,
     label: &str,
     shortcut: Option<String>,
 ) -> Response {
@@ -115,26 +117,44 @@ fn check_item(
             &widgets.inactive
         };
         let painter = ui.painter();
-        // As egui's checkboxes: rounding at most 30 % of the width, so it stays a square.
-        painter.rect(
-            big,
-            visuals.corner_radius.at_most((0.3 * size).round() as u8),
-            visuals.bg_fill,
-            visuals.bg_stroke,
-            StrokeKind::Inside,
-        );
-        if on {
-            painter.add(Shape::line(
-                vec![
-                    pos2(small.left(), small.center().y),
-                    pos2(small.center().x, small.bottom()),
-                    pos2(small.right(), small.top()),
-                ],
-                visuals.fg_stroke,
-            ));
+        if radio {
+            // As egui's radio buttons.
+            painter.circle(
+                big.center(),
+                big.width() / 2.0,
+                visuals.bg_fill,
+                visuals.bg_stroke,
+            );
+            if on {
+                painter.circle_filled(small.center(), small.width() / 3.0, visuals.fg_stroke.color);
+            }
+        } else {
+            // As egui's checkboxes: rounding at most 30 % of the width, so it stays a square.
+            painter.rect(
+                big,
+                visuals.corner_radius.at_most((0.3 * size).round() as u8),
+                visuals.bg_fill,
+                visuals.bg_stroke,
+                StrokeKind::Inside,
+            );
+            if on {
+                painter.add(Shape::line(
+                    vec![
+                        pos2(small.left(), small.center().y),
+                        pos2(small.center().x, small.bottom()),
+                        pos2(small.right(), small.top()),
+                    ],
+                    visuals.fg_stroke,
+                ));
+            }
         }
     }
-    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, label));
+    let role = if radio {
+        Role::RadioButton
+    } else {
+        Role::CheckBox
+    };
+    response.widget_info(|| WidgetInfo::selected(role, enabled, on, label));
     response
 }
 

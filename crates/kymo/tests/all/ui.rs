@@ -463,7 +463,7 @@ fn checked(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
 }
 
 #[test]
-fn checkable_menu_items_show_a_checkbox() {
+fn checkable_menu_items_show_a_checkbox_or_radio_button() {
     // Show Sidebar on, Anti-aliasing off (the settings' default).
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
@@ -510,6 +510,24 @@ fn checkable_menu_items_show_a_checkbox() {
         pixel(sidebar_rect.right() - 1.0, sidebar_rect.center().y),
         pixel(antialias_rect.right() - 1.0, antialias_rect.center().y)
     );
+
+    // The stim annotation rules exclude each other, so they are radio buttons, with the
+    // default rule on; the initial code is a checkbox of its own.
+    harness.get_by_label("Stim Annotations").hover();
+    harness.run_steps(2);
+    let rules = ["Every Change", "From Zero", "Increasing"].map(|label| {
+        let (role, on, _) = item(&harness, label);
+        (role, on)
+    });
+    assert_eq!(
+        rules,
+        [
+            (Role::RadioButton, Some(Toggled::True)),
+            (Role::RadioButton, Some(Toggled::False)),
+            (Role::RadioButton, Some(Toggled::False)),
+        ]
+    );
+    assert_eq!(item(&harness, "Initial Code").0, Role::CheckBox);
 }
 
 /// A preset with every channel's physical range moved by `offset`, as amplifiers with a
