@@ -137,11 +137,13 @@ impl NativeMenu {
         let RawWindowHandle::Win32(win32) = handle.as_raw() else {
             anyhow::bail!("not a Win32 window");
         };
+        let hwnd = win32.hwnd.get();
+        allow_dark_mode(hwnd);
         // SAFETY: `hwnd` comes from eframe's live window handle, so it is a valid window
         // for as long as the app runs; muda only needs it to attach the menu.
         #[allow(unsafe_code)]
         unsafe {
-            self.menu.init_for_hwnd(win32.hwnd.get())?;
+            self.menu.init_for_hwnd(hwnd)?;
         }
         Ok(())
     }
@@ -241,5 +243,45 @@ fn system_item(item: SystemItem) -> PredefinedMenuItem {
         SystemItem::Minimize => PredefinedMenuItem::minimize(label),
         SystemItem::Zoom => PredefinedMenuItem::maximize(label),
         SystemItem::BringAllToFront => PredefinedMenuItem::bring_all_to_front(label),
+    }
+}
+
+/// Lets the menus follow Windows' dark mode. muda draws the menu bar dark (its theme `Auto`)
+/// only in a window allowed dark mode, and the menus that drop down from it are dark only
+/// in an app that opts in; winit does neither, as it only darkens the title bar. The
+/// functions are uxtheme's, undocumented and found by ordinal, as muda and winit find
+/// theirs; where they are missing (before Windows 10 1809), the menus stay light.
+#[cfg(windows)]
+fn allow_dark_mode(hwnd: isize) {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+    // `AllowDarkModeForWindow(HWND, bool) -> bool`.
+    const ALLOW_DARK_MODE_FOR_WINDOW: usize = 133;
+    // `SetPreferredAppMode(PreferredAppMode) -> PreferredAppMode` since Windows 10 1903,
+    // `AllowDarkModeForApp(bool) -> bool` before; 1 means "follow the system" in both.
+    const SET_PREFERRED_APP_MODE: usize = 135;
+    // `FlushMenuThemes()`: menus pick up the mode.
+    const FLUSH_MENU_THEMES: usize = 136;
+    // SAFETY: uxtheme.dll is a system library that stays loaded; each function is looked
+    // up by its ordinal and called with the signature it has had since Windows 10 1809
+    // (the same ones muda and winit use), with `hwnd`, eframe's live window.
+    #[allow(unsafe_code)]
+    unsafe {
+        let uxtheme = LoadLibraryA(c"uxtheme.dll".as_ptr().cast());
+        if uxtheme.is_null() {
+            return;
+        }
+        let find = |ordinal: usize| GetProcAddress(uxtheme, ordinal as *const u8);
+        if let Some(f) = find(SET_PREFERRED_APP_MODE) {
+            let set: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+            set(1);
+        }
+        if let Some(f) = find(ALLOW_DARK_MODE_FOR_WINDOW) {
+            let allow: unsafe extern "system" fn(isize, bool) -> bool = std::mem::transmute(f);
+            allow(hwnd, true);
+        }
+        if let Some(f) = find(FLUSH_MENU_THEMES) {
+            let flush: unsafe extern "system" fn() = std::mem::transmute(f);
+            flush();
+        }
     }
 }

@@ -36,6 +36,8 @@ pollster = "1.0"
 proptest = "1"
 rfd = "0.17.2"
 thiserror = "2"
+# Windows only, already pulled in by muda; lets the menus follow the system's dark mode.
+windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader"] }
 
 [workspace.lints.rust]
 # `unsafe` is only allowed where unavoidable (memory mapping), opted in locally with a SAFETY comment.
