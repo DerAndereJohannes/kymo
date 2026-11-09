@@ -57,9 +57,14 @@ impl AppMode {
         let _ = std::thread::Builder::new()
             .name("kymo app mode".into())
             .spawn(move || {
+                // Blocked until a value of the key changes (others too, as transparency);
+                // a frame only if the mode did.
                 while registry::wait(&key) {
-                    shared.set(registry::apps_dark(&key));
-                    ctx.request_repaint();
+                    let dark = registry::apps_dark(&key);
+                    if dark != shared.dark() {
+                        shared.set(dark);
+                        ctx.request_repaint();
+                    }
                 }
             });
         mode

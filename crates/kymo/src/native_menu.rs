@@ -8,6 +8,7 @@
 //! [`Platform::menu_takes_shortcuts`]).
 
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui::{self, Key as EguiKey};
@@ -24,7 +25,10 @@ use crate::ui::menus::{ABOUT, LICENSE, MenuState};
 
 /// The menu bar and its action items.
 pub struct NativeMenu {
-    menu: Menu,
+    /// Never dropped: muda takes a dropped menu bar off its window, which on Windows then
+    /// shows a frame without it (taller traces) before closing. The menu lives as long as
+    /// the app, and Windows destroys it with the window.
+    menu: ManuallyDrop<Menu>,
     items: Vec<(Action, Entry)>,
     actions: HashMap<MenuId, Action>,
     events: Receiver<MenuId>,
@@ -116,7 +120,7 @@ impl NativeMenu {
             .map(|(action, _)| (action_id(*action), *action))
             .collect();
         Ok(NativeMenu {
-            menu,
+            menu: ManuallyDrop::new(menu),
             items,
             actions,
             events,
