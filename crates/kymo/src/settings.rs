@@ -118,7 +118,7 @@ impl Default for Settings {
             gpu_memory_mb: (DEFAULT_GPU_BUDGET >> 20) as u32,
             default_window_s: DEFAULT_SPAN,
             antialias: false,
-            auto_scale_on_open: false,
+            auto_scale_on_open: true,
             type_colors: [None; KINDS.len()],
             theme: Theme::System,
         }

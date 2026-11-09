@@ -1444,7 +1444,14 @@ fn amplitudes(harness: &Harness<'_, KymoApp>) -> [f64; KINDS.len()] {
 #[test]
 fn auto_scale_fits_the_window_from_the_menu_keys_and_setting() {
     let file = typed_preset();
-    let mut harness = window(file.path());
+    // Not on opening, which is the default: the fixed defaults first, then ⌘R.
+    let mut harness = window_with(
+        file.path(),
+        Settings {
+            auto_scale_on_open: false,
+            ..Settings::default()
+        },
+    );
     ready(&mut harness);
     let defaults = amplitudes(&harness);
 
@@ -1560,7 +1567,13 @@ fn auto_scale_ignores_a_dc_offset() {
     let mut fitted = Vec::new();
     for offset in [0.0, 21_000.0] {
         let file = offset_preset("bdf+c-small", offset);
-        let mut harness = window(file.path());
+        let mut harness = window_with(
+            file.path(),
+            Settings {
+                auto_scale_on_open: false,
+                ..Settings::default()
+            },
+        );
         ready(&mut harness);
         let default = amplitudes(&harness)[eeg];
         harness.key_press_modifiers(command(), Key::R);

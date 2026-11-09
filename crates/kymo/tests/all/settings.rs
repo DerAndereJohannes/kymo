@@ -37,7 +37,7 @@ fn defaults_without_storage_or_values() {
     assert_eq!(defaults.gpu_memory_mb, 256);
     assert_eq!(defaults.default_window_s, 20.0);
     assert!(!defaults.antialias);
-    assert!(!defaults.auto_scale_on_open);
+    assert!(defaults.auto_scale_on_open);
     assert_eq!(defaults.theme, Theme::System);
     assert_eq!(Settings::load(None), defaults);
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
