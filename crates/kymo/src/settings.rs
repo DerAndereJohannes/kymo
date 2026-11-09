@@ -3,7 +3,7 @@
 use std::ops::RangeInclusive;
 
 use eframe::Storage;
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use kymo_core::ChannelKind;
 use kymo_core::tile::DEFAULT_BUDGET;
 
@@ -24,6 +24,7 @@ const GPU_MEMORY_KEY: &str = "kymo.gpu_memory_mb";
 const DEFAULT_WINDOW_KEY: &str = "kymo.default_window_s";
 const ANTIALIAS_KEY: &str = "kymo.antialias";
 const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
+const THEME_KEY: &str = "kymo.theme";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
 
 /// The key of a channel type's color, e.g. `kymo.color.eeg`.
@@ -37,6 +38,60 @@ fn type_color_key(kind: ChannelKind) -> String {
         _ => "misc",
     };
     format!("kymo.color.{name}")
+}
+
+/// Light or dark: the system's choice, or one of them whatever the system uses. On
+/// Windows, the system's choice is the default app mode (not the default Windows mode,
+/// which is for the taskbar and Start), as for other apps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Light => "Light",
+            Theme::Dark => "Dark",
+        }
+    }
+
+    /// How it is kept in the storage.
+    fn key(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Theme> {
+        Theme::ALL.into_iter().find(|t| t.key() == text.trim())
+    }
+
+    /// egui's look for it.
+    pub fn preference(self) -> egui::ThemePreference {
+        match self {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Light => egui::ThemePreference::Light,
+            Theme::Dark => egui::ThemePreference::Dark,
+        }
+    }
+
+    /// The window's title bar for it.
+    pub fn window(self) -> egui::SystemTheme {
+        match self {
+            Theme::System => egui::SystemTheme::SystemDefault,
+            Theme::Light => egui::SystemTheme::Light,
+            Theme::Dark => egui::SystemTheme::Dark,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,6 +108,7 @@ pub struct Settings {
     pub auto_scale_on_open: bool,
     /// Colors picked per channel type; the others keep their defaults.
     pub type_colors: TypeColors,
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -64,6 +120,7 @@ impl Default for Settings {
             antialias: false,
             auto_scale_on_open: false,
             type_colors: [None; KINDS.len()],
+            theme: Theme::System,
         }
     }
 }
@@ -95,6 +152,9 @@ impl Settings {
                     .and_then(|v| parse_rgb(&v))
                     .map(|[r, g, b]| Color32::from_rgb(r, g, b))
             }),
+            theme: get(THEME_KEY)
+                .and_then(|v| Theme::parse(&v))
+                .unwrap_or(defaults.theme),
         }
         .clamped()
     }
@@ -106,6 +166,7 @@ impl Settings {
         storage.set_string(DEFAULT_WINDOW_KEY, self.default_window_s.to_string());
         storage.set_string(ANTIALIAS_KEY, self.antialias.to_string());
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
+        storage.set_string(THEME_KEY, self.theme.key().to_owned());
         for (kind, color) in KINDS.into_iter().zip(self.type_colors) {
             let key = type_color_key(kind);
             match color {
@@ -130,6 +191,7 @@ impl Settings {
             antialias: self.antialias,
             auto_scale_on_open: self.auto_scale_on_open,
             type_colors: self.type_colors,
+            theme: self.theme,
         }
     }
 

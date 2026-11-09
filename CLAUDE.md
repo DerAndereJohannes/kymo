@@ -45,7 +45,7 @@ docs/phase4-plan.md  draft plan for phase 4 (derived signals)
 
 - Stable Rust, edition 2024. `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must be clean.
 - Error handling: `thiserror` in `kymo-core`, `anyhow` only in binaries. No `unwrap()` on file input.
-- `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires, and letting it follow dark mode there (uxtheme); attaching to the terminal's console on Windows; reading peak memory in the frames benchmark), with a `// SAFETY:` comment.
+- `unsafe` only where unavoidable (memory mapping; attaching the native menu to the window on Windows, as muda requires, and letting it follow the theme there (uxtheme); attaching to the terminal's console on Windows; reading peak memory in the frames benchmark), with a `// SAFETY:` comment.
 - Tests are behavioral: they check outputs (decoded samples, tile values, annotations), not internal structure.
   Use `proptest` to compare tiles against a brute-force min/max pass.
 - Integration tests live in one binary per crate, `tests/all/`, a module per area (`main.rs` lists them), so they link once

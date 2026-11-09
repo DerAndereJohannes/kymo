@@ -18,7 +18,7 @@ use crate::document::{self, Document, Loading, error_text, file_name};
 use crate::keymap::{Keymap, Platform};
 #[cfg(any(target_os = "macos", windows))]
 use crate::native_menu::NativeMenu;
-use crate::settings::{Settings, load_annotation_colors, save_annotation_colors};
+use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::gpu::Gpu;
 use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
@@ -92,6 +92,8 @@ pub struct KymoApp {
     notice: Option<(String, String)>,
     /// The window may close: its unsaved changes were saved or given up.
     closing: bool,
+    /// The theme setting and the system's theme it was last applied for.
+    theme_applied: Option<(Theme, Option<egui::Theme>)>,
 }
 
 /// What the unsaved changes question holds up.
@@ -125,8 +127,13 @@ enum State {
 impl KymoApp {
     /// A window opening `path`, or showing a file dialog without one.
     pub fn new(ctx: &egui::Context, gpu: Gpu, options: Options, path: Option<PathBuf>) -> Self {
-        // ⌘+ and ⌘− zoom time, not the interface.
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        // ⌘+ and ⌘− zoom time, not the interface. The title bar's theme is ours: egui sets
+        // it only when its theme changes, not again when the system's does (see
+        // `apply_theme`).
+        ctx.options_mut(|o| {
+            o.zoom_with_keyboard = false;
+            o.sync_window_theme = false;
+        });
         add_symbol_font(ctx);
         gpu.set_budget(options.settings.gpu_memory_bytes());
         let mut app = KymoApp {
@@ -149,6 +156,7 @@ impl KymoApp {
             leaving: None,
             notice: None,
             closing: false,
+            theme_applied: None,
         };
         if let Some(path) = path {
             app.open(ctx, path);
@@ -209,7 +217,7 @@ impl KymoApp {
 
     /// Changes the settings and applies them at once: the tile cache and GPU budgets (a
     /// smaller one evicts), anti-aliasing, and the default window for ⌘0 and recordings
-    /// opened from now on.
+    /// opened from now on; the theme from the next frame.
     pub fn set_settings(&mut self, settings: Settings) {
         let settings = settings.clamped();
         self.options.settings = settings;
@@ -219,6 +227,24 @@ impl KymoApp {
             viewer.set_default_span(settings.default_window_s);
             viewer.set_antialias(settings.antialias);
             viewer.set_type_colors(settings.type_colors);
+        }
+    }
+
+    /// Applies the theme setting to egui, the title bar and the native menus, when it or
+    /// the system's theme changed. Again on a change of the system's: Windows puts the
+    /// title bar back to the system's mode then, whatever the window was set to.
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let theme = self.options.settings.theme;
+        let now = (theme, ctx.system_theme());
+        if self.theme_applied == Some(now) {
+            return;
+        }
+        self.theme_applied = Some(now);
+        ctx.set_theme(theme.preference());
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme.window()));
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(menu) = &self.native_menu {
+            menu.set_theme(theme);
         }
     }
 
@@ -319,6 +345,7 @@ impl KymoApp {
     /// One frame: picks up a finished open, handles keys, and draws the window.
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.apply_theme(&ctx);
         self.poll_loading();
         // The window's close button, or Quit's own request: unsaved changes are asked about.
         if ctx.input(|i| i.viewport().close_requested())
@@ -365,6 +392,7 @@ impl KymoApp {
         let mut settings = self.options.settings;
         if settings_window(&ctx, &mut self.settings_open, &mut settings) {
             self.set_settings(settings);
+            self.apply_theme(&ctx);
         }
         #[cfg(any(target_os = "macos", windows))]
         {
@@ -946,7 +974,11 @@ fn attach_native_menu(app: &mut KymoApp, cc: &eframe::CreationContext<'_>) {
         #[cfg(target_os = "macos")]
         menu.install();
         #[cfg(windows)]
-        menu.install(cc)?;
+        let menu = {
+            let mut menu = menu;
+            menu.install(cc)?;
+            menu
+        };
         Ok(menu)
     };
     match install() {

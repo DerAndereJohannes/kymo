@@ -302,3 +302,20 @@ fn the_macos_menu_takes_the_system_shortcuts() {
     }
     assert!(!taken_chords(Platform::Windows).contains(&Chord::cmd(eframe::egui::Key::H)));
 }
+
+/// Windows: each theme reaches the menus as uxtheme's app mode, which reports back the mode
+/// each call replaced (1 follows the default app mode, 2 dark, 3 light).
+#[cfg(windows)]
+#[test]
+fn the_menus_app_mode_follows_the_theme() {
+    use kymo::native_menu::set_app_mode;
+    use kymo::settings::Theme;
+    assert!(
+        set_app_mode(Theme::Dark).is_some(),
+        "no SetPreferredAppMode in uxtheme"
+    );
+    assert_eq!(set_app_mode(Theme::Light), Some(2));
+    assert_eq!(set_app_mode(Theme::System), Some(3));
+    assert_eq!(set_app_mode(Theme::Dark), Some(1));
+    assert_eq!(set_app_mode(Theme::System), Some(2));
+}

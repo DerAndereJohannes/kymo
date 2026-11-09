@@ -32,6 +32,8 @@ memmap2 = "0.9"
 muda = { version = "0.21", default-features = false }
 # macOS only, already pulled in by eframe; names the process for the app menu.
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
+# macOS only, already pulled in by winit; lets the menus take the theme setting.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSResponder"] }
 pollster = "1.0"
 proptest = "1"
 rfd = "0.17.2"

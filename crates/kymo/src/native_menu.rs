@@ -19,6 +19,7 @@ use muda::{
 use crate::action::Action;
 use crate::keymap::{Chord, Platform};
 use crate::menu::{Item, Role, SystemItem, menu_bar};
+use crate::settings::Theme;
 use crate::ui::menus::{ABOUT, LICENSE, MenuState};
 
 /// The menu bar and its action items.
@@ -29,6 +30,9 @@ pub struct NativeMenu {
     events: Receiver<MenuId>,
     /// What each item showed at the last [`update`](Self::update).
     shown: HashMap<Action, (bool, Option<bool>)>,
+    /// The window the menu bar is attached to.
+    #[cfg(windows)]
+    hwnd: Option<isize>,
 }
 
 enum Entry {
@@ -117,6 +121,8 @@ impl NativeMenu {
             actions,
             events,
             shown: HashMap::new(),
+            #[cfg(windows)]
+            hwnd: None,
         })
     }
 
@@ -129,7 +135,7 @@ impl NativeMenu {
     /// Attaches the menu bar to `window`.
     #[cfg(windows)]
     pub fn install(
-        &self,
+        &mut self,
         window: &impl eframe::egui_wgpu::wgpu::rwh::HasWindowHandle,
     ) -> anyhow::Result<()> {
         use eframe::egui_wgpu::wgpu::rwh::RawWindowHandle;
@@ -145,7 +151,46 @@ impl NativeMenu {
         unsafe {
             self.menu.init_for_hwnd(hwnd)?;
         }
+        self.hwnd = Some(hwnd);
+        self.set_theme(Theme::System);
         Ok(())
+    }
+
+    /// Shows the menus light or dark as `theme` says; [`Theme::System`] follows the system
+    /// as it changes. egui and the title bar are the caller's.
+    #[cfg(target_os = "macos")]
+    pub fn set_theme(&self, theme: Theme) {
+        use objc2_app_kit::{NSAppearance, NSApplication};
+        use objc2_foundation::{MainThreadMarker, ns_string};
+        // The menus take the application's appearance (the window's own is winit's).
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        // The values of `NSAppearanceNameAqua` and `NSAppearanceNameDarkAqua`.
+        let appearance = match theme {
+            Theme::System => None,
+            Theme::Light => NSAppearance::appearanceNamed(ns_string!("NSAppearanceNameAqua")),
+            Theme::Dark => NSAppearance::appearanceNamed(ns_string!("NSAppearanceNameDarkAqua")),
+        };
+        NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
+    }
+
+    /// Shows the menus light or dark as `theme` says; [`Theme::System`] follows the default
+    /// app mode as it changes. The menus that drop down take the app's mode, the menu bar
+    /// muda's theme for the window. egui and the title bar are the caller's.
+    #[cfg(windows)]
+    pub fn set_theme(&self, theme: Theme) {
+        set_app_mode(theme);
+        let Some(hwnd) = self.hwnd else { return };
+        let bar = match theme {
+            Theme::System => muda::MenuTheme::Auto,
+            Theme::Light => muda::MenuTheme::Light,
+            Theme::Dark => muda::MenuTheme::Dark,
+        };
+        // SAFETY: `hwnd` is eframe's live window, which `install` attached the menu to; muda
+        // sends it a message to redraw the bar.
+        #[allow(unsafe_code)]
+        let _ = unsafe { self.menu.set_theme_for_hwnd(hwnd, bar) };
     }
 
     /// The actions of the menu items chosen since the last call.
@@ -246,42 +291,78 @@ fn system_item(item: SystemItem) -> PredefinedMenuItem {
     }
 }
 
-/// Lets the menus follow Windows' dark mode. muda draws the menu bar dark (its theme `Auto`)
-/// only in a window allowed dark mode, and the menus that drop down from it are dark only
-/// in an app that opts in; winit does neither, as it only darkens the title bar. The
-/// functions are uxtheme's, undocumented and found by ordinal, as muda and winit find
-/// theirs; where they are missing (before Windows 10 1809), the menus stay light.
+/// uxtheme's function with `ordinal`. Windows' dark mode for menus is undocumented; its
+/// functions are found by ordinal, as muda and winit find theirs, and are missing before
+/// Windows 10 1809 (the menus stay light there).
 #[cfg(windows)]
-fn allow_dark_mode(hwnd: isize) {
+fn uxtheme(ordinal: usize) -> Option<unsafe extern "system" fn() -> isize> {
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-    // `AllowDarkModeForWindow(HWND, bool) -> bool`.
-    const ALLOW_DARK_MODE_FOR_WINDOW: usize = 133;
-    // `SetPreferredAppMode(PreferredAppMode) -> PreferredAppMode` since Windows 10 1903,
-    // `AllowDarkModeForApp(bool) -> bool` before; 1 means "follow the system" in both.
-    const SET_PREFERRED_APP_MODE: usize = 135;
-    // `FlushMenuThemes()`: menus pick up the mode.
-    const FLUSH_MENU_THEMES: usize = 136;
-    // SAFETY: uxtheme.dll is a system library that stays loaded; each function is looked
-    // up by its ordinal and called with the signature it has had since Windows 10 1809
-    // (the same ones muda and winit use), with `hwnd`, eframe's live window.
+    // SAFETY: uxtheme.dll is a system library that stays loaded once loaded; a missing one
+    // or function gives null, which is checked.
     #[allow(unsafe_code)]
     unsafe {
         let uxtheme = LoadLibraryA(c"uxtheme.dll".as_ptr().cast());
         if uxtheme.is_null() {
-            return;
+            return None;
         }
-        let find = |ordinal: usize| GetProcAddress(uxtheme, ordinal as *const u8);
-        if let Some(f) = find(SET_PREFERRED_APP_MODE) {
-            let set: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
-            set(1);
-        }
-        if let Some(f) = find(ALLOW_DARK_MODE_FOR_WINDOW) {
+        GetProcAddress(uxtheme, ordinal as *const u8)
+    }
+}
+
+/// Lets the menus of `hwnd` be dark: muda draws the menu bar dark (its theme `Auto` or
+/// `Dark`) only in a window allowed dark mode; winit doesn't allow it, as it only darkens
+/// the title bar.
+#[cfg(windows)]
+fn allow_dark_mode(hwnd: isize) {
+    // `AllowDarkModeForWindow(HWND, bool) -> bool`.
+    const ALLOW_DARK_MODE_FOR_WINDOW: usize = 133;
+    if let Some(f) = uxtheme(ALLOW_DARK_MODE_FOR_WINDOW) {
+        // SAFETY: the function has had this signature since Windows 10 1809 (as muda and
+        // winit use it), and `hwnd` is eframe's live window.
+        #[allow(unsafe_code)]
+        unsafe {
             let allow: unsafe extern "system" fn(isize, bool) -> bool = std::mem::transmute(f);
             allow(hwnd, true);
         }
-        if let Some(f) = find(FLUSH_MENU_THEMES) {
+    }
+}
+
+/// Sets the mode of the app's menus that drop down for `theme` (and of its context menus,
+/// should it get any): the default app mode as it changes for [`Theme::System`], light or
+/// dark whatever it is otherwise. Returns the mode it replaced (0 default, 1 follow the
+/// app mode, 2 dark, 3 light), or `None` where Windows lacks the function.
+#[cfg(windows)]
+pub fn set_app_mode(theme: Theme) -> Option<i32> {
+    // `SetPreferredAppMode(PreferredAppMode) -> PreferredAppMode` since Windows 10 1903
+    // (`AllowDarkModeForApp(bool)` in 1809, where 1 also follows the app mode).
+    const SET_PREFERRED_APP_MODE: usize = 135;
+    // `FlushMenuThemes()`: open menus pick up the mode.
+    const FLUSH_MENU_THEMES: usize = 136;
+    // `RefreshImmersiveColorPolicyState()`: reads the default app mode again, which
+    // uxtheme otherwise keeps from the start.
+    const REFRESH_IMMERSIVE_COLOR_POLICY_STATE: usize = 104;
+    let mode = match theme {
+        Theme::System => 1,
+        Theme::Dark => 2,
+        Theme::Light => 3,
+    };
+    // SAFETY: each function has had this signature since Windows 10 1903. In 1809 the
+    // mode's ordinal is `AllowDarkModeForApp(bool) -> bool`, which reads any mode here as
+    // true: the menus follow the app mode there whatever the theme.
+    #[allow(unsafe_code)]
+    unsafe {
+        if let Some(f) = uxtheme(REFRESH_IMMERSIVE_COLOR_POLICY_STATE) {
+            let refresh: unsafe extern "system" fn() = std::mem::transmute(f);
+            refresh();
+        }
+        let replaced = uxtheme(SET_PREFERRED_APP_MODE).map(|f| {
+            let set: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+            set(mode)
+        });
+        if let Some(f) = uxtheme(FLUSH_MENU_THEMES) {
             let flush: unsafe extern "system" fn() = std::mem::transmute(f);
             flush();
         }
+        replaced
     }
 }

@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, DragValue, Label, RichText, Ui};
 
-use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB};
+use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::header::kind_name;
 use crate::ui::palette::type_color;
@@ -49,6 +49,18 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     hint(
                         ui,
                         "Fit each channel type to the first window, as Auto Scale does.",
+                    );
+                    ui.label("Theme");
+                    ui.horizontal(|ui| {
+                        for theme in Theme::ALL {
+                            ui.radio_value(&mut settings.theme, theme, theme.label());
+                        }
+                    });
+                    ui.end_row();
+                    hint(
+                        ui,
+                        "System follows the system's light or dark mode (on Windows, \
+                         the default app mode).",
                     );
                     ui.label("Colors");
                     type_colors(ui, settings);

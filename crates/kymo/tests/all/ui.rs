@@ -12,7 +12,7 @@ use kymo::action::Action;
 use kymo::annotations::{AnnotationColor, AnnotationColors};
 use kymo::app::{KymoApp, Menus, Options};
 use kymo::keymap::Platform;
-use kymo::settings::{Settings, load_annotation_colors};
+use kymo::settings::{Settings, Theme, load_annotation_colors};
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
 use kymo::view::{KINDS, kind_index};
@@ -2475,6 +2475,190 @@ fn traces_take_their_types_colors() {
     harness.run_steps(2);
     let after = counts(&mut harness);
     assert!(after[2][2] < before[2][2] / 20, "{:?}", after[2]);
+}
+
+/// The title bar's themes the last frame asked for.
+fn title_bar_themes(harness: &Harness<'_, KymoApp>) -> Vec<egui::SystemTheme> {
+    harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::ViewportCommand::SetTheme(theme) => Some(*theme),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_theme_follows_the_setting_and_the_system() {
+    use egui::accesskit::Role;
+    use egui::{SystemTheme, Theme as Look};
+    let file = without_triggers("edf+d-mixed");
+    let mut harness = window(file.path());
+    harness.input_mut().system_theme = Some(Look::Light);
+    ready(&mut harness);
+    // What the window shows: egui's theme, the trace area's background (its most common
+    // color) and a legend swatch, against the colors of the theme egui uses now.
+    let shown = |harness: &mut Harness<'_, KymoApp>| {
+        let image = harness.render().unwrap();
+        let pixel = |x: f32, y: f32| {
+            egui::Color32::from_rgba_premultiplied(
+                image.get_pixel(x as u32, y as u32)[0],
+                image.get_pixel(x as u32, y as u32)[1],
+                image.get_pixel(x as u32, y as u32)[2],
+                255,
+            )
+        };
+        let traces = viewer(harness).layout().unwrap().traces;
+        let mut counts = std::collections::HashMap::new();
+        for y in (traces.top() as u32 + 1..traces.bottom() as u32 - 1).step_by(3) {
+            for x in (traces.left() as u32 + 1..traces.right() as u32 - 1).step_by(3) {
+                *counts.entry(pixel(x as f32, y as f32)).or_insert(0) += 1;
+            }
+        }
+        let background = counts.into_iter().max_by_key(|&(_, n)| n).unwrap().0;
+        // A row clear of the Settings window and its shadow, and of the fade at the
+        // legend's bottom edge.
+        let swatch = harness.get_by_label("Color of eyes closed").rect().center();
+        let color = viewer(harness).legend().entry("eyes closed").unwrap().color;
+        let visuals = harness.ctx.global_style().visuals.clone();
+        assert_eq!(background, visuals.extreme_bg_color, "trace area");
+        // Within rounding: the swatch's variants differ by far more.
+        let swatch = pixel(swatch.x, swatch.y);
+        let want = annotation_color(color, &visuals);
+        assert!(
+            near(&swatch.to_array(), want),
+            "swatch {swatch:?}, not {want:?}"
+        );
+        assert_eq!(visuals.dark_mode, harness.ctx.theme() == Look::Dark);
+        harness.ctx.theme()
+    };
+    // Kymo's own colors differ between the themes.
+    let [light, dark] = [egui::Visuals::light(), egui::Visuals::dark()];
+    assert_ne!(light.extreme_bg_color, dark.extreme_bg_color);
+    let palette0 = AnnotationColor::Palette(0);
+    assert_ne!(
+        annotation_color(palette0, &light),
+        annotation_color(palette0, &dark)
+    );
+
+    // System: the system's theme as it changes, the title bar left to the system.
+    assert_eq!(harness.state().settings().theme, Theme::System);
+    assert_eq!(shown(&mut harness), Look::Light);
+    harness.input_mut().system_theme = Some(Look::Dark);
+    harness.step();
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::SystemDefault]);
+    harness.run_steps(2);
+    assert_eq!(shown(&mut harness), Look::Dark);
+
+    // Light or Dark from Settings, whatever the system's theme; the title bar is set again
+    // when the system's changes, as Windows puts it back to the system's mode then.
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(2);
+    for (theme, look, title_bar) in [
+        (Theme::Light, Look::Light, SystemTheme::Light),
+        (Theme::Dark, Look::Dark, SystemTheme::Dark),
+    ] {
+        harness
+            .get_by_role_and_label(Role::RadioButton, theme.label())
+            .click();
+        harness.step();
+        assert_eq!(harness.state().settings().theme, theme);
+        assert_eq!(title_bar_themes(&harness), [title_bar], "{theme:?}");
+        harness.run_steps(2);
+        assert_eq!(title_bar_themes(&harness), [], "{theme:?} again");
+        assert_eq!(shown(&mut harness), look, "{theme:?}");
+        for system in [Look::Light, Look::Dark] {
+            harness.input_mut().system_theme = Some(system);
+            harness.step();
+            harness.step();
+            assert_eq!(
+                shown(&mut harness),
+                look,
+                "{theme:?} on a {system:?} system"
+            );
+        }
+        harness.input_mut().system_theme = Some(Look::Light);
+        harness.step();
+        assert_eq!(
+            title_bar_themes(&harness),
+            [title_bar],
+            "{theme:?}, system changed"
+        );
+        harness.run_steps(2);
+    }
+
+    // Kept for the next run, which starts in it.
+    let mut storage = Memory::default();
+    eframe::App::save(harness.state_mut(), &mut storage);
+    let settings = Settings::load(Some(&storage));
+    assert_eq!(settings.theme, Theme::Dark);
+    let path = file.path().to_owned();
+    let mut next = Harness::builder().with_size(SIZE).build_eframe(move |cc| {
+        KymoApp::new(
+            &cc.egui_ctx,
+            Gpu::none("no GPU in this test"),
+            Options {
+                settings,
+                ..options()
+            },
+            Some(path),
+        )
+    });
+    next.input_mut().system_theme = Some(Look::Light);
+    next.step();
+    assert_eq!(next.ctx.theme(), Look::Dark);
+    assert_eq!(title_bar_themes(&next), [SystemTheme::Dark]);
+
+    // Back to System: the system's theme again, and the title bar the system's.
+    harness
+        .get_by_role_and_label(Role::RadioButton, "System")
+        .click();
+    harness.step();
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::SystemDefault]);
+    harness.run_steps(2);
+    assert_eq!(shown(&mut harness), Look::Light);
+}
+
+#[test]
+fn traces_take_the_themes_colors() {
+    let Some(setup) = gpu_setup() else { return };
+    // Rows A1, A2 (EEG), "EOG L", ECG, Status.
+    let file = typed_preset();
+    let mut harness = gpu_window(file.path(), setup);
+    ready(&mut harness);
+    whole_pixels(&mut harness);
+    let [light, dark] = [egui::Visuals::light(), egui::Visuals::dark()];
+    // Pixels of the EOG row near `color`.
+    let count = |harness: &mut Harness<'_, KymoApp>, color: egui::Color32| {
+        let traces = viewer(harness).layout().unwrap().traces;
+        let width = traces.width() as usize;
+        let row_height = traces.height() as usize / 5;
+        traces_image(harness)[2 * row_height * width..3 * row_height * width]
+            .iter()
+            .filter(|p| near(p, color))
+            .count()
+    };
+    for (theme, own, other) in [(Theme::Light, &light, &dark), (Theme::Dark, &dark, &light)] {
+        let settings = *harness.state().settings();
+        harness
+            .state_mut()
+            .set_settings(Settings { theme, ..settings });
+        harness.run_steps(2);
+        let ours = count(&mut harness, trace_color(ChannelKind::Eog, own));
+        let theirs = count(&mut harness, trace_color(ChannelKind::Eog, other));
+        assert!(
+            ours > 200 && theirs < ours / 20,
+            "{theme:?}: {ours} and {theirs}"
+        );
+    }
 }
 
 #[test]

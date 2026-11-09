@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use eframe::Storage;
 use eframe::egui::Color32;
 use kymo::annotations::AnnotationColors;
-use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB};
+use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use kymo::settings::{load_annotation_colors, save_annotation_colors};
 use kymo::view::KINDS;
 use proptest::prelude::*;
@@ -38,6 +38,7 @@ fn defaults_without_storage_or_values() {
     assert_eq!(defaults.default_window_s, 20.0);
     assert!(!defaults.antialias);
     assert!(!defaults.auto_scale_on_open);
+    assert_eq!(defaults.theme, Theme::System);
     assert_eq!(Settings::load(None), defaults);
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
 }
@@ -58,10 +59,15 @@ fn saved_settings_read_back() {
             None,
             Some(Color32::from_rgb(0, 0, 0)),
         ],
+        theme: Theme::Dark,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
     assert_eq!(Settings::load(Some(&storage)), settings);
+    for theme in Theme::ALL {
+        Settings { theme, ..settings }.save(&mut storage);
+        assert_eq!(Settings::load(Some(&storage)).theme, theme);
+    }
     assert_eq!(settings.tile_cache_bytes(), 1024 << 20);
     assert_eq!(settings.gpu_memory_bytes(), 96 << 20);
 }
@@ -82,6 +88,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
             None,
             None,
         ],
+        theme: Theme::Light,
     };
     let defaults = Settings::default();
     let cases = [
@@ -127,6 +134,13 @@ fn unreadable_values_are_defaults_and_others_kept() {
                 ..saved
             },
         ),
+        (
+            "kymo.theme",
+            Settings {
+                theme: defaults.theme,
+                ..saved
+            },
+        ),
     ];
     for (key, want) in cases {
         let colors = ["#12345", "#12345g", "ff0080", "#+1+2+3", "#aé€"];
@@ -150,6 +164,7 @@ fn values_out_of_range_are_clamped() {
         antialias: false,
         auto_scale_on_open: false,
         type_colors: [None; KINDS.len()],
+        theme: Theme::System,
     }
     .save(&mut storage);
     let loaded = Settings::load(Some(&storage));
