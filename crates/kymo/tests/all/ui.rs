@@ -462,6 +462,56 @@ fn checked(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
     checked
 }
 
+#[test]
+fn checkable_menu_items_show_a_checkbox() {
+    // Show Sidebar on, Anti-aliasing off (the settings' default).
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.get_by_label("View").click();
+    harness.run_steps(2);
+    let item = |harness: &Harness<'_, KymoApp>, label: &str| {
+        let node = harness.get_by_label_contains(label);
+        let node = node.accesskit_node();
+        (
+            node.role(),
+            node.toggled(),
+            harness.get_by_label_contains(label).rect(),
+        )
+    };
+    let (sidebar_role, sidebar, sidebar_rect) = item(&harness, "Show Sidebar");
+    let (antialias_role, antialias, antialias_rect) = item(&harness, "Anti-aliasing");
+    use egui::accesskit::{Role, Toggled};
+    assert_eq!(
+        (sidebar_role, sidebar),
+        (Role::CheckBox, Some(Toggled::True))
+    );
+    assert_eq!(
+        (antialias_role, antialias),
+        (Role::CheckBox, Some(Toggled::False))
+    );
+
+    // Drawn as a box at the start, in the checkboxes' fill, and without the selection's
+    // background, which marked them before.
+    let image = harness.render().unwrap();
+    let pixel = |x: f32, y: f32| image.get_pixel(x as u32, y as u32).0;
+    let style = harness.ctx.global_style();
+    let size = style.spacing.icon_width;
+    let box_center = |r: egui::Rect| pixel(r.left() + 2.0 + size / 2.0, r.center().y);
+    assert_eq!(
+        box_center(antialias_rect),
+        style.visuals.widgets.inactive.bg_fill.to_array()
+    );
+    let selection = style.visuals.selection.bg_fill.to_array();
+    for r in [sidebar_rect, antialias_rect] {
+        assert_ne!(pixel(r.right() - 1.0, r.center().y), selection);
+    }
+    assert_eq!(
+        pixel(sidebar_rect.right() - 1.0, sidebar_rect.center().y),
+        pixel(antialias_rect.right() - 1.0, antialias_rect.center().y)
+    );
+}
+
 /// A preset with every channel's physical range moved by `offset`, as amplifiers with a
 /// DC offset record it (BioSemi files sit tens of millivolts off zero).
 fn offset_preset(name: &str, offset: f64) -> TempFile {

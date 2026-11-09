@@ -1,7 +1,11 @@
 //! The menu bar drawn by egui (Linux, where there is no native one), the shortcut overview
 //! and the About window. Native menus are in `native_menu`.
 
-use eframe::egui::{self, Button, RichText, ScrollArea, Ui};
+use eframe::egui::accesskit::Role;
+use eframe::egui::{
+    self, Atom, Button, IdSalt, Response, RichText, ScrollArea, Shape, StrokeKind, Ui, Vec2,
+    WidgetInfo, pos2,
+};
 
 use crate::action::Action;
 use crate::keymap::Platform;
@@ -45,14 +49,19 @@ fn menu_items(
                 shortcut,
                 ..
             } => {
-                let mut button = match state.checked(*action) {
-                    Some(on) => Button::selectable(on, *label),
-                    None => Button::new(*label),
+                let shortcut = shortcut.map(|chord| chord.display(platform));
+                let enabled = state.enabled(*action);
+                let response = match state.checked(*action) {
+                    Some(on) => check_item(ui, enabled, on, label, shortcut),
+                    None => {
+                        let mut button = Button::new(*label);
+                        if let Some(shortcut) = shortcut {
+                            button = button.shortcut_text(shortcut);
+                        }
+                        ui.add_enabled(enabled, button)
+                    }
                 };
-                if let Some(chord) = shortcut {
-                    button = button.shortcut_text(chord.display(platform));
-                }
-                if ui.add_enabled(state.enabled(*action), button).clicked() {
+                if response.clicked() {
                     *clicked = Some(*action);
                     ui.close();
                 }
@@ -73,6 +82,60 @@ fn menu_items(
             }
         }
     }
+}
+
+/// A menu item with a checkbox, `on` or not, and its shortcut: a button, so it highlights
+/// as the other items do, with the box drawn into room left at its start (egui's
+/// selectable buttons only change their background, and its checkboxes have no shortcut).
+fn check_item(
+    ui: &mut Ui,
+    enabled: bool,
+    on: bool,
+    label: &str,
+    shortcut: Option<String>,
+) -> Response {
+    let icon = IdSalt::new("check");
+    let size = ui.spacing().icon_width;
+    let mut button = Button::new((Atom::custom(icon, Vec2::splat(size)), label));
+    if let Some(shortcut) = shortcut {
+        button = button.shortcut_text(shortcut);
+    }
+    let atoms = ui.add_enabled_ui(enabled, |ui| button.atom_ui(ui)).inner;
+    let response = atoms.response.clone();
+    if let Some(rect) = atoms.rect(icon) {
+        let (small, big) = ui.spacing().icon_rectangles(rect);
+        // The app's look, as menus take the outline off inactive widgets.
+        let style = ui.ctx().global_style();
+        let widgets = &style.visuals.widgets;
+        let visuals = if !enabled {
+            &widgets.noninteractive
+        } else if response.hovered() {
+            &widgets.hovered
+        } else {
+            &widgets.inactive
+        };
+        let painter = ui.painter();
+        // As egui's checkboxes: rounding at most 30 % of the width, so it stays a square.
+        painter.rect(
+            big,
+            visuals.corner_radius.at_most((0.3 * size).round() as u8),
+            visuals.bg_fill,
+            visuals.bg_stroke,
+            StrokeKind::Inside,
+        );
+        if on {
+            painter.add(Shape::line(
+                vec![
+                    pos2(small.left(), small.center().y),
+                    pos2(small.center().x, small.bottom()),
+                    pos2(small.right(), small.top()),
+                ],
+                visuals.fg_stroke,
+            ));
+        }
+    }
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, label));
+    response
 }
 
 /// The shortcut overview, while `open`.
