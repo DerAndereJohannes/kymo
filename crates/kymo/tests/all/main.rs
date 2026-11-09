@@ -8,6 +8,7 @@
 mod common;
 
 mod annotations;
+mod app_mode;
 mod axis;
 mod frame;
 mod history;

@@ -38,6 +38,8 @@ pollster = "1.0"
 proptest = "1"
 rfd = "0.17.2"
 thiserror = "2"
+# Linux only, already pulled in by eframe; reads the System theme from the desktop portal.
+zbus = "5"
 # Windows only, already pulled in by muda; lets the menus follow the theme, the System theme
 # the default app mode, and the command line print to the terminal it was started from.
 windows-sys = { version = "0.61", features = [

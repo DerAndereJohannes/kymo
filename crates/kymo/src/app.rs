@@ -93,7 +93,8 @@ pub struct KymoApp {
     notice: Option<(String, String)>,
     /// The window may close: its unsaved changes were saved or given up.
     closing: bool,
-    /// Windows' default app mode, which System follows there (see [`AppMode`]).
+    /// The system's app mode where winit can't tell it (Windows, Linux), which System
+    /// follows there (see [`AppMode`]).
     app_mode: Option<AppMode>,
     /// The theme setting, the system's theme and the app mode it was last applied for.
     theme_applied: Option<(Theme, Option<egui::Theme>, Option<bool>)>,
@@ -234,7 +235,7 @@ impl KymoApp {
         }
     }
 
-    /// Has System follow `mode` (Windows' default app mode) instead of the system's theme
+    /// Has System follow `mode` (the system's app mode, read on Windows and Linux) instead of the system's theme
     /// as winit reports it.
     pub fn follow_app_mode(&mut self, mode: AppMode) {
         self.app_mode = Some(mode);
@@ -1035,7 +1036,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             };
             let native = options.menus == Menus::Native;
             let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
-            #[cfg(windows)]
+            #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
             app.follow_app_mode(AppMode::watch(&cc.egui_ctx));
             if native {
                 attach_native_menu(&mut app, cc);

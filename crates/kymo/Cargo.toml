@@ -27,6 +27,14 @@ muda.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 
+# The System theme on Linux (and the other Unix systems winit runs on): the desktop portal's
+# color-scheme over D-Bus. Already pulled in by eframe (accessibility).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dev-dependencies]
+zbus = { workspace = true, features = ["p2p"] }
+
 [target.'cfg(windows)'.dependencies]
 muda.workspace = true
 windows-sys.workspace = true
