@@ -7,14 +7,17 @@ Kymo builds with stable Rust, 1.95 or newer, installed through [rustup](https://
 ### macOS
 
 1. Install the Xcode Command Line Tools, which provide the C compiler, the linker and git: `xcode-select --install`
-2. Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, or rustup through Homebrew: `brew install rustup` (follow its caveats to put it on your `PATH`), then `rustup default stable`.
+2. Install rustup, either way:
+   - with the official script: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+   - with Homebrew: `brew install rustup`, then follow its caveats to put it on your `PATH`
+3. Install the stable toolchain and make it the default: `rustup default stable`. The script already does this, so after it the command only confirms it.
 
 The viewer draws with Metal, which every supported Mac has.
 
 ### Windows
 
-1. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, which provides the MSVC compiler and linker. The rustup installer offers to install them if they're missing.
-2. Install Rust with [rustup-init.exe](https://rustup.rs), using the default `x86_64-pc-windows-msvc` host.
+1. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, which provides the MSVC compiler and linker. The rustup installer in step 2 offers to install them if they're missing.
+2. Install rustup and the stable toolchain with [rustup-init.exe](https://rustup.rs), using the default `x86_64-pc-windows-msvc` host.
 
 The viewer draws with DX12 or Vulkan, so a current graphics driver is enough.
 
@@ -24,7 +27,10 @@ The viewer draws with DX12 or Vulkan, so a current graphics driver is enough.
    - Arch: `sudo pacman -S base-devel` and your GPU's Vulkan driver (`vulkan-radeon`, `vulkan-intel` or `nvidia-utils`), or `vulkan-swrast` without a GPU
    - Debian and Ubuntu: `sudo apt install build-essential mesa-vulkan-drivers`
    - Fedora: `sudo dnf install gcc mesa-vulkan-drivers`
-2. Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, or rustup from your package manager (`sudo pacman -S rustup` on Arch, `sudo apt install rustup` on Debian 13 and Ubuntu 24.04 or newer), then `rustup default stable`. Fedora's package (`sudo dnf install rustup`) is set up with `rustup-init` instead.
+2. Install rustup, either way:
+   - with the official script: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+   - with your package manager: `sudo pacman -S rustup` on Arch, `sudo apt install rustup` on Debian 13 and Ubuntu 24.04 or newer, `sudo dnf install rustup` on Fedora, followed there by `rustup-init`
+3. Install the stable toolchain and make it the default: `rustup default stable`. The script and Fedora's `rustup-init` already do this, so after them the command only confirms it.
 
 The build doesn't need any other development packages: X11, Wayland and fontconfig are loaded at run time, and file dialogs and the theme go through the desktop portal.
 
