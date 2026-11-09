@@ -67,10 +67,9 @@ cargo bench -p kymo-core                   # build and decode benches on generat
 KYMO_BENCH_BDF=big.bdf cargo bench -p kymo-core --bench query   # big.bdf from `kymo-testgen bdf-256ch-8h`
 cargo run --release -p kymo-core --example pyramid -- file.bdf [--sidecar DIR]   # build speed
 cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--antialias] [--edit]   # viewer frame times and memory; --edit adds annotation editing (on `kymo-testgen edf+c-annotations`)
-python scripts/compare_mne.py file.bdf      # needs mne installed; also takes directories
-python scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
-python scripts/compare_mne.py --annotations ...   # also annotation files both ways (needs pandas)
-uv run --no-project --with mne python scripts/compare_mne.py ...   # without installing mne
+scripts/compare_mne.py file.bdf      # validation against MNE (needs uv); also takes directories
+scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
+scripts/compare_mne.py --annotations ...   # also annotation files both ways
 ```
 
 ## Working style
