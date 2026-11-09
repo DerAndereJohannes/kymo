@@ -6,6 +6,7 @@
 pub mod action;
 pub mod annotations;
 pub mod app;
+pub mod app_mode;
 pub mod cli;
 pub mod document;
 pub mod history;

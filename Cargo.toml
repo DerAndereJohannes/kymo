@@ -38,12 +38,14 @@ pollster = "1.0"
 proptest = "1"
 rfd = "0.17.2"
 thiserror = "2"
-# Windows only, already pulled in by muda; lets the menus follow the system's dark mode and
-# the command line print to the terminal it was started from.
+# Windows only, already pulled in by muda; lets the menus follow the theme, the System theme
+# the default app mode, and the command line print to the terminal it was started from.
 windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
 ] }
 
 [workspace.lints.rust]

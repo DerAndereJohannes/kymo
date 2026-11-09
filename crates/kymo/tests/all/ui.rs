@@ -11,6 +11,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use kymo::action::Action;
 use kymo::annotations::{AnnotationColor, AnnotationColors};
 use kymo::app::{KymoApp, Menus, Options};
+use kymo::app_mode::AppMode;
 use kymo::keymap::Platform;
 use kymo::settings::{Settings, Theme, load_annotation_colors};
 use kymo::ui::gpu::Gpu;
@@ -2625,6 +2626,60 @@ fn the_theme_follows_the_setting_and_the_system() {
     assert_eq!(title_bar_themes(&harness), [SystemTheme::SystemDefault]);
     harness.run_steps(2);
     assert_eq!(shown(&mut harness), Look::Light);
+}
+
+#[test]
+fn system_follows_the_app_mode_where_it_is_read() {
+    // Windows: System follows the default app mode as Kymo reads it, not the system's
+    // theme as winit reports it (which a forced theme skews there).
+    use egui::{SystemTheme, Theme as Look};
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    let mode = AppMode::new();
+    mode.set(Some(false));
+    harness.state_mut().follow_app_mode(mode.clone());
+    harness.input_mut().system_theme = Some(Look::Dark);
+    ready(&mut harness);
+    assert_eq!(harness.ctx.theme(), Look::Light);
+
+    // The app mode changes: all of Kymo follows, the title bar set as such.
+    mode.set(Some(true));
+    harness.step();
+    assert_eq!(harness.ctx.theme(), Look::Dark);
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::Dark]);
+    // winit's report changes alone: the app mode still rules, the title bar set again.
+    harness.input_mut().system_theme = Some(Look::Light);
+    harness.step();
+    assert_eq!(harness.ctx.theme(), Look::Dark);
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::Dark]);
+
+    // Light, whatever the app mode.
+    let set = |harness: &mut Harness<'_, KymoApp>, theme| {
+        let settings = *harness.state().settings();
+        harness
+            .state_mut()
+            .set_settings(Settings { theme, ..settings });
+        harness.step();
+    };
+    set(&mut harness, Theme::Light);
+    assert_eq!(harness.ctx.theme(), Look::Light);
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::Light]);
+    mode.set(Some(false));
+    harness.step();
+    mode.set(Some(true));
+    harness.step();
+    assert_eq!(harness.ctx.theme(), Look::Light);
+
+    // Back to System: the app mode's, whatever winit reported meanwhile.
+    set(&mut harness, Theme::System);
+    assert_eq!(harness.ctx.theme(), Look::Dark);
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::Dark]);
+
+    // An app mode that can't be read: the system's theme as winit reports it.
+    mode.set(None);
+    harness.step();
+    assert_eq!(harness.ctx.theme(), Look::Light);
+    assert_eq!(title_bar_themes(&harness), [SystemTheme::SystemDefault]);
 }
 
 #[test]

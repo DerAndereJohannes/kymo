@@ -14,6 +14,7 @@ use kymo_core::stim::EventOptions;
 
 use crate::action::Action;
 use crate::annotations::AnnotationColors;
+use crate::app_mode::AppMode;
 use crate::document::{self, Document, Loading, error_text, file_name};
 use crate::keymap::{Keymap, Platform};
 #[cfg(any(target_os = "macos", windows))]
@@ -92,8 +93,10 @@ pub struct KymoApp {
     notice: Option<(String, String)>,
     /// The window may close: its unsaved changes were saved or given up.
     closing: bool,
-    /// The theme setting and the system's theme it was last applied for.
-    theme_applied: Option<(Theme, Option<egui::Theme>)>,
+    /// Windows' default app mode, which System follows there (see [`AppMode`]).
+    app_mode: Option<AppMode>,
+    /// The theme setting, the system's theme and the app mode it was last applied for.
+    theme_applied: Option<(Theme, Option<egui::Theme>, Option<bool>)>,
 }
 
 /// What the unsaved changes question holds up.
@@ -156,6 +159,7 @@ impl KymoApp {
             leaving: None,
             notice: None,
             closing: false,
+            app_mode: None,
             theme_applied: None,
         };
         if let Some(path) = path {
@@ -230,21 +234,34 @@ impl KymoApp {
         }
     }
 
-    /// Applies the theme setting to egui, the title bar and the native menus, when it or
-    /// the system's theme changed. Again on a change of the system's: Windows puts the
-    /// title bar back to the system's mode then, whatever the window was set to.
+    /// Has System follow `mode` (Windows' default app mode) instead of the system's theme
+    /// as winit reports it.
+    pub fn follow_app_mode(&mut self, mode: AppMode) {
+        self.app_mode = Some(mode);
+    }
+
+    /// Applies the theme setting to egui, the title bar and the native menus, when it, the
+    /// system's theme or the app mode changed. Again on a change of the system's: Windows
+    /// puts the title bar back to the system's mode then, whatever the window was set to.
+    /// Following an app mode, System is applied as Light or Dark.
     fn apply_theme(&mut self, ctx: &egui::Context) {
         let theme = self.options.settings.theme;
-        let now = (theme, ctx.system_theme());
+        let app_dark = self.app_mode.as_ref().and_then(AppMode::dark);
+        let now = (theme, ctx.system_theme(), app_dark);
         if self.theme_applied == Some(now) {
             return;
         }
         self.theme_applied = Some(now);
-        ctx.set_theme(theme.preference());
-        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme.window()));
+        let shown = match (theme, app_dark) {
+            (Theme::System, Some(true)) => Theme::Dark,
+            (Theme::System, Some(false)) => Theme::Light,
+            (theme, _) => theme,
+        };
+        ctx.set_theme(shown.preference());
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(shown.window()));
         #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.native_menu {
-            menu.set_theme(theme);
+            menu.set_theme(shown);
         }
     }
 
@@ -1018,6 +1035,8 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             };
             let native = options.menus == Menus::Native;
             let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
+            #[cfg(windows)]
+            app.follow_app_mode(AppMode::watch(&cc.egui_ctx));
             if native {
                 attach_native_menu(&mut app, cc);
             }
