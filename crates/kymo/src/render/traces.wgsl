@@ -288,6 +288,17 @@ fn items_near(xa: f32, xb: f32) -> vec2<i32> {
     return vec2<i32>(max(k0 - 1, -count(0u)), min(k1 + 1, count(1u) + count(2u) - 1));
 }
 
+// y of the line from `a` to `b` (a.x < b.x) at x in a.x..=b.x, from the nearer end: an
+// end on screen keeps its precision however far off screen the other lies (from the far
+// end, a lerp like `mix` rounds it to the far end's precision, 8 px at 1e8 px, as WARP
+// does).
+fn along(a: vec2<f32>, b: vec2<f32>, x: f32) -> f32 {
+    if x - a.x <= b.x - x {
+        return a.y + (b.y - a.y) * ((x - a.x) / (b.x - a.x));
+    }
+    return b.y + (a.y - b.y) * ((b.x - x) / (b.x - a.x));
+}
+
 // Whether the trace runs on from item `a` to the next item `b`. A line runs between two
 // samples only (a level-0 line doesn't run on into a coarser stand-in's envelope); an
 // envelope reaches to the start of whatever follows.
@@ -320,7 +331,7 @@ fn reach(slot: Slot, xa: f32, xb: f32) -> vec2<f32> {
                 for (var e = 0; e < 2; e++) {
                     let x = select(xa, xb, e == 1);
                     if x > item.x && x < next.x {
-                        let y = mix(item.top, next.top, (x - item.x) / (next.x - item.x));
+                        let y = along(vec2<f32>(item.x, item.top), vec2<f32>(next.x, next.top), x);
                         top = min(top, y);
                         bottom = max(bottom, y);
                     }
@@ -365,8 +376,6 @@ fn slices(slot: Slot, x0: f32) -> array<vec2<f32>, 16> {
             }
             // The line to the next sample, in each slice it crosses.
             if !item.pairs && !next.pairs && joined(item, next) {
-                // Interpolating only adds what lies between the slice's edges to `a.y`,
-                // so values far off screen cost no precision on it.
                 let a = vec2<f32>(item.x, item.top);
                 let b = vec2<f32>(next.x, next.top);
                 let j0 = max(slice_of(a.x, x0), 0);
@@ -377,8 +386,8 @@ fn slices(slot: Slot, x0: f32) -> array<vec2<f32>, 16> {
                     var ya = a.y;
                     var yb = b.y;
                     if b.x > a.x {
-                        ya = mix(a.y, b.y, (xa - a.x) / (b.x - a.x));
-                        yb = mix(a.y, b.y, (xb - a.x) / (b.x - a.x));
+                        ya = along(a, b, xa);
+                        yb = along(a, b, xb);
                     }
                     s[i] = vec2<f32>(min(s[i].x, min(ya, yb)), max(s[i].y, max(ya, yb)));
                 }
