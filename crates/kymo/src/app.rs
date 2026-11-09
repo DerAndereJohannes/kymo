@@ -241,6 +241,14 @@ impl KymoApp {
         self.app_mode = Some(mode);
     }
 
+    /// Applies the theme before the first frame, which the startup file dialog (opened
+    /// while the second is built) leaves on screen: otherwise a forced theme, or the app
+    /// mode's, would show as egui's default behind it. Call it once the app mode is known
+    /// and the native menu attached.
+    pub fn start(&mut self, ctx: &egui::Context) {
+        self.apply_theme(ctx);
+    }
+
     /// Applies the theme setting to egui, the title bar and the native menus, when it, the
     /// system's theme or the app mode changed. Again on a change of the system's: Windows
     /// puts the title bar back to the system's mode then, whatever the window was set to.
@@ -1041,6 +1049,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             if native {
                 attach_native_menu(&mut app, cc);
             }
+            app.start(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )

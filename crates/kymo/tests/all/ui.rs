@@ -2696,6 +2696,37 @@ fn system_follows_the_app_mode_where_it_is_read() {
 }
 
 #[test]
+fn the_theme_is_in_force_before_the_first_frame() {
+    // The startup file dialog opens while the second frame is built and leaves the first
+    // on screen, so that has to be in the theme already (egui's default is dark).
+    use egui::Theme as Look;
+    let app = |theme| {
+        let options = Options {
+            settings: Settings {
+                theme,
+                ..Settings::default()
+            },
+            ..options()
+        };
+        let ctx = egui::Context::default();
+        let app = KymoApp::new(&ctx, Gpu::none("no GPU in this test"), options, None);
+        (ctx, app)
+    };
+    let (ctx, mut forced) = app(Theme::Light);
+    assert_eq!(ctx.theme(), Look::Dark);
+    forced.start(&ctx);
+    assert_eq!(ctx.theme(), Look::Light);
+
+    // System with an app mode that is read (Linux, Windows): its mode, light here.
+    let (ctx, mut system) = app(Theme::System);
+    let mode = AppMode::new();
+    mode.set(Some(false));
+    system.follow_app_mode(mode);
+    system.start(&ctx);
+    assert_eq!(ctx.theme(), Look::Light);
+}
+
+#[test]
 fn traces_take_the_themes_colors() {
     let Some(setup) = gpu_setup() else { return };
     // Rows A1, A2 (EEG), "EOG L", ECG, Status.
