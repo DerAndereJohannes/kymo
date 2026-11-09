@@ -26,6 +26,7 @@ crates/kymo          eframe/egui-wgpu viewer (`kymo path/to/file.bdf`); everythi
 crates/kymo-testgen  generates synthetic EDF/BDF files for tests and benchmarks
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff
+CONTRIBUTING.md      toolchain setup per platform, build and checks
 docs/phase2-plan.md  plan for phase 2 (the viewer), done
 docs/phase3-plan.md  plan for phase 3 (viewer features), done
 docs/phase4-plan.md  plan for phase 4 (display filters)
