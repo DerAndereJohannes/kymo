@@ -47,25 +47,35 @@ impl AppMode {
 
     /// The app mode as the registry has it, kept up to date by a thread that waits for the
     /// registry to change and then wakes `ctx`. Unknown where the value can't be read.
+    ///
+    /// Each read follows asking for the next change's notice, so no change slips between.
     #[cfg(windows)]
     pub fn watch(ctx: &eframe::egui::Context) -> AppMode {
         let mode = AppMode::new();
         let Some(key) = registry::open() else {
             return mode;
         };
+        let changes = registry::Changes::new().filter(|changes| changes.ask(&key));
         mode.set(registry::apps_dark(&key));
+        // Without notices, or the thread, the mode is read once and not followed.
+        let Some(changes) = changes else {
+            return mode;
+        };
         let (shared, ctx) = (mode.clone(), ctx.clone());
-        // Without the thread, the mode is read once and not followed.
         let _ = std::thread::Builder::new()
             .name("kymo app mode".into())
             .spawn(move || {
                 // Blocked until a value of the key changes (others too, as transparency);
                 // a frame only if the mode did.
-                while registry::wait(&key) {
+                while changes.wait() {
+                    let asked = changes.ask(&key);
                     let dark = registry::apps_dark(&key);
                     if dark != shared.dark() {
                         shared.set(dark);
                         ctx.request_repaint();
+                    }
+                    if !asked {
+                        break;
                     }
                 }
             });
@@ -181,11 +191,13 @@ mod portal {
 
 #[cfg(windows)]
 mod registry {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, KEY_QUERY_VALUE, REG_NOTIFY_CHANGE_LAST_SET,
-        RRF_RT_REG_DWORD, RegCloseKey, RegGetValueW, RegNotifyChangeKeyValue, RegOpenKeyExW,
+        REG_NOTIFY_THREAD_AGNOSTIC, RRF_RT_REG_DWORD, RegCloseKey, RegGetValueW,
+        RegNotifyChangeKeyValue, RegOpenKeyExW,
     };
+    use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
     /// The key holding the Colors settings, open for reading and change notices.
     pub struct Key(HKEY);
@@ -241,19 +253,57 @@ mod registry {
         (status == ERROR_SUCCESS).then_some(value == 0)
     }
 
-    /// Waits until a value of `key` changes; `false` if it can't.
-    pub fn wait(key: &Key) -> bool {
-        // SAFETY: `key` is open; synchronous, so no event handle is needed.
-        #[allow(unsafe_code)]
-        let status = unsafe {
-            RegNotifyChangeKeyValue(
-                key.0,
-                0,
-                REG_NOTIFY_CHANGE_LAST_SET,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        status == ERROR_SUCCESS
+    /// Notices of changes to a key's values, signaled on an event: asked for before the
+    /// key is read, so that a change while it is read is noticed too.
+    pub struct Changes(HANDLE);
+
+    // SAFETY: an event handle may be used from any thread, and the notice is asked for
+    // thread-agnostic, so it outlives the thread that asked.
+    #[allow(unsafe_code)]
+    unsafe impl Send for Changes {}
+
+    impl Drop for Changes {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from `CreateEventW` and is closed once.
+            #[allow(unsafe_code)]
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    impl Changes {
+        pub fn new() -> Option<Changes> {
+            // SAFETY: an unnamed auto-reset event, not signaled, with default security.
+            #[allow(unsafe_code)]
+            let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+            (!event.is_null()).then_some(Changes(event))
+        }
+
+        /// Asks for the event to be signaled at the next change to a value of `key`;
+        /// `false` if it can't be.
+        pub fn ask(&self, key: &Key) -> bool {
+            // SAFETY: `key` is open and the event alive; asynchronous, so the call returns
+            // at once and signals the event later.
+            #[allow(unsafe_code)]
+            let status = unsafe {
+                RegNotifyChangeKeyValue(
+                    key.0,
+                    0,
+                    REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_THREAD_AGNOSTIC,
+                    self.0,
+                    1,
+                )
+            };
+            status == ERROR_SUCCESS
+        }
+
+        /// Waits until the change asked about; `false` if it can't.
+        pub fn wait(&self) -> bool {
+            // SAFETY: the event is alive.
+            #[allow(unsafe_code)]
+            let status = unsafe { WaitForSingleObject(self.0, INFINITE) };
+            status == WAIT_OBJECT_0
+        }
     }
 }
