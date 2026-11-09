@@ -2322,22 +2322,51 @@ fn opening_another_recording_never_draws_the_last_ones_tiles() {
     // The same layout, so the same tile keys, with different values.
     let first = seeded("bdf+c-small", 1);
     let second = seeded("bdf+c-small", 2);
+    // The traces alone: the annotations' labels come from egui's font atlas, which holds
+    // whatever text the window showed before (status lines while loading), so their
+    // pixels may differ a little between windows.
+    let traces = |harness: &mut Harness<'_, KymoApp>| {
+        click_in_list(harness, egui::accesskit::Role::CheckBox, "Annotations");
+        traces_image(harness)
+    };
 
     let mut fresh = gpu_window(second.path(), setup.clone());
     ready(&mut fresh);
-    let want = traces_image(&mut fresh);
+    let want = traces(&mut fresh);
 
     let mut switched = gpu_window(first.path(), setup);
     ready(&mut switched);
-    let before = traces_image(&mut switched);
+    let before = traces(&mut switched);
     assert_ne!(before, want, "the two recordings look the same");
     let ctx = switched.ctx.clone();
     switched.state_mut().open(&ctx, second.path().to_owned());
     ready(&mut switched);
+    let after = traces(&mut switched);
+    let width = viewer(&switched).layout().unwrap().traces.width() as usize;
     assert!(
-        traces_image(&mut switched) == want,
-        "tiles of the first recording drawn"
+        after == want,
+        "tiles of the first recording drawn: {}",
+        differences(&after, &want, width)
     );
+}
+
+/// Where two images of `width` pixels per row differ, for messages.
+fn differences(a: &[[u8; 4]], b: &[[u8; 4]], width: usize) -> String {
+    let mut count = 0;
+    let mut most = 0;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for (i, (p, q)) in a.iter().zip(b).enumerate() {
+        if p != q {
+            count += 1;
+            most = most.max((0..4).map(|c| p[c].abs_diff(q[c])).max().unwrap_or(0));
+            let (x, y) = (i % width, i / width);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+    }
+    format!(
+        "{count} of {} pixels differ, by up to {most}, in x {x0}..={x1}, y {y0}..={y1}",
+        a.len()
+    )
 }
 
 #[test]

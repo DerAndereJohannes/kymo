@@ -2,7 +2,9 @@ name: Binaries
 
 # Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64) and
 # uploads one artifact per platform, the archive itself (a .tar.gz, a .zip on Windows), not
-# zipped again: `kymo-<version>-<commit>-<target>.tar.gz`. Run it by hand (Actions tab, or
+# zipped again: `kymo-<version>-<commit>-<target>.tar.gz`. Download them from the run's
+# page or with `gh api repos/OWNER/REPO/actions/artifacts/ID/zip > NAME` (`gh run download`
+# expects a zip and fails). Run it by hand (Actions tab, or
 # `gh workflow run binaries.yml`), or call it from another workflow (the release one) with
 # `uses: ./.github/workflows/binaries.yml` and download the artifacts in a later job.
 
