@@ -1,6 +1,7 @@
 //! The system's app mode, which the System theme follows where winit can't tell it: on
 //! Windows read from the registry (Settings → Personalization → Colors → `AppsUseLightTheme`),
-//! on Linux from the desktop portal's `color-scheme` setting; both watched for changes.
+//! on Linux from the desktop portal's `color-scheme` setting; both watched for changes. On
+//! macOS winit tells it, and the mode stays unknown.
 //!
 //! Windows: winit and muda ask uxtheme instead (`ShouldAppsUseDarkMode`), which is
 //! undocumented and, while Kymo forces a theme on its menus (`native_menu::set_app_mode`),
@@ -21,8 +22,7 @@ const DARK: u8 = 2;
 pub struct AppMode(Arc<AtomicU8>);
 
 impl AppMode {
-    /// Not known yet; [`set`](Self::set) tells it (for tests; [`watch`](Self::watch) on
-    /// Windows).
+    /// Not known; [`set`](Self::set) tells it.
     pub fn new() -> AppMode {
         AppMode::default()
     }
@@ -82,6 +82,12 @@ impl AppMode {
             Ok(connection) => AppMode::watch_connection(connection, ctx),
             Err(_) => AppMode::new(),
         }
+    }
+
+    /// winit tells the system's appearance on macOS: unknown here.
+    #[cfg(target_os = "macos")]
+    pub fn watch(_: &eframe::egui::Context) -> AppMode {
+        AppMode::new()
     }
 
     /// As [`watch`](Self::watch), on a given connection (a test's, to a fake portal).

@@ -91,8 +91,17 @@ pub fn key_accelerator(chord: Chord) -> Option<KeyAccelerator> {
 }
 
 impl NativeMenu {
-    /// Builds the menu bar for `platform`. Menu events wake `ctx`. Call on the main thread.
-    pub fn new(platform: Platform, ctx: &egui::Context) -> muda::Result<NativeMenu> {
+    /// Builds the menu bar and puts it in place, once the window exists: as the
+    /// application's on macOS, replacing winit's default one, on the window on Windows.
+    /// Menu events wake the window. Call on the main thread.
+    pub fn attach(cc: &eframe::CreationContext<'_>) -> anyhow::Result<NativeMenu> {
+        let mut menu = NativeMenu::new(Platform::current(), &cc.egui_ctx)?;
+        menu.install(cc)?;
+        Ok(menu)
+    }
+
+    /// Builds the menu bar for `platform`. Menu events wake `ctx`.
+    fn new(platform: Platform, ctx: &egui::Context) -> muda::Result<NativeMenu> {
         let (tx, events) = mpsc::channel();
         let wake = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -130,18 +139,15 @@ impl NativeMenu {
         })
     }
 
-    /// Makes this the application's menu bar, replacing winit's default one.
     #[cfg(target_os = "macos")]
-    pub fn install(&self) {
+    fn install(&mut self, _: &eframe::CreationContext<'_>) -> anyhow::Result<()> {
         self.menu.init_for_nsapp();
+        Ok(())
     }
 
-    /// Attaches the menu bar to `window`.
     #[cfg(windows)]
-    pub fn install(
-        &mut self,
-        window: &impl eframe::egui_wgpu::wgpu::rwh::HasWindowHandle,
-    ) -> anyhow::Result<()> {
+    fn install(&mut self, window: &eframe::CreationContext<'_>) -> anyhow::Result<()> {
+        use eframe::egui_wgpu::wgpu::rwh::HasWindowHandle as _;
         use eframe::egui_wgpu::wgpu::rwh::RawWindowHandle;
         let handle = window.window_handle()?;
         let RawWindowHandle::Win32(win32) = handle.as_raw() else {
@@ -155,8 +161,8 @@ impl NativeMenu {
         unsafe {
             self.menu.init_for_hwnd(hwnd)?;
         }
+        // The theme follows from the app (`KymoApp::start`).
         self.hwnd = Some(hwnd);
-        self.set_theme(Theme::System);
         Ok(())
     }
 

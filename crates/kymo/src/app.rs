@@ -15,9 +15,8 @@ use kymo_core::stim::EventOptions;
 use crate::action::Action;
 use crate::annotations::AnnotationColors;
 use crate::app_mode::AppMode;
-use crate::document::{self, Document, Loading, error_text, file_name};
+use crate::document::{self, Document, Loading, error_text, file_name, plural};
 use crate::keymap::{Keymap, Platform};
-#[cfg(any(target_os = "macos", windows))]
 use crate::native_menu::NativeMenu;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::gpu::Gpu;
@@ -70,7 +69,6 @@ pub struct KymoApp {
     gpu: Gpu,
     keymap: Keymap,
     options: Options,
-    #[cfg(any(target_os = "macos", windows))]
     native_menu: Option<NativeMenu>,
     show_sidebar: bool,
     /// How stim codes are annotated, for this recording and the ones opened after it.
@@ -94,8 +92,8 @@ pub struct KymoApp {
     /// The window may close: its unsaved changes were saved or given up.
     closing: bool,
     /// The system's app mode where winit can't tell it (Windows, Linux), which System
-    /// follows there (see [`AppMode`]).
-    app_mode: Option<AppMode>,
+    /// follows where it is known (see [`AppMode`]).
+    app_mode: AppMode,
     /// The theme setting, the system's theme and the app mode it was last applied for.
     theme_applied: Option<(Theme, Option<egui::Theme>, Option<bool>)>,
 }
@@ -145,7 +143,6 @@ impl KymoApp {
             gpu,
             keymap: Keymap::new(Platform::current()),
             options,
-            #[cfg(any(target_os = "macos", windows))]
             native_menu: None,
             show_sidebar: true,
             stim_options: EventOptions::default(),
@@ -160,7 +157,7 @@ impl KymoApp {
             leaving: None,
             notice: None,
             closing: false,
-            app_mode: None,
+            app_mode: AppMode::new(),
             theme_applied: None,
         };
         if let Some(path) = path {
@@ -172,25 +169,19 @@ impl KymoApp {
     /// Takes over the native menu bar, already installed: its items act from now on, and
     /// its shortcuts no longer reach egui. Without one, [`Menus::Native`] draws the menu bar
     /// with egui.
-    #[cfg(any(target_os = "macos", windows))]
     pub fn set_native_menu(&mut self, menu: NativeMenu) {
         self.native_menu = Some(menu);
     }
 
     /// Whether the native menu bar takes its shortcuts before egui sees them.
     fn menu_takes_keys(&self) -> bool {
-        #[cfg(any(target_os = "macos", windows))]
-        if self.native_menu.is_some() {
-            return self.keymap.platform().menu_takes_shortcuts();
-        }
-        false
+        self.native_menu.is_some() && self.keymap.platform().menu_takes_shortcuts()
     }
 
     /// The platform whose menu bar egui draws, if egui draws one.
     fn egui_menus(&self) -> Option<Platform> {
         match self.options.menus {
             Menus::Egui(platform) => Some(platform),
-            #[cfg(any(target_os = "macos", windows))]
             Menus::Native if self.native_menu.is_some() => None,
             Menus::Native => Some(self.keymap.platform()),
         }
@@ -235,10 +226,10 @@ impl KymoApp {
         }
     }
 
-    /// Has System follow `mode` (the system's app mode, read on Windows and Linux) instead of the system's theme
-    /// as winit reports it.
+    /// Has System follow `mode` (the system's app mode, read on Windows and Linux) instead
+    /// of the system's theme as winit reports it, wherever the mode is known.
     pub fn follow_app_mode(&mut self, mode: AppMode) {
-        self.app_mode = Some(mode);
+        self.app_mode = mode;
     }
 
     /// Applies the theme before the first frame, which the startup file dialog (opened
@@ -255,7 +246,7 @@ impl KymoApp {
     /// Following an app mode, System is applied as Light or Dark.
     fn apply_theme(&mut self, ctx: &egui::Context) {
         let theme = self.options.settings.theme;
-        let app_dark = self.app_mode.as_ref().and_then(AppMode::dark);
+        let app_dark = self.app_mode.dark();
         let now = (theme, ctx.system_theme(), app_dark);
         if self.theme_applied == Some(now) {
             return;
@@ -268,7 +259,6 @@ impl KymoApp {
         };
         ctx.set_theme(shown.preference());
         ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(shown.window()));
-        #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.native_menu {
             menu.set_theme(shown);
         }
@@ -296,9 +286,9 @@ impl KymoApp {
             can_redo: viewer.is_some_and(|v| v.history().can_redo()),
             sidebar: self.show_sidebar,
             antialias: self.options.settings.antialias,
-            channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
-            dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
-            stim: self.viewer().is_some_and(Viewer::has_stim),
+            channel: viewer.is_some_and(|v| v.hover().channel.is_some()),
+            dc: viewer.is_some_and(|v| v.view().dc_removed()),
+            stim: viewer.is_some_and(Viewer::has_stim),
             shown: viewer.is_some_and(|v| v.legend().shown_count().0 > 0),
             // Not looked for during a drag, which changes the store every frame.
             mergeable: viewer.is_some_and(|v| !v.dragging() && v.can_merge()),
@@ -395,14 +385,11 @@ impl KymoApp {
         }
         self.shown = true;
 
-        #[cfg(any(target_os = "macos", windows))]
         let mut actions = self
             .native_menu
             .as_ref()
             .map(NativeMenu::poll)
             .unwrap_or_default();
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let mut actions = Vec::new();
         actions.extend(self.key_actions(&ctx));
         if let Some(platform) = self.egui_menus() {
             let state = self.menu_state(&ctx);
@@ -420,8 +407,7 @@ impl KymoApp {
             self.set_settings(settings);
             self.apply_theme(&ctx);
         }
-        #[cfg(any(target_os = "macos", windows))]
-        {
+        if self.native_menu.is_some() {
             let state = self.menu_state(&ctx);
             if let Some(menu) = &mut self.native_menu {
                 menu.update(&state);
@@ -960,10 +946,6 @@ fn export_path(saved: &Path) -> PathBuf {
     saved.with_file_name(format!("{stem}-shown.tsv"))
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
-}
-
 /// Writes a file with `write`, then flushes it.
 fn write_file(
     path: &Path,
@@ -990,32 +972,6 @@ fn centered_message(ui: &mut Ui, message: &str, detail: Option<(&String, Color32
     });
     clicked
 }
-
-/// Builds the native menu bar, puts it in place and hands it to `app`, once the window
-/// exists. If that fails, egui draws the menu bar.
-#[cfg(any(target_os = "macos", windows))]
-fn attach_native_menu(app: &mut KymoApp, cc: &eframe::CreationContext<'_>) {
-    let install = || -> Result<NativeMenu> {
-        let menu = NativeMenu::new(Platform::current(), &cc.egui_ctx)?;
-        #[cfg(target_os = "macos")]
-        menu.install();
-        #[cfg(windows)]
-        let menu = {
-            let mut menu = menu;
-            menu.install(cc)?;
-            menu
-        };
-        Ok(menu)
-    };
-    match install() {
-        Ok(menu) => app.set_native_menu(menu),
-        Err(error) => eprintln!("kymo: no native menu bar: {error}"),
-    }
-}
-
-/// No native menu bar on this platform: egui draws one.
-#[cfg(not(any(target_os = "macos", windows)))]
-fn attach_native_menu(_: &mut KymoApp, _: &eframe::CreationContext<'_>) {}
 
 /// Starts the window and runs until it closes.
 pub fn run(path: Option<PathBuf>) -> Result<()> {
@@ -1044,10 +1000,13 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             };
             let native = options.menus == Menus::Native;
             let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
-            #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
             app.follow_app_mode(AppMode::watch(&cc.egui_ctx));
+            // Without it, egui draws the menu bar.
             if native {
-                attach_native_menu(&mut app, cc);
+                match NativeMenu::attach(cc) {
+                    Ok(menu) => app.set_native_menu(menu),
+                    Err(error) => eprintln!("kymo: no native menu bar: {error}"),
+                }
             }
             app.start(&cc.egui_ctx);
             Ok(Box::new(app))

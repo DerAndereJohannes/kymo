@@ -1,4 +1,5 @@
-//! The system's app mode System follows: the desktop portal's color scheme on Linux.
+//! The system's app mode System follows: the desktop portal's color scheme on Linux, the
+//! registry on Windows.
 
 use kymo::app_mode::color_scheme_dark;
 
@@ -149,4 +150,64 @@ mod portal {
         assert_eq!(mode.dark(), None);
         assert!(started.elapsed() < Duration::from_secs(3));
     }
+}
+
+/// Windows: the app mode is read from the registry and followed as it changes there. Only
+/// on CI, as it switches every app's mode for a moment.
+#[cfg(windows)]
+#[test]
+fn the_app_mode_follows_the_registry() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use eframe::egui;
+    use kymo::app_mode::AppMode;
+    if std::env::var_os("CI").is_none() {
+        eprintln!("skipped: changes the app mode, so only on CI");
+        return;
+    }
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    let reg = |args: &[&str]| {
+        Command::new("reg")
+            .args(args)
+            .output()
+            .expect("reg runs")
+            .status
+            .success()
+    };
+    let write = |light: u32| {
+        let data = light.to_string();
+        let args = [
+            "add",
+            KEY,
+            "/v",
+            "AppsUseLightTheme",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            &data,
+            "/f",
+        ];
+        assert!(reg(&args), "reg add {light}");
+    };
+    let until = |mode: &AppMode, dark: bool| {
+        let start = Instant::now();
+        while mode.dark() != Some(dark) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "still {:?}",
+                mode.dark()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    write(0);
+    let mode = AppMode::watch(&egui::Context::default());
+    assert_eq!(mode.dark(), Some(true));
+    write(1);
+    until(&mode, false);
+    write(0);
+    until(&mode, true);
+    write(1);
+    until(&mode, false);
 }

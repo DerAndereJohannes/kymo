@@ -14,6 +14,9 @@ pub mod keymap;
 pub mod menu;
 #[cfg(any(target_os = "macos", windows))]
 pub mod native_menu;
+#[cfg(not(any(target_os = "macos", windows)))]
+#[path = "no_native_menu.rs"]
+pub mod native_menu;
 pub mod render;
 pub mod scale;
 pub mod settings;
