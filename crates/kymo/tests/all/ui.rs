@@ -3271,6 +3271,20 @@ fn export_writes_the_descriptions_shown() {
     choose(&mut harness, "File", "Save Annotations…");
     let text = std::fs::read_to_string(&saved).unwrap();
     assert_eq!(text.lines().count(), 1 + 12 + 1, "{text}");
+
+    // With every description hidden there is nothing to export, until one shows again.
+    assert!(enabled(&mut harness, "File", "Export Shown"));
+    // Mixed, as trigger 3 is hidden: the first click shows all, the second hides all.
+    for _ in 0..2 {
+        click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
+    }
+    assert!(!enabled(&mut harness, "File", "Export Shown"));
+    click_in_list(
+        &mut harness,
+        egui::accesskit::Role::CheckBox,
+        "Show trigger 3",
+    );
+    assert!(enabled(&mut harness, "File", "Export Shown"));
 }
 
 #[test]

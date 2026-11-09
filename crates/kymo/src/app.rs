@@ -247,6 +247,7 @@ impl KymoApp {
             channel: self.viewer().is_some_and(|v| v.hover().channel.is_some()),
             dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
             stim: self.viewer().is_some_and(Viewer::has_stim),
+            shown: viewer.is_some_and(|v| v.legend().shown_count().0 > 0),
             stim_options: self.stim_options,
         }
     }
@@ -826,6 +827,8 @@ struct AppMenuState {
     dc: bool,
     /// Whether the recording has stim channels, whose codes the rule annotates.
     stim: bool,
+    /// Whether any annotations are shown, for Export Shown Annotations to write.
+    shown: bool,
     stim_options: EventOptions,
 }
 
@@ -838,6 +841,7 @@ impl MenuState for AppMenuState {
             Action::Redo => self.can_redo && !self.dragging || self.typing,
             Action::DeleteAnnotation => self.selected && !self.dragging,
             Action::Deselect => self.selected || self.dragging,
+            Action::ExportShownAnnotations => self.shown,
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,
             _ => true,
         };
