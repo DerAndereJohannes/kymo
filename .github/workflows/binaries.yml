@@ -1,0 +1,79 @@
+name: Binaries
+
+# Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64) and
+# uploads one artifact per platform, `kymo-<target>`. Run it by hand (Actions tab, or
+# `gh workflow run binaries.yml`), or call it from another workflow (the release one) with
+# `uses: ./.github/workflows/binaries.yml` and download the artifacts in a later job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention-days:
+        description: Days to keep the artifacts
+        type: number
+        default: 30
+  workflow_call:
+    inputs:
+      retention-days:
+        description: Days to keep the artifacts
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p kymo --target ${{ matrix.target }}
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=kymo
+          if [ "$RUNNER_OS" = Windows ]; then exe=kymo.exe; fi
+          binary="target/${{ matrix.target }}/release/$exe"
+          # Starts the binary and checks its version.
+          version=$("$binary" --version | cut -d' ' -f2)
+          name="kymo-$version-${GITHUB_SHA::7}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "$binary" LICENSE "$name/"
+          # tar keeps the executable bit, which upload-artifact's own zip would drop.
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$name.zip" "$name"
+            echo "file=$name.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "$name.tar.gz" "$name"
+            echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kymo-${{ matrix.target }}
+          path: ${{ steps.package.outputs.file }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}

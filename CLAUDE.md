@@ -70,6 +70,7 @@ cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--antialias] [--edit] 
 scripts/compare_mne.py file.bdf      # validation against MNE (needs uv); also takes directories
 scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 scripts/compare_mne.py --annotations ...   # also annotation files both ways
+gh workflow run binaries.yml            # release binaries as artifacts (macOS arm64, Windows, Linux x86_64 and arm64); `gh run download` fetches them
 ```
 
 ## Working style
