@@ -62,6 +62,54 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
     }
 }
 
+/// Lets text printed by the command line reach a terminal. On Windows, Kymo is a GUI
+/// program, so that starting it from Explorer opens no console window; started from a
+/// terminal, it attaches to the terminal's console, unless its output is redirected (to a
+/// pipe or file, which works as is). The terminal doesn't wait for a GUI program, so what
+/// it prints may come after the next prompt. Returns whether printed text reaches anyone;
+/// elsewhere it always does.
+pub fn attach_console() -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType,
+        };
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        // SAFETY: `GetFileType` only reads the handle, which std got from the process's
+        // standard handles (null if there is none, which it reports as unknown);
+        // `AttachConsole` takes no pointers and, without a parent console, fails and
+        // changes nothing.
+        #[allow(unsafe_code)]
+        unsafe {
+            let redirected = |handle: std::os::windows::io::RawHandle| {
+                matches!(GetFileType(handle), FILE_TYPE_PIPE | FILE_TYPE_DISK)
+            };
+            if redirected(std::io::stdout().as_raw_handle())
+                || redirected(std::io::stderr().as_raw_handle())
+            {
+                return true;
+            }
+            AttachConsole(ATTACH_PARENT_PROCESS) != 0
+        }
+    }
+    #[cfg(not(windows))]
+    true
+}
+
+/// Reports an error that ends the program: on standard error, and in a message box if
+/// nobody would see that (Windows, started from Explorer; see [`attach_console`]).
+pub fn report_error(text: &str, console: bool) {
+    eprintln!("kymo: {text}");
+    if !console {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Kymo")
+            .set_description(text)
+            .show();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

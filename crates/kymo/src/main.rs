@@ -1,5 +1,8 @@
 //! Kymo viewer: `kymo file.bdf` opens a window, `kymo` alone a file dialog.
 
+// A GUI program on Windows, so that it opens no console window (see `cli::attach_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -7,10 +10,11 @@ use kymo::cli::{self, Command, USAGE};
 use kymo::{app, document};
 
 fn main() -> ExitCode {
+    let console = cli::attach_console();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("kymo: {}", document::error_text(&error));
+            cli::report_error(&document::error_text(&error), console);
             ExitCode::FAILURE
         }
     }
