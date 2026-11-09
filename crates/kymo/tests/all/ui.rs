@@ -2,6 +2,7 @@
 //! line, with the trace renderer on a real GPU where there is one.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Key, Modifiers};
@@ -57,7 +58,24 @@ const SIZE: egui::Vec2 = egui::vec2(1200.0, 700.0);
 
 /// The window opening `path`, without a GPU: egui skips the trace renderer's callback.
 fn window(path: &Path) -> Harness<'static, KymoApp> {
-    Harness::builder().with_size(SIZE).build_eframe(|cc| {
+    window_from(Harness::builder(), path)
+}
+
+/// [`window`], its screenshots rendered on the shared GPU (see [`shared_gpu`]) rather than
+/// on a device kittest creates for it; on kittest's where there is no shared one.
+fn screenshot_window(path: &Path) -> Harness<'static, KymoApp> {
+    let mut builder = Harness::builder();
+    if let Some(gpu) = shared_gpu() {
+        builder = builder.wgpu_setup(egui_wgpu::WgpuSetup::Existing(gpu.clone()));
+    }
+    window_from(builder, path)
+}
+
+fn window_from(
+    builder: egui_kittest::HarnessBuilder<KymoApp>,
+    path: &Path,
+) -> Harness<'static, KymoApp> {
+    builder.with_size(SIZE).build_eframe(|cc| {
         KymoApp::new(
             &cc.egui_ctx,
             Gpu::none("no GPU in this test"),
@@ -467,7 +485,7 @@ fn checked(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
 fn checkable_menu_items_show_a_checkbox_or_radio_button() {
     // Show Sidebar on, Anti-aliasing off (the settings' default).
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(file.path());
+    let mut harness = screenshot_window(file.path());
     ready(&mut harness);
     harness.get_by_label("View").click();
     harness.run_steps(2);
@@ -2240,31 +2258,50 @@ fn the_description_field_names_new_annotations() {
     harness.get_by_label("Show spike");
 }
 
-/// kittest's wgpu setup on Metal, Vulkan or DX12 (traces need storage buffers in vertex
-/// shaders, which OpenGL lacks), or `None` without such an adapter: the test then passes
-/// with a message, unless `KYMO_REQUIRE_GPU` is set.
-fn gpu_setup() -> Option<egui_wgpu::WgpuSetup> {
-    use eframe::egui_wgpu::{self as egui_wgpu, wgpu};
-    let descriptor = || {
+/// The wgpu device on Metal, Vulkan or DX12 (traces need storage buffers in vertex shaders,
+/// which OpenGL lacks), created once and shared by every window rendered on a GPU, as
+/// `render`'s tests share theirs; `None` without such an adapter.
+///
+/// One instance and device per window, created and dropped by several tests at once,
+/// crashed lavapipe (Mesa's software Vulkan driver, which CI uses on Linux) now and then
+/// with a segfault that took the whole test binary down.
+fn shared_gpu() -> Option<&'static egui_wgpu::WgpuSetupExisting> {
+    use eframe::egui_wgpu::wgpu;
+    static GPU: OnceLock<Option<egui_wgpu::WgpuSetupExisting>> = OnceLock::new();
+    GPU.get_or_init(|| {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         desc.backends = wgpu::Backends::PRIMARY;
-        desc
-    };
-    let instance = wgpu::Instance::new(descriptor());
-    let found =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .is_ok();
-    if !found {
+        let instance = wgpu::Instance::new(desc);
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .ok()?;
+        // The device eframe would ask for.
+        let device_descriptor =
+            egui_wgpu::WgpuSetupCreateNew::without_display_handle().device_descriptor;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&device_descriptor(&adapter))).ok()?;
+        Some(egui_wgpu::WgpuSetupExisting {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    })
+    .as_ref()
+}
+
+/// kittest's wgpu setup on the shared GPU (see [`shared_gpu`]), or `None` without one: the
+/// test then passes with a message, unless `KYMO_REQUIRE_GPU` is set.
+fn gpu_setup() -> Option<egui_wgpu::WgpuSetup> {
+    let Some(gpu) = shared_gpu() else {
         assert!(
             std::env::var_os("KYMO_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
             "no GPU adapter, and KYMO_REQUIRE_GPU is set"
         );
         eprintln!("skipped: no GPU adapter");
         return None;
-    }
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor = descriptor();
-    Some(egui_wgpu::WgpuSetup::CreateNew(setup))
+    };
+    Some(egui_wgpu::WgpuSetup::Existing(gpu.clone()))
 }
 
 /// The window opening `path` on a GPU, at one pixel per point.
@@ -2515,7 +2552,7 @@ fn the_theme_follows_the_setting_and_the_system() {
     use egui::accesskit::Role;
     use egui::{SystemTheme, Theme as Look};
     let file = without_triggers("edf+d-mixed");
-    let mut harness = window(file.path());
+    let mut harness = screenshot_window(file.path());
     harness.input_mut().system_theme = Some(Look::Light);
     ready(&mut harness);
     // What the window shows: egui's theme, the trace area's background (its most common
