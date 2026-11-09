@@ -562,6 +562,12 @@ impl Bench {
                     let mut report = self.report.borrow_mut();
                     let start = report.annotations.map_or(0, |(start, _)| start);
                     report.annotations = Some((start, viewer.document().annotations.len()));
+                    drop(report);
+                    // Saved, the edits ask nothing on closing; the file goes right away.
+                    let saved = std::env::temp_dir()
+                        .join(format!("kymo-bench-{}-annot.tsv", std::process::id()));
+                    assert!(self.app.save_annotations_to(&saved));
+                    let _ = std::fs::remove_file(saved);
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
