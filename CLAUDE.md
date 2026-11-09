@@ -6,11 +6,11 @@ Later phases ship it in a Python wheel as an MNE-Python browser backend and laun
 
 **Read `docs/design.md` before changing anything architectural.** It is the source of truth.
 If an implementation detail has to deviate from it, say so explicitly and update the doc in the same change.
-Phase 3 work follows `docs/phase3-plan.md` (viewer features); phase 2's plan, `docs/phase2-plan.md`, holds the controls and the decisions it settled.
+Phase 3's plan, `docs/phase3-plan.md`, and phase 2's, `docs/phase2-plan.md`, hold the decisions they settled (phase 2's the controls).
 
 ## Current scope
 
-Phases 1 to 3 (see "Plan" in `docs/design.md`); phases 1 and 2 are done, phase 3 adds viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection):
+Phases 1 to 3 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection). Phase 4 (derived signals) is next; its plan, `docs/phase4-plan.md`, is a draft until agreed. The crates:
 
 1. `crates/kymo-core`: recording model, EDF/BDF reader, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.
@@ -27,7 +27,7 @@ crates/kymo-testgen  generates synthetic EDF/BDF files for tests and benchmarks
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff
 docs/phase2-plan.md  plan for phase 2 (the viewer), done
-docs/phase3-plan.md  plan for phase 3 (viewer features)
+docs/phase3-plan.md  plan for phase 3 (viewer features), done
 docs/phase4-plan.md  draft plan for phase 4 (derived signals)
 ```
 
