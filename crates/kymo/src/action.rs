@@ -73,12 +73,14 @@ pub enum Action {
     Redo,
     /// Removes the selected annotation.
     DeleteAnnotation,
+    /// Merges the shown annotations of a kind that overlap or touch.
+    MergeAnnotations,
     /// Clears the annotation selection.
     Deselect,
 }
 
 impl Action {
-    pub const ALL: [Action; 44] = [
+    pub const ALL: [Action; 45] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -122,6 +124,7 @@ impl Action {
         Action::Undo,
         Action::Redo,
         Action::DeleteAnnotation,
+        Action::MergeAnnotations,
         Action::Deselect,
     ];
 
@@ -171,6 +174,7 @@ impl Action {
             Action::Undo => "Undo",
             Action::Redo => "Redo",
             Action::DeleteAnnotation => "Delete",
+            Action::MergeAnnotations => "Merge Annotations",
             Action::Deselect => "Deselect Annotation",
         }
     }

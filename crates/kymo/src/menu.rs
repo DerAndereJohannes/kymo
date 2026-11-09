@@ -169,6 +169,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         Item::Separator,
         a(Action::ToggleEditing),
         a(Action::DeleteAnnotation),
+        a(Action::MergeAnnotations),
     ];
     if !mac {
         edit.extend([Item::Separator, a(Action::Settings)]);

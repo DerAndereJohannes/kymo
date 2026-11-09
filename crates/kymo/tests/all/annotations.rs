@@ -650,3 +650,89 @@ proptest! {
         prop_assert_eq!(others(&after), others(&store));
     }
 }
+
+proptest! {
+    #[test]
+    fn merging_the_shown_leaves_none_of_a_kind_reaching_another(
+        items in proptest::collection::vec(any_mergeable(), 0..40),
+        bad_shown: bool,
+        x_shown: bool,
+    ) {
+        use kymo::annotations::merge_shown;
+        let shown = |d: &str| if d == "BAD" { bad_shown } else { x_shown };
+        let store = AnnotationStore::from_data(items);
+        let merged = merge_shown(&store, shown);
+        let mut after = store.clone();
+        for m in &merged {
+            kymo::history::set(&mut after, m.kept, Some(m.data.clone())).unwrap();
+            for &id in &m.removed {
+                kymo::history::set(&mut after, id, None).unwrap();
+            }
+        }
+        let merges = |a: &AnnotationData| a.origin != Origin::Stim && shown(&a.description);
+
+        // Afterward, no two shown annotations of a kind overlap or touch.
+        let left: Vec<&Annotation> = after.iter().filter(|a| merges(&a.data)).collect();
+        for (i, a) in left.iter().enumerate() {
+            for b in &left[i + 1..] {
+                prop_assert!(
+                    !of_a_kind(&a.data, &b.data)
+                        || b.data.onset > a.data.end()
+                        || b.data.end() < a.data.onset,
+                    "{:?} still reaches {:?}", a, b
+                );
+            }
+        }
+        // Each kind covers the same time as before.
+        for a in store.iter().filter(|a| merges(&a.data)) {
+            let covered = |s: &AnnotationStore| {
+                union(
+                    s.iter()
+                        .filter(|b| of_a_kind(&a.data, &b.data))
+                        .map(|b| (b.data.onset, b.data.end()))
+                        .collect(),
+                )
+            };
+            prop_assert_eq!(covered(&after), covered(&store));
+        }
+        // The earliest of a group is kept, its onset, description, channels and origin as
+        // they were; the others were of its kind and are gone.
+        for m in &merged {
+            prop_assert!(!m.removed.is_empty());
+            let kept = &store.get(m.kept).unwrap().data;
+            prop_assert!(merges(kept));
+            prop_assert_eq!(
+                &AnnotationData { duration: 0.0, ..m.data.clone() },
+                &AnnotationData { duration: 0.0, ..kept.clone() }
+            );
+            for id in &m.removed {
+                let b = &store.get(*id).unwrap().data;
+                prop_assert!(of_a_kind(kept, b));
+                prop_assert!((b.onset, id.0) > (kept.onset, m.kept.0));
+                prop_assert!(after.get(*id).is_none());
+            }
+        }
+        // Everything else is as it was: hidden and stim annotations, and those that reached
+        // nothing.
+        let changed: BTreeSet<_> = merged
+            .iter()
+            .flat_map(|m| std::iter::once(m.kept).chain(m.removed.iter().copied()))
+            .collect();
+        for a in store.iter().filter(|a| !changed.contains(&a.id)) {
+            prop_assert_eq!(after.get(a.id), Some(a));
+        }
+    }
+}
+
+#[test]
+fn merging_the_shown_keeps_a_covering_annotation_exact() {
+    // 0.1 + 0.2 - 0.1 isn't 0.2 in floating point: a duration recomputed from the end
+    // would change the annotation that covers the other.
+    let store = AnnotationStore::from_data(vec![
+        data(0.1, 0.2, "BAD", &[]),
+        data(0.15, 0.05, "BAD", &[]),
+    ]);
+    let merged = kymo::annotations::merge_shown(&store, |_| true);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].data, store.get(merged[0].kept).unwrap().data);
+}

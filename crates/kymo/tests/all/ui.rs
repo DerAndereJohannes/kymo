@@ -2942,6 +2942,105 @@ fn edits_merge_annotations_of_a_kind_they_reach() {
 }
 
 #[test]
+fn merge_annotations_merges_the_shown_ones_in_one_step() {
+    use kymo_core::Origin::File;
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    spec.channels.retain(|c| !c.trigger);
+    spec.annotations = [
+        // A chain of three BAD, and one apart.
+        (22.0, 2.0, "BAD"),
+        (23.0, 2.0, "BAD"),
+        (24.5, 1.5, "BAD"),
+        (30.0, 1.0, "BAD"),
+        // Two "x" that overlap.
+        (22.0, 2.0, "x"),
+        (23.5, 1.5, "x"),
+    ]
+    .map(|(onset, duration, text)| kymo_testgen::Tal {
+        onset,
+        duration: Some(duration),
+        texts: vec![text.into()],
+    })
+    .into();
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let bad = [(22.0, 24.0), (23.0, 25.0), (24.5, 26.0), (30.0, 31.0)];
+    let x = [(22.0, 24.0), (23.5, 25.0)];
+
+    // Enabled while some shown description has something to merge.
+    let merge = "Merge Annotations";
+    assert!(enabled(&mut harness, "Edit", merge));
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+    assert!(enabled(&mut harness, "Edit", merge));
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show x");
+    assert!(!enabled(&mut harness, "Edit", merge));
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+    assert!(enabled(&mut harness, "Edit", merge));
+    // Also through the legend's checkbox for all: mixed, it shows all, then hides all.
+    for shown in [true, false] {
+        click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
+        assert_eq!(enabled(&mut harness, "Edit", merge), shown);
+    }
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
+
+    // With "x" hidden, only BAD merges: the chain becomes one, from the file still.
+    choose(&mut harness, "Edit", merge);
+    let merged = [(22.0, 26.0), (30.0, 31.0)];
+    let got = spans(&harness, "BAD");
+    assert_spans(got.clone(), &merged);
+    assert!(got.iter().all(|s| s.2 == File));
+    assert_spans(spans(&harness, "x"), &x);
+    let count =
+        |harness: &Harness<'_, KymoApp>, d| viewer(harness).legend().entry(d).unwrap().count;
+    assert_eq!(count(&harness, "BAD"), 2);
+    assert!(harness.state().title().contains("(edited)"));
+    assert!(!enabled(&mut harness, "Edit", merge));
+
+    // One step.
+    press(&mut harness, command(), Key::Z);
+    assert_spans(spans(&harness, "BAD"), &bad);
+    assert!(!harness.state().title().contains("(edited)"));
+    press(&mut harness, Modifiers::SHIFT | command(), Key::Z);
+    assert_spans(spans(&harness, "BAD"), &merged);
+    press(&mut harness, command(), Key::Z);
+
+    // A selected annotation merged into another leaves that one selected.
+    press(&mut harness, command(), Key::E);
+    press(&mut harness, Modifiers::ALT, Key::ArrowRight);
+    assert_eq!(viewer(&harness).view().time(), 20.0..40.0);
+    click_at_time(&mut harness, 25.5);
+    assert_span(selected_span(&harness), (24.5, 26.0));
+    choose(&mut harness, "Edit", merge);
+    assert_spans(spans(&harness, "BAD"), &merged);
+    assert_span(selected_span(&harness), (22.0, 26.0));
+    // Shown again, "x" merges too.
+    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show x");
+    choose(&mut harness, "Edit", merge);
+    assert_spans(spans(&harness, "x"), &[(22.0, 25.0)]);
+    assert_span(selected_span(&harness), (22.0, 26.0));
+
+    // It waits for a drag to end, even one that reaches another: moved over the BAD at
+    // 30 s, the selected one merges only on release, as any edit does.
+    let at = |harness: &Harness<'_, KymoApp>, t| at_time(harness, t, 40.0);
+    let p = at(&harness, 24.0);
+    hover(&mut harness, p);
+    harness.drag_at(p);
+    harness.step();
+    let q = at(&harness, 28.5);
+    hover(&mut harness, q);
+    assert_spans(spans(&harness, "BAD"), &[(26.5, 30.5), (30.0, 31.0)]);
+    let ctx = harness.ctx.clone();
+    harness
+        .state_mut()
+        .perform(&ctx, kymo::action::Action::MergeAnnotations);
+    assert_spans(spans(&harness, "BAD"), &[(26.5, 30.5), (30.0, 31.0)]);
+    harness.drop_at(q);
+    harness.step();
+    assert_spans(spans(&harness, "BAD"), &[(26.5, 31.0)]);
+}
+
+#[test]
 fn stim_annotations_never_merge() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());

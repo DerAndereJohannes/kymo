@@ -1,6 +1,7 @@
 //! An open recording on screen: the sidebar, the trace area with channel names, time axis
 //! and scrollbars, and the status line.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -185,6 +186,9 @@ pub struct Viewer {
     /// Whether the description field had the keyboard at the last frame.
     typing: bool,
     history: History,
+    /// Whether Merge Annotations has anything to merge, at the store's revision and the
+    /// legend's shown revision it was found at.
+    can_merge: Cell<Option<(u64, u64, bool)>>,
     /// Where the annotations were saved last.
     saved_to: Option<std::path::PathBuf>,
 }
@@ -232,6 +236,7 @@ impl Viewer {
             typing: false,
             saved_to: None,
             history: History::default(),
+            can_merge: Cell::new(None),
         }
     }
 
@@ -346,6 +351,54 @@ impl Viewer {
         &self.history
     }
 
+    /// Whether [`Action::MergeAnnotations`] has anything to merge; found again only after
+    /// the annotations changed or a description was shown or hidden.
+    pub fn can_merge(&self) -> bool {
+        let key = (
+            self.document.annotations.revision(),
+            self.legend.shown_revision(),
+        );
+        if let Some((store, legend, can)) = self.can_merge.get()
+            && (store, legend) == key
+        {
+            return can;
+        }
+        let can = !self.merged_shown().is_empty();
+        self.can_merge.set(Some((key.0, key.1, can)));
+        can
+    }
+
+    /// What merging the shown annotations would do (see [`annotations::merge_shown`]).
+    fn merged_shown(&self) -> Vec<annotations::Merged> {
+        annotations::merge_shown(&self.document.annotations, |d| {
+            self.legend.entry(d).is_some_and(|e| e.shown)
+        })
+    }
+
+    /// Merges the shown annotations of a kind that overlap or touch, as one step. A
+    /// selected annotation merged into another leaves that one selected.
+    fn merge_shown(&mut self) {
+        let merged = self.merged_shown();
+        if merged.is_empty() {
+            return;
+        }
+        if let Some(selected) = self.selected
+            && let Some(m) = merged.iter().find(|m| m.removed.contains(&selected))
+        {
+            self.selected = Some(m.kept);
+        }
+        let changes = merged
+            .into_iter()
+            .flat_map(|m| {
+                let removed = m.removed.into_iter().map(|id| (id, None));
+                std::iter::once((m.kept, Some(m.data))).chain(removed)
+            })
+            .collect();
+        // Merged annotations are valid: they span annotations that are.
+        let _ = self.history.edit(&mut self.document.annotations, changes);
+        self.legend.sync(&self.document.annotations);
+    }
+
     /// Whether the last frame had every tile it wanted, none drawn from a coarser one.
     pub fn complete(&self) -> bool {
         self.layout.is_some() && self.missing == 0
@@ -425,6 +478,10 @@ impl Viewer {
             Action::Redo => {
                 let changed = self.history.redo(&mut self.document.annotations);
                 self.after_history(changed);
+                return true;
+            }
+            Action::MergeAnnotations => {
+                self.merge_shown();
                 return true;
             }
             Action::DeleteAnnotation => {

@@ -51,6 +51,8 @@ pub struct Legend {
     /// position) never change.
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
+    /// Counts the changes of what is shown, for [`shown_revision`](Self::shown_revision).
+    shown_revision: u64,
 }
 
 impl Legend {
@@ -115,8 +117,11 @@ impl Legend {
     }
 
     pub fn set_shown(&mut self, description: &str, shown: bool) {
-        if let Some(&i) = self.index.get(description) {
+        if let Some(&i) = self.index.get(description)
+            && self.entries[i].shown != shown
+        {
             self.entries[i].shown = shown;
+            self.shown_revision += 1;
         }
     }
 
@@ -124,6 +129,13 @@ impl Legend {
         for entry in &mut self.entries {
             entry.shown = shown;
         }
+        self.shown_revision += 1;
+    }
+
+    /// A number that grows whenever a description is shown or hidden. Descriptions new to
+    /// the legend are shown without it, as they come with a change of the store.
+    pub fn shown_revision(&self) -> u64 {
+        self.shown_revision
     }
 
     /// How many descriptions with annotations are shown, and how many there are.
@@ -480,4 +492,74 @@ pub fn merge(
     std::iter::once((id, Some(data)))
         .chain(merged.into_iter().map(|b| (b, None)))
         .collect()
+}
+
+/// What merging the shown annotations does to one group: `kept` grows to `data`, covering
+/// the others, which are removed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Merged {
+    pub kept: AnnotationId,
+    pub data: AnnotationData,
+    pub removed: Vec<AnnotationId>,
+}
+
+/// Merges, among the annotations whose description `shown` accepts, those of a kind (see
+/// [`same_kind`]) that overlap or touch, directly or through others: the earliest of each
+/// group (by onset, then id) keeps its id and origin and grows to cover the group, the
+/// others are removed. Groups of one are left out, so the result is empty if there is
+/// nothing to merge. Stim annotations never merge.
+pub fn merge_shown(store: &AnnotationStore, shown: impl Fn(&str) -> bool) -> Vec<Merged> {
+    /// The group being gathered per kind, and where it ends so far.
+    struct Run {
+        merged: Merged,
+        end: f64,
+    }
+    fn finish(run: Run, out: &mut Vec<Merged>) {
+        let Run { mut merged, end } = run;
+        if merged.removed.is_empty() {
+            return;
+        }
+        // Only if it grew, so an annotation covering the others keeps its duration exactly.
+        if end > merged.data.end() {
+            merged.data.duration = end - merged.data.onset;
+        }
+        out.push(merged);
+    }
+    let mut runs: HashMap<(&str, Vec<ChannelId>), Run> = HashMap::new();
+    let mut out = Vec::new();
+    // By onset, so a group is complete once an annotation of its kind starts after its end.
+    for a in store.iter() {
+        if a.data.origin == Origin::Stim || !shown(&a.data.description) {
+            continue;
+        }
+        let mut channels = a.data.channels.clone();
+        channels.sort();
+        channels.dedup();
+        let key = (a.data.description.as_str(), channels);
+        // Closed intervals: one starting where the group ends touches it.
+        match runs.get_mut(&key) {
+            Some(run) if a.data.onset <= run.end => {
+                run.end = run.end.max(a.data.end());
+                run.merged.removed.push(a.id);
+            }
+            _ => {
+                let run = Run {
+                    merged: Merged {
+                        kept: a.id,
+                        data: a.data.clone(),
+                        removed: Vec::new(),
+                    },
+                    end: a.data.end(),
+                };
+                if let Some(done) = runs.insert(key, run) {
+                    finish(done, &mut out);
+                }
+            }
+        }
+    }
+    for run in runs.into_values() {
+        finish(run, &mut out);
+    }
+    out.sort_by_key(|m| m.kept);
+    out
 }

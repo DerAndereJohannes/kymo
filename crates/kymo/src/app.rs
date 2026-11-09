@@ -248,6 +248,8 @@ impl KymoApp {
             dc: self.viewer().is_some_and(|v| v.view().dc_removed()),
             stim: self.viewer().is_some_and(Viewer::has_stim),
             shown: viewer.is_some_and(|v| v.legend().shown_count().0 > 0),
+            // Not looked for during a drag, which changes the store every frame.
+            mergeable: viewer.is_some_and(|v| !v.dragging() && v.can_merge()),
             stim_options: self.stim_options,
         }
     }
@@ -829,6 +831,8 @@ struct AppMenuState {
     stim: bool,
     /// Whether any annotations are shown, for Export Shown Annotations to write.
     shown: bool,
+    /// Whether Merge Annotations has anything to merge.
+    mergeable: bool,
     stim_options: EventOptions,
 }
 
@@ -840,6 +844,7 @@ impl MenuState for AppMenuState {
             Action::Undo => self.can_undo && !self.dragging || self.typing,
             Action::Redo => self.can_redo && !self.dragging || self.typing,
             Action::DeleteAnnotation => self.selected && !self.dragging,
+            Action::MergeAnnotations => self.mergeable && !self.dragging,
             Action::Deselect => self.selected || self.dragging,
             Action::ExportShownAnnotations => self.shown,
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,

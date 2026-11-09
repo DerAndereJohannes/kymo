@@ -85,7 +85,8 @@ fn follows_each_platforms_layout() {
             Action::Undo,
             Action::Redo,
             Action::ToggleEditing,
-            Action::DeleteAnnotation
+            Action::DeleteAnnotation,
+            Action::MergeAnnotations
         ]
     );
     assert_eq!(mac[5].role, Role::Window);
@@ -100,6 +101,7 @@ fn follows_each_platforms_layout() {
             Action::Redo,
             Action::ToggleEditing,
             Action::DeleteAnnotation,
+            Action::MergeAnnotations,
             Action::Settings
         ]
     );

@@ -312,6 +312,7 @@ impl ViewState {
             | Action::Undo
             | Action::Redo
             | Action::DeleteAnnotation
+            | Action::MergeAnnotations
             | Action::Deselect
             | Action::LoadAnnotations
             | Action::SaveAnnotations

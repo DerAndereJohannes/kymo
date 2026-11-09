@@ -91,6 +91,8 @@ pub struct AnnotationStore {
     max_end: Vec<f64>,
     leaves: usize,
     next_id: u64,
+    /// Counts the changes, for [`revision`](Self::revision).
+    revision: u64,
 }
 
 impl AnnotationStore {
@@ -129,6 +131,13 @@ impl AnnotationStore {
 
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+
+    /// A number that grows with every change (a successful [`apply`](Self::apply) or
+    /// [`replace_origin`](Self::replace_origin)) and with nothing else, so something
+    /// derived from the store can tell whether it is out of date.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn is_empty(&self) -> bool {
@@ -256,7 +265,9 @@ impl AnnotationStore {
         self.items.insert(i, a);
     }
 
+    /// Rebuilds the index after a change, which counts as a revision.
     fn reindex(&mut self) {
+        self.revision += 1;
         self.positions = self
             .items
             .iter()

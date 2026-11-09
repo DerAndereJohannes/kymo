@@ -151,9 +151,11 @@ fn replace_origin_swaps_one_origin_and_fails_without_a_trace() {
         ..data(onset, 0.0, code)
     };
     let mut store = AnnotationStore::from_data(vec![data(1.0, 2.0, "file"), stim(0.5, "old")]);
+    let revision = store.revision();
     store
         .replace_origin(Origin::Stim, vec![stim(3.0, "b"), stim(0.0, "a")])
         .unwrap();
+    assert!(store.revision() > revision);
     assert_eq!(descriptions(store.iter()), ["a", "file", "b"]);
     let ids: Vec<u64> = store.iter().map(|a| a.id.0).collect();
     assert_eq!(ids, [3, 0, 2], "fresh ids in the given order");
@@ -172,6 +174,13 @@ fn replace_origin_swaps_one_origin_and_fails_without_a_trace() {
         Err(AnnotationError::Invalid { .. })
     ));
     assert_eq!(snapshot(&store), before);
+    let revision = store.revision();
+    assert!(
+        store
+            .replace_origin(Origin::Stim, vec![stim(f64::NAN, "bad")])
+            .is_err()
+    );
+    assert_eq!(store.revision(), revision, "failed calls are no revision");
     assert_eq!(
         store.new_id(),
         AnnotationId(4),
@@ -345,15 +354,18 @@ proptest! {
                 m
             };
 
+            let revision = store.revision();
             match store.apply(op) {
                 Ok(inverse) => {
                     prop_assert!(expect_ok, "operation should have failed");
+                    prop_assert!(store.revision() > revision, "a change is a revision");
                     inverses.push(inverse);
                     model = expected_model;
                 }
                 Err(_) => {
                     prop_assert!(!expect_ok, "operation should have succeeded");
                     prop_assert_eq!(snapshot(&store), before);
+                    prop_assert_eq!(store.revision(), revision, "a failure is no revision");
                 }
             }
             check_against_model(&store, &model, &queries)?;
