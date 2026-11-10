@@ -39,11 +39,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                         }
                     });
                     ui.end_row();
-                    hint(
-                        ui,
-                        "System follows the system's light or dark mode (on Windows, \
-                         the default app mode).",
-                    );
+                    hint(ui, "System follows the system's light or dark mode.");
                     ui.label("Colors");
                     type_colors(ui, settings);
                     ui.end_row();
@@ -58,7 +54,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     row(
                         ui,
                         "Default window",
-                        "Seconds shown when a recording opens and after Default Window.",
+                        "Seconds shown when a recording opens.",
                         DragValue::new(&mut settings.default_window_s)
                             .range(DEFAULT_WINDOW_S)
                             .speed(0.5)
@@ -139,7 +135,7 @@ fn color_cell(ctx: &egui::Context) -> egui::Vec2 {
 const SWATCH_GAP: f32 = 4.0;
 
 /// The width of the window's content: the widest label, then three color cells, which are
-/// wider than the other values. Set from the first frame, as egui sizes a window from a
+/// wider than the other values, and [`HINT_ROOM`]. Set from the first frame, as egui sizes a window from a
 /// first pass that gives the values column less room than the color rows take, and would
 /// widen the window a frame later (moving its close button).
 fn content_width(ctx: &egui::Context) -> f32 {
@@ -147,8 +143,11 @@ fn content_width(ctx: &egui::Context) -> f32 {
         .iter()
         .map(|label| text_width(ctx, label))
         .fold(0.0, f32::max);
-    labels + GAP + 3.0 * color_cell(ctx).x + 2.0 * GAP
+    labels + GAP + 3.0 * color_cell(ctx).x + 2.0 * GAP + HINT_ROOM
 }
+
+/// Room beyond the color cells, so the hints wrap less.
+const HINT_ROOM: f32 = 140.0;
 
 /// A swatch and name per channel type, three to a row; a click on a swatch picks its color
 /// or resets it.

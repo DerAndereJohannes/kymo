@@ -192,8 +192,6 @@ pub struct Viewer {
     can_merge: Cell<Option<(u64, u64, bool)>>,
     /// Where the annotations were saved last.
     saved_to: Option<std::path::PathBuf>,
-    /// The channel whose name beside the traces was right-clicked, for its menu.
-    name_menu: Option<ChannelId>,
 }
 
 impl Viewer {
@@ -238,7 +236,6 @@ impl Viewer {
             draft: None,
             typing: false,
             saved_to: None,
-            name_menu: None,
             history: History::default(),
             can_merge: Cell::new(None),
         }
@@ -1101,7 +1098,7 @@ impl Viewer {
             self.view
                 .pan_points(f64::from(response.drag_delta().x), area.width);
         }
-        // A click on a name marks the channel bad or good; a right-click opens its menu.
+        // A click on a name marks the channel bad or good.
         let names_response = ui.interact(names, id.with("names"), Sense::click());
         let channel_at = |p: Pos2| {
             self.view
@@ -1114,9 +1111,6 @@ impl Viewer {
         {
             self.view.toggle_bad(channel);
         }
-        if names_response.secondary_clicked() {
-            self.name_menu = pressed;
-        }
         if let Some(channel) = hovered {
             let tip = if self.view.is_bad(channel) {
                 "Mark as good"
@@ -1125,12 +1119,8 @@ impl Viewer {
             };
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             // At the pointer: the names' area is the whole column.
-            names_response.clone().on_hover_text_at_pointer(tip);
+            names_response.on_hover_text_at_pointer(tip);
         }
-        names_response.context_menu(|ui| match self.name_menu {
-            Some(channel) => name_menu(ui, &mut self.view, channel),
-            None => ui.close(),
-        });
 
         let region = traces.union(names).union(axis_rect);
         let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -1335,24 +1325,6 @@ impl Drop for Viewer {
 
 /// The viewer's tile service, borrowed on its own so other fields can be borrowed mutably
 /// beside it. Only `drop` takes it.
-/// The menu of a right-clicked channel name beside the traces: Mark as Bad (or Good) and
-/// Hide Channel. Closes once an item is picked.
-fn name_menu(ui: &mut Ui, view: &mut ViewState, channel: ChannelId) {
-    let bad = if view.is_bad(channel) {
-        "Mark as Good"
-    } else {
-        "Mark as Bad"
-    };
-    if ui.button(bad).clicked() {
-        view.toggle_bad(channel);
-        ui.close();
-    }
-    if ui.button("Hide Channel").clicked() {
-        view.set_shown(channel, false);
-        ui.close();
-    }
-}
-
 fn live(service: &Option<TileService>) -> &TileService {
     service
         .as_ref()

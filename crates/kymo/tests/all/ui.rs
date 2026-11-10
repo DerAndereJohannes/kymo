@@ -305,59 +305,6 @@ fn clicking_a_name_toggles_bad() {
     assert!(!viewer(&harness).view().is_bad(a2));
 }
 
-/// A right-click at `pos`.
-fn right_click(harness: &mut Harness<'_, KymoApp>, pos: egui::Pos2) {
-    hover(harness, pos);
-    for pressed in [true, false] {
-        harness.event(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Secondary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-    }
-    harness.run_steps(2);
-}
-
-#[test]
-fn right_clicking_a_name_marks_bad_and_hides() {
-    let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(file.path());
-    ready(&mut harness);
-    let layout = viewer(&harness).layout().unwrap();
-    let rows = viewer(&harness).view().rows() as f32;
-    let row_y = |i: f32| layout.names.top() + (i + 0.5) * layout.names.height() / rows;
-    let a2 = kymo_core::ChannelId(1);
-    let name = egui::pos2(layout.names.center().x, row_y(1.0));
-
-    // Beside the traces: the menu names what an item does to the channel.
-    right_click(&mut harness, name);
-    harness.get_by_label("Mark as Bad").click();
-    harness.run_steps(2);
-    assert!(viewer(&harness).view().is_bad(a2));
-    assert!(
-        harness.query_by_label("Mark as Bad").is_none(),
-        "menu stayed"
-    );
-    right_click(&mut harness, name);
-    harness.get_by_label("Mark as Good").click();
-    harness.run_steps(2);
-    assert!(!viewer(&harness).view().is_bad(a2));
-    right_click(&mut harness, name);
-    harness.get_by_label("Hide Channel").click();
-    harness.run_steps(2);
-    assert!(!viewer(&harness).view().is_shown(a2));
-
-    // In the sidebar, names have no menu: a click goes to the channel.
-    use egui::accesskit::Role;
-    harness
-        .get_by_role_and_label(Role::Label, "A1")
-        .click_secondary();
-    harness.run_steps(2);
-    assert!(harness.query_by_label("Mark as Bad").is_none());
-    assert!(harness.query_by_label("Hide Channel").is_none());
-}
-
 /// The channel list shows units as the readout does: µV for EEG, mV for sEEG, whatever the
 /// file stores (uV for both here).
 #[test]

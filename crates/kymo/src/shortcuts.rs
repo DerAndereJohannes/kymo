@@ -107,9 +107,5 @@ fn gestures(platform: Platform) -> Vec<Row> {
             "Click a channel name in the sidebar".into(),
             "Go to the channel",
         ),
-        row(
-            "Right-click a channel name beside the traces".into(),
-            "Mark it bad, or hide it",
-        ),
     ]
 }
