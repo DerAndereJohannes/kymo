@@ -31,35 +31,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                 .num_columns(2)
                 .spacing([GAP, 6.0])
                 .show(ui, |ui| {
-                    row(
-                        ui,
-                        "Tile cache",
-                        "Memory for tiles in RAM. A smaller cache frees memory at once.",
-                        DragValue::new(&mut settings.tile_cache_mb)
-                            .range(TILE_CACHE_MB)
-                            .speed(8.0)
-                            .suffix(" MB"),
-                    );
-                    row(
-                        ui,
-                        "GPU memory",
-                        "Memory for tiles on the graphics card.",
-                        DragValue::new(&mut settings.gpu_memory_mb)
-                            .range(GPU_MEMORY_MB)
-                            .speed(8.0)
-                            .suffix(" MB"),
-                    );
-                    ui.label("Traces");
-                    ui.checkbox(&mut settings.antialias, "Anti-aliased");
-                    ui.end_row();
-                    hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
-                    ui.label("Scale");
-                    ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on opening");
-                    ui.end_row();
-                    hint(
-                        ui,
-                        "Fit each channel type to the first window, as Auto Scale does.",
-                    );
+                    // How it looks, then how a recording opens, then memory.
                     ui.label("Theme");
                     ui.horizontal(|ui| {
                         for theme in Theme::ALL {
@@ -79,6 +51,10 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                         ui,
                         "Click a channel type's color to change it. Bad channels stay gray.",
                     );
+                    ui.label("Traces");
+                    ui.checkbox(&mut settings.antialias, "Anti-aliased");
+                    ui.end_row();
+                    hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
                     row(
                         ui,
                         "Default window",
@@ -88,6 +64,31 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                             .speed(0.5)
                             .max_decimals(3)
                             .suffix(" s"),
+                    );
+                    ui.label("Scale");
+                    ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on opening");
+                    ui.end_row();
+                    hint(
+                        ui,
+                        "Fit each channel type to the first window, as Auto Scale does.",
+                    );
+                    row(
+                        ui,
+                        "Tile cache",
+                        "Memory for tiles in RAM. A smaller cache frees memory at once.",
+                        DragValue::new(&mut settings.tile_cache_mb)
+                            .range(TILE_CACHE_MB)
+                            .speed(8.0)
+                            .suffix(" MB"),
+                    );
+                    row(
+                        ui,
+                        "GPU memory",
+                        "Memory for tiles on the graphics card.",
+                        DragValue::new(&mut settings.gpu_memory_mb)
+                            .range(GPU_MEMORY_MB)
+                            .speed(8.0)
+                            .suffix(" MB"),
                     );
                 });
             ui.add_space(6.0);
@@ -104,13 +105,13 @@ const GAP: f32 = 12.0;
 
 /// The settings' row labels, in the first column.
 const LABELS: [&str; 7] = [
-    "Tile cache",
-    "GPU memory",
-    "Traces",
-    "Scale",
     "Theme",
     "Colors",
+    "Traces",
     "Default window",
+    "Scale",
+    "Tile cache",
+    "GPU memory",
 ];
 
 fn text_width(ctx: &egui::Context, text: &str) -> f32 {
@@ -191,6 +192,6 @@ fn row(ui: &mut Ui, label: &str, hint: &str, value: DragValue<'_>) {
 /// A hint below a row, in the value's column.
 fn hint(ui: &mut Ui, text: &str) {
     ui.label("");
-    ui.add(Label::new(RichText::new(text).small().weak()).wrap());
+    ui.add(Label::new(RichText::new(text).weak()).wrap());
     ui.end_row();
 }

@@ -348,15 +348,14 @@ fn right_clicking_a_name_marks_bad_and_hides() {
     harness.run_steps(2);
     assert!(!viewer(&harness).view().is_shown(a2));
 
-    // In the sidebar, a hidden channel's menu shows it again.
+    // In the sidebar, names have no menu: a click goes to the channel.
     use egui::accesskit::Role;
     harness
-        .get_by_role_and_label(Role::Label, "A2")
+        .get_by_role_and_label(Role::Label, "A1")
         .click_secondary();
     harness.run_steps(2);
-    harness.get_by_label("Show Channel").click();
-    harness.run_steps(2);
-    assert!(viewer(&harness).view().is_shown(a2));
+    assert!(harness.query_by_label("Mark as Bad").is_none());
+    assert!(harness.query_by_label("Hide Channel").is_none());
 }
 
 /// The channel list shows units as the readout does: µV for EEG, mV for sEEG, whatever the
@@ -975,19 +974,31 @@ fn the_channel_list_right_aligns_rates() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert_eq!(rights.len(), 7, "{rights:?}");
+    // The rows in view: each rate at least once.
+    for rate in ["64 Hz", "256 Hz", "512 Hz"] {
+        assert!(rights.iter().any(|r| r.0 == rate), "{rights:?}");
+    }
     assert!(rights.iter().all(|r| r.1 == rights[0].1), "{rights:?}");
     let lefts: Vec<f32> = ["64 Hz", "256 Hz"]
         .iter()
         .map(|rate| harness.get_all_by_label(rate).next().unwrap().rect().left())
         .collect();
     assert!(lefts[0] > lefts[1], "{lefts:?}");
+
+    // Scrolled to the end, where the trigger channel is.
+    let first = harness
+        .get_by_role_and_label(Role::Label, "EEG Fz")
+        .rect()
+        .center();
+    harness.hover_at(first);
+    scroll(&mut harness, egui::vec2(0.0, -2000.0), Modifiers::NONE);
+    harness.run_steps(2);
     assert!(harness.query_by_label("TRIGGER").is_some());
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
 /// A rate that isn't round shows two decimals in the channel list and the summary; hovering
-/// the summary's shows it exactly.
+/// the summary's shows it exactly, with the channels and samples.
 #[test]
 fn rates_are_rounded_with_the_exact_one_on_hover() {
     use egui::accesskit::Role;
@@ -1007,8 +1018,8 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
         .query_all_by_role_and_label(Role::Label, "500.01 Hz")
         .count();
     assert_eq!(rounded, spec.channels.len() + 1);
-    let exact = format!("Exactly {rate} Hz");
-    assert!(harness.query_by_label(&exact).is_none());
+    let exact = format!("{rate} Hz: {} channels, ", spec.channels.len());
+    assert!(harness.query_by_label_contains(&exact).is_none());
     let sampling = harness
         .query_all_by_role_and_label(Role::Label, "500.01 Hz")
         .map(|n| n.rect())
@@ -1017,10 +1028,10 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     // Tooltips wait for the pointer to rest.
     hover(&mut harness, sampling.center());
     let shown = Instant::now() + Duration::from_secs(2);
-    while harness.query_by_label(&exact).is_none() && Instant::now() < shown {
+    while harness.query_by_label_contains(&exact).is_none() && Instant::now() < shown {
         harness.step();
     }
-    harness.get_by_label(&exact);
+    harness.get_by_label_contains(&exact);
 }
 
 /// The legend lists every description with its count; its checkboxes show and hide
@@ -4136,4 +4147,46 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
             );
         }
     }
+}
+
+/// Settings lists how it looks first, then how a recording opens, then memory.
+#[test]
+fn settings_put_appearance_first_and_memory_last() {
+    use egui::accesskit::Role;
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(2);
+    let tops: Vec<f32> = [
+        "Theme",
+        "Colors",
+        "Traces",
+        "Default window",
+        "Scale",
+        "Tile cache",
+        "GPU memory",
+    ]
+    .iter()
+    .map(|label| {
+        harness
+            .get_by_role_and_label(Role::Label, label)
+            .rect()
+            .top()
+    })
+    .collect();
+    assert!(tops.is_sorted(), "{tops:?}");
+}
+
+/// The sidebar has no Open button: File → Open and ⌘O open files, and the empty window
+/// keeps its button.
+#[test]
+fn the_sidebar_has_no_open_button() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert!(harness.query_by_label("Open…").is_none());
+    harness.key_press_modifiers(command(), Key::W);
+    harness.run_steps(2);
+    harness.get_by_label("Open…");
 }

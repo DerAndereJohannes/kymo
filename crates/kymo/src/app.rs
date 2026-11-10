@@ -435,7 +435,7 @@ impl KymoApp {
         let mut open_clicked = false;
         match &mut self.state {
             State::Ready(viewer) => {
-                open_clicked = viewer.show(
+                viewer.show(
                     ui,
                     &self.gpu,
                     &self.keymap,

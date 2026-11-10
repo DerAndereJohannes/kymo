@@ -47,15 +47,6 @@ pub enum DescriptionField<'a> {
     },
 }
 
-/// What the header panel asks for.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct HeaderResponse {
-    /// The Open button was clicked.
-    pub open: bool,
-    /// A description picked from the menu for the selected annotation.
-    pub relabel: Option<String>,
-}
-
 /// The description field's id, to know whether it has the keyboard.
 pub fn description_field_id() -> egui::Id {
     egui::Id::unique("kymo description field")
@@ -70,6 +61,7 @@ const LEGEND_ROWS: f32 = 8.0;
 /// description in `annotations.legend`, and picks their colors in `annotations.colors`. In
 /// annotation mode, `annotations.field` edits the description new annotations get, or the
 /// selected annotation's, above the legend, which then shows even without annotations.
+/// Returns a description picked from the field's menu for the selected annotation.
 pub fn header_panel(
     ui: &mut Ui,
     document: &Document,
@@ -77,24 +69,15 @@ pub fn header_panel(
     view: &mut ViewState,
     type_colors: &TypeColors,
     annotations: AnnotationPanel<'_>,
-) -> HeaderResponse {
+) -> Option<String> {
     let AnnotationPanel {
         legend,
         colors: annotation_colors,
         field,
     } = annotations;
-    let mut open_clicked = false;
     let mut relabel = None;
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        // The button first, so a long file name truncates instead of pushing it out.
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            open_clicked = ui.button("Open…").clicked();
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(Label::new(RichText::new(document.name()).heading()).truncate());
-            });
-        });
-    });
+    ui.add(Label::new(RichText::new(document.name()).heading()).truncate());
     ui.add(
         Label::new(
             RichText::new(document.path.display().to_string())
@@ -111,8 +94,20 @@ pub fn header_panel(
         .show(ui, |ui| {
             // Keys at their full width; values, in the last column, shorten to what is left.
             for row in summary.sidebar_rows() {
-                ui.add(Label::new(RichText::new(row.key).weak()).extend());
-                let value = ui.add(Label::new(row.value).truncate());
+                let key = Label::new(RichText::new(row.key).weak()).extend();
+                let value = if row.value.contains('\n') {
+                    // A line each (the rates), each shortened on its own, the key at the top.
+                    ui.vertical(|ui| ui.add(key));
+                    ui.vertical(|ui| {
+                        for line in row.value.lines() {
+                            ui.add(Label::new(line).truncate());
+                        }
+                    })
+                    .response
+                } else {
+                    ui.add(key);
+                    ui.add(Label::new(row.value).truncate())
+                };
                 if let Some(hover) = row.hover {
                     value.on_hover_text(hover);
                 }
@@ -156,10 +151,7 @@ pub fn header_panel(
     kind_list(ui, view, type_colors);
     ui.separator();
     channel_list(ui, document, view, type_colors);
-    HeaderResponse {
-        open: open_clicked,
-        relabel,
-    }
+    relabel
 }
 
 /// A row per channel type in the recording: a checkbox, in the type's trace color, that
@@ -410,8 +402,8 @@ impl Columns {
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
 /// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
-/// it, a right-click opens [`channel_menu`]), whether it is bad, its type, its unit as the
-/// readout shows values (µV for EEG whatever the file stores) and its rate (right-aligned).
+/// it), whether it is bad, its type, its unit as the readout shows values (µV for EEG
+/// whatever the file stores) and its rate (right-aligned).
 fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_colors: &TypeColors) {
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
@@ -470,7 +462,6 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
                     .sense(Sense::click())
                     .extend();
                 let response = cell(ui, columns.name, left, label);
-                response.context_menu(|ui| channel_menu(ui, view, id));
                 if shown {
                     let response = response
                         .on_hover_cursor(CursorIcon::PointingHand)
@@ -503,30 +494,6 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
             }
         },
     );
-}
-
-/// The menu of a right-clicked channel name, in the traces or the sidebar: Mark as Bad (or
-/// Good) and Hide (or Show) Channel. Closes once an item is picked.
-pub fn channel_menu(ui: &mut Ui, view: &mut ViewState, channel: ChannelId) {
-    let bad = if view.is_bad(channel) {
-        "Mark as Good"
-    } else {
-        "Mark as Bad"
-    };
-    if ui.button(bad).clicked() {
-        view.toggle_bad(channel);
-        ui.close();
-    }
-    let shown = view.is_shown(channel);
-    let hide = if shown {
-        "Hide Channel"
-    } else {
-        "Show Channel"
-    };
-    if ui.button(hide).clicked() {
-        view.set_shown(channel, !shown);
-        ui.close();
-    }
 }
 
 /// Names a widget whose text doesn't say what it is for, for screen readers (and tests).

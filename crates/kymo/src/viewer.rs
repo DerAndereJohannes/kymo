@@ -27,8 +27,7 @@ use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{
-    AnnotationPanel, DescriptionField, channel_menu, description_field_id, header_panel,
-    within_width,
+    AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{readout, scrollbar, status};
@@ -653,8 +652,7 @@ impl Viewer {
     }
 
     /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
-    /// colors picked in `annotation_colors` (which the legend changes). Returns whether the
-    /// sidebar's Open button was clicked.
+    /// colors picked in `annotation_colors` (which the legend changes).
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -662,7 +660,7 @@ impl Viewer {
         keymap: &Keymap,
         sidebar: bool,
         annotation_colors: &mut AnnotationColors,
-    ) -> bool {
+    ) {
         self.sync_stim(ui.ctx());
         self.legend.apply_colors(annotation_colors);
         if let Some(id) = self.selected
@@ -670,7 +668,6 @@ impl Viewer {
         {
             self.selected = None;
         }
-        let mut open_clicked = false;
         let mut relabel = None;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -693,7 +690,7 @@ impl Viewer {
                 .min_size(SIDEBAR_MIN_WIDTH)
                 .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
                 .show(ui, |ui| {
-                    let response = within_width(ui, |ui| {
+                    relabel = within_width(ui, |ui| {
                         header_panel(
                             ui,
                             &self.document,
@@ -716,8 +713,6 @@ impl Viewer {
                             },
                         )
                     });
-                    open_clicked = response.open;
-                    relabel = response.relabel;
                 });
             if let Some(description) = relabel
                 && let Some(id) = self.selected
@@ -735,7 +730,6 @@ impl Viewer {
             self.status = status;
             ui.ctx().request_repaint();
         }
-        open_clicked
     }
 
     /// Brings the stim annotations up to the build and the rule, and the legend with them.
@@ -1134,7 +1128,7 @@ impl Viewer {
             names_response.clone().on_hover_text_at_pointer(tip);
         }
         names_response.context_menu(|ui| match self.name_menu {
-            Some(channel) => channel_menu(ui, &mut self.view, channel),
+            Some(channel) => name_menu(ui, &mut self.view, channel),
             None => ui.close(),
         });
 
@@ -1341,6 +1335,24 @@ impl Drop for Viewer {
 
 /// The viewer's tile service, borrowed on its own so other fields can be borrowed mutably
 /// beside it. Only `drop` takes it.
+/// The menu of a right-clicked channel name beside the traces: Mark as Bad (or Good) and
+/// Hide Channel. Closes once an item is picked.
+fn name_menu(ui: &mut Ui, view: &mut ViewState, channel: ChannelId) {
+    let bad = if view.is_bad(channel) {
+        "Mark as Good"
+    } else {
+        "Mark as Bad"
+    };
+    if ui.button(bad).clicked() {
+        view.toggle_bad(channel);
+        ui.close();
+    }
+    if ui.button("Hide Channel").clicked() {
+        view.set_shown(channel, false);
+        ui.close();
+    }
+}
+
 fn live(service: &Option<TileService>) -> &TileService {
     service
         .as_ref()
