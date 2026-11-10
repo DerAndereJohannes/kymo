@@ -316,6 +316,86 @@ fn names_and_b_toggle_bad_channels() {
     assert!(!viewer(&harness).view().is_bad(a2));
 }
 
+/// A right-click at `pos`.
+fn right_click(harness: &mut Harness<'_, KymoApp>, pos: egui::Pos2) {
+    hover(harness, pos);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    harness.run_steps(2);
+}
+
+#[test]
+fn right_clicking_a_name_marks_bad_and_hides() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let layout = viewer(&harness).layout().unwrap();
+    let rows = viewer(&harness).view().rows() as f32;
+    let row_y = |i: f32| layout.names.top() + (i + 0.5) * layout.names.height() / rows;
+    let a2 = kymo_core::ChannelId(1);
+    let name = egui::pos2(layout.names.center().x, row_y(1.0));
+
+    // Beside the traces: the menu names what an item does to the channel.
+    right_click(&mut harness, name);
+    harness.get_by_label("Mark as Bad").click();
+    harness.run_steps(2);
+    assert!(viewer(&harness).view().is_bad(a2));
+    assert!(
+        harness.query_by_label("Mark as Bad").is_none(),
+        "menu stayed"
+    );
+    right_click(&mut harness, name);
+    harness.get_by_label("Mark as Good").click();
+    harness.run_steps(2);
+    assert!(!viewer(&harness).view().is_bad(a2));
+    right_click(&mut harness, name);
+    harness.get_by_label("Hide Channel").click();
+    harness.run_steps(2);
+    assert!(!viewer(&harness).view().is_shown(a2));
+
+    // In the sidebar, a hidden channel's menu shows it again.
+    use egui::accesskit::Role;
+    harness
+        .get_by_role_and_label(Role::Label, "A2")
+        .click_secondary();
+    harness.run_steps(2);
+    harness.get_by_label("Show Channel").click();
+    harness.run_steps(2);
+    assert!(viewer(&harness).view().is_shown(a2));
+}
+
+/// The channel list shows units as the readout does: µV for EEG, mV for sEEG, whatever the
+/// file stores (uV for both here).
+#[test]
+fn the_channel_list_shows_display_units() {
+    use egui::accesskit::Role;
+    let file = TempFile::preset("edf+c-kinds");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // The list draws the rows in view: EEG Fz and SEEG LA1 come first.
+    let unit_of = |name: &str| {
+        let y = harness
+            .get_by_role_and_label(Role::Label, name)
+            .rect()
+            .center()
+            .y;
+        ["\u{b5}V", "mV", "uV"].into_iter().find(|unit| {
+            harness
+                .query_all_by_role_and_label(Role::Label, unit)
+                .any(|n| (n.rect().center().y - y).abs() < 1.0)
+        })
+    };
+    assert_eq!(unit_of("EEG Fz"), Some("\u{b5}V"));
+    assert_eq!(unit_of("SEEG LA1"), Some("mV"));
+    assert!(harness.query_by_label("uV").is_none());
+}
+
 #[test]
 fn hovering_reads_the_value_under_the_pointer() {
     let file = TempFile::preset("bdf+c-small");
@@ -424,8 +504,6 @@ fn menu_items_are_enabled_as_the_state_allows() {
     assert!(enabled(&mut harness, "View", "Zoom In"));
     assert!(enabled(&mut harness, "File", "Close"));
     assert!(enabled(&mut harness, "View", "Show Sidebar"));
-    // The pointer is on the menu, not over a channel.
-    assert!(!enabled(&mut harness, "View", "Toggle Bad"));
     assert!(enabled(&mut harness, "View", "Remove DC"));
     assert!(enabled(&mut harness, "Edit", "Settings"));
 
@@ -863,7 +941,7 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     assert!(harness.query_by_label("LONGCHANNELNAME1").is_none());
     let bad = harness.get_by_label("A1 bad").rect().left();
     let eeg = column_left(&harness, Role::Label, "EEG");
-    let uv = column_left(&harness, Role::Label, "uV");
+    let uv = column_left(&harness, Role::Label, "\u{b5}V");
 
     // Scrolled to the end, where the long name and Status are.
     let a1 = harness
@@ -886,7 +964,7 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
         "{long:?} reaches the bad toggles at {bad}"
     );
     assert_eq!(column_left(&harness, Role::Label, "EEG"), eeg);
-    assert_eq!(column_left(&harness, Role::Label, "uV"), uv);
+    assert_eq!(column_left(&harness, Role::Label, "\u{b5}V"), uv);
     // Codes have no unit, whatever the file says.
     assert!(harness.query_by_label("Boolean").is_none());
 }

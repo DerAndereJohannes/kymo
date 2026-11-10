@@ -10,6 +10,7 @@ use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
 use crate::document::{Document, Summary, format_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
+use crate::ui::readout::display_unit;
 use crate::view::{KINDS, ViewState};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
@@ -386,7 +387,7 @@ impl Columns {
         let columns = Columns {
             name: widest(&mut channels.iter().map(|c| c.name.clone())),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
-            unit: widest(&mut channels.iter().map(|c| c.tile_unit().to_owned())),
+            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
             rate: widest(
                 &mut channels
                     .iter()
@@ -409,7 +410,8 @@ impl Columns {
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
 /// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
-/// it), whether it is bad, its type, unit and rate (right-aligned).
+/// it, a right-click opens [`channel_menu`]), whether it is bad, its type, its unit as the
+/// readout shows values (µV for EEG whatever the file stores) and its rate (right-aligned).
 fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_colors: &TypeColors) {
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
@@ -468,8 +470,11 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
                     .sense(Sense::click())
                     .extend();
                 let response = cell(ui, columns.name, left, label);
+                response.context_menu(|ui| channel_menu(ui, view, id));
                 if shown {
-                    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+                    let response = response
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text("Show in traces");
                     if response.clicked() {
                         view.scroll_to(id);
                     }
@@ -491,13 +496,37 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
                     left,
                     weak(kind_name(channel.kind).to_owned()),
                 );
-                cell(ui, columns.unit, left, weak(channel.tile_unit().to_owned()));
+                cell(ui, columns.unit, left, weak(display_unit(channel).0));
                 let rate = rec.grid(channel.grid).rate();
                 let right = Layout::right_to_left(Align::Center);
                 cell(ui, columns.rate, right, weak(format_rate(rate)));
             }
         },
     );
+}
+
+/// The menu of a right-clicked channel name, in the traces or the sidebar: Mark as Bad (or
+/// Good) and Hide (or Show) Channel. Closes once an item is picked.
+pub fn channel_menu(ui: &mut Ui, view: &mut ViewState, channel: ChannelId) {
+    let bad = if view.is_bad(channel) {
+        "Mark as Good"
+    } else {
+        "Mark as Bad"
+    };
+    if ui.button(bad).clicked() {
+        view.toggle_bad(channel);
+        ui.close();
+    }
+    let shown = view.is_shown(channel);
+    let hide = if shown {
+        "Hide Channel"
+    } else {
+        "Show Channel"
+    };
+    if ui.button(hide).clicked() {
+        view.set_shown(channel, !shown);
+        ui.close();
+    }
 }
 
 /// Names a widget whose text doesn't say what it is for, for screen readers (and tests).

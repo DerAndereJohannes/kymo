@@ -27,7 +27,8 @@ use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{
-    AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
+    AnnotationPanel, DescriptionField, channel_menu, description_field_id, header_panel,
+    within_width,
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{readout, scrollbar, status};
@@ -191,6 +192,8 @@ pub struct Viewer {
     can_merge: Cell<Option<(u64, u64, bool)>>,
     /// Where the annotations were saved last.
     saved_to: Option<std::path::PathBuf>,
+    /// The channel whose name beside the traces was right-clicked, for its menu.
+    name_menu: Option<ChannelId>,
 }
 
 impl Viewer {
@@ -235,6 +238,7 @@ impl Viewer {
             draft: None,
             typing: false,
             saved_to: None,
+            name_menu: None,
             history: History::default(),
             can_merge: Cell::new(None),
         }
@@ -1104,15 +1108,35 @@ impl Viewer {
             self.view
                 .pan_points(f64::from(response.drag_delta().x), area.width);
         }
+        // A click on a name marks the channel bad or good; a right-click opens its menu.
         let names_response = ui.interact(names, id.with("names"), Sense::click());
-        if names_response.clicked()
-            && let Some(p) = names_response.interact_pointer_pos()
-            && let Some(channel) = self
-                .view
+        let channel_at = |p: Pos2| {
+            self.view
                 .channel_at(f64::from(p.y - traces.top()), area.height)
+        };
+        let pressed = names_response.interact_pointer_pos().and_then(channel_at);
+        let hovered = names_response.hover_pos().and_then(channel_at);
+        if names_response.clicked()
+            && let Some(channel) = pressed
         {
             self.view.toggle_bad(channel);
         }
+        if names_response.secondary_clicked() {
+            self.name_menu = pressed;
+        }
+        if let Some(channel) = hovered {
+            let tip = if self.view.is_bad(channel) {
+                "Mark as good"
+            } else {
+                "Mark as bad"
+            };
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            names_response.clone().on_hover_text(tip);
+        }
+        names_response.context_menu(|ui| match self.name_menu {
+            Some(channel) => channel_menu(ui, &mut self.view, channel),
+            None => ui.close(),
+        });
 
         let region = traces.union(names).union(axis_rect);
         let pointer = ui.input(|i| i.pointer.hover_pos());

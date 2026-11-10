@@ -200,7 +200,6 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             a(Action::DefaultScale),
             Item::Separator,
             a(Action::ToggleDc),
-            a(Action::ToggleBad),
             Item::Separator,
             Item::Submenu {
                 title: "Stim Annotations",

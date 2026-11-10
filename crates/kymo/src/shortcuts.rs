@@ -99,6 +99,17 @@ fn gestures(platform: Platform) -> Vec<Row> {
             "Drag the selected annotation".into(),
             "Move it, or resize it at an edge",
         ),
-        row("Click a channel name".into(), "Toggle bad channel"),
+        row(
+            "Click a channel name beside the traces".into(),
+            "Mark it bad or good",
+        ),
+        row(
+            "Click a channel name in the sidebar".into(),
+            "Go to the channel",
+        ),
+        row(
+            "Right-click a channel name".into(),
+            "Mark it bad, or hide it",
+        ),
     ]
 }

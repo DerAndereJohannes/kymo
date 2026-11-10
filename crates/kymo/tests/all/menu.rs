@@ -279,11 +279,13 @@ fn grays_out_what_needs_a_recording() {
 
 #[test]
 fn every_command_shortcut_has_a_menu_item() {
-    // Native menus show these and flash when they are pressed.
+    // Native menus show these and flash when they are pressed. Except Toggle Bad, which
+    // acts on the channel under the pointer: from a menu there is none (a channel name's
+    // right-click menu has it instead).
     for platform in Platform::ALL {
         let actions = menu_actions(platform);
         for action in Action::ALL {
-            if Keymap::chord(action).is_some_and(|c| c.command) {
+            if Keymap::chord(action).is_some_and(|c| c.command) && action != Action::ToggleBad {
                 assert!(actions.contains(&action), "{platform:?}: {action:?}");
             }
         }
