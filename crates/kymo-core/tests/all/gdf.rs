@@ -542,6 +542,60 @@ fn units_from_codes_and_texts() {
     assert_eq!(rec.channels()[1].unit.to_si, Some(1e-6));
 }
 
+/// Integer Status channels (BioSemi's status word in BDF files converted to GDF) show the
+/// codes in their low 16 bits, as in BDF; other stim channels, and float ones, every bit.
+#[test]
+fn status_channels_are_masked() {
+    let trigger = |label: &str, stored| ChannelSpec {
+        label: label.into(),
+        stored: Some(stored),
+        ..ChannelSpec::trigger(64, V2)
+    };
+    let channels = vec![
+        ChannelSpec::gdf("Fz", 64, Stored::I16),
+        trigger("Status", Stored::I32),
+        trigger("TRIGGER", Stored::I32),
+        trigger("STATUS", Stored::F32),
+    ];
+    let spec = Spec::new(V2, channels, 1.0, 8);
+    let mut b = bytes(&spec);
+    // Status bits above the codes, as BioSemi's amplifier sets them (bit 20 and 23).
+    let header = 256 * 5;
+    let record = 64 * (2 + 4 + 4 + 4);
+    for r in 0..8 {
+        for j in 0..64 {
+            let at = header + r * record + 64 * 2 + 4 * j;
+            let v = i32::from_le_bytes(b[at..at + 4].try_into().unwrap()) | 0x0090_0000;
+            put(&mut b, at, &v.to_le_bytes());
+        }
+    }
+    let rec = Patched::new(&b).open().0;
+    let masks: Vec<_> = rec.channels().iter().map(|c| c.trigger_mask).collect();
+    assert_eq!(masks, [None, Some(0xffff), None, None]);
+    // The stim scan and the tiles see the codes.
+    let status = ChannelId(1);
+    let grid = rec.channel(status).grid;
+    let pyramid = kymo_core::pyramid::Pyramid::build(&rec, grid).unwrap();
+    let changes = pyramid
+        .stim_changes(&rec)
+        .into_iter()
+        .find(|s| s.channel == status)
+        .unwrap()
+        .changes;
+    let mut previous = None;
+    for i in 0..spec.len(1) {
+        let code = spec.digital(1, i);
+        if previous != Some(code) {
+            assert!(
+                changes.iter().any(|c| c.sample == i && c.value == code),
+                "sample {i}: {code}"
+            );
+            previous = Some(code);
+        }
+    }
+    assert!(changes.iter().all(|c| (0..256).contains(&c.value)));
+}
+
 #[test]
 fn kinds_from_labels() {
     use ChannelKind::*;

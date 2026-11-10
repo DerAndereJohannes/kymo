@@ -6,8 +6,8 @@
 //! ```
 //!
 //! Writes to OUTDIR:
-//! - `header.json`: format, start time, duration, warnings, channels (with their prefilter)
-//!   and grids (rate, start, length, segments, sample type, channel ids)
+//! - `header.json`: format, start time, duration, warnings, channels (with their prefilter
+//!   and trigger mask) and grids (rate, start, length, segments, sample type, channel ids)
 //! - `annotations.json`: onset, duration and description of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
@@ -202,10 +202,14 @@ fn header_json(rec: &Recording) -> String {
             .unit
             .to_si
             .map_or_else(|| "null".to_owned(), |x| x.to_string());
+        let mask = c
+            .trigger_mask
+            .map_or_else(|| "null".to_owned(), |m| m.to_string());
         let _ = write!(
             j,
             "{sep}\n    {{\"name\": {}, \"kind\": {}, \"unit\": {}, \"to_si\": {to_si}, \
-             \"gain\": {}, \"offset\": {}, \"grid\": {}, \"prefilter\": {}}}",
+             \"gain\": {}, \"offset\": {}, \"grid\": {}, \"prefilter\": {}, \
+             \"trigger_mask\": {mask}}}",
             string(&c.name),
             string(&format!("{:?}", c.kind)),
             string(&c.unit.label),

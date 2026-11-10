@@ -108,6 +108,9 @@ GDF, where Kymo deliberately differs from MNE:
   0x7FFF (sparse samples, not events); MNE keeps them. They are left out of MNE's too.
 - Channel kinds and filters are not compared (Kymo reads kinds from the labels, "EOG:1"
   or "EOG 1", as for EDF; MNE makes every channel but stim channels EEG).
+- Integer Status channels (BioSemi's status word, in BDF files converted to GDF) show
+  their low 16 bits as codes in Kymo, as in BDF; MNE keeps 17 bits. Their samples are
+  compared as MNE masks them, their events with find_events(mask=0xFFFF).
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -732,13 +735,15 @@ def compare_events(raw, header, events, fmax, notes):
             )
             continue
         ours = np.array(entry["events"], dtype=np.int64).reshape(-1, 2)
+        trigger_mask = channel.get("trigger_mask")
         if gdf:
             # MNE masks GDF stim channels' physical values: events of the masked values,
             # under the same rule (every change to a non-zero code, none at the start).
+            # Kymo's changes are of the values under its trigger mask (Status channels).
             masked, previous = [], None
             for sample, value in entry["changes"]:
                 code = int(value * channel["gain"] + channel["offset"])
-                code &= STIM_MASK
+                code &= STIM_MASK & (trigger_mask if trigger_mask is not None else -1)
                 if previous is not None and code != previous and code != 0:
                     masked.append((sample, code))
                 previous = code
@@ -757,7 +762,7 @@ def compare_events(raw, header, events, fmax, notes):
             consecutive=True,
             shortest_event=1,
             initial_event=False,
-            mask=0xFFFF if bdf else None,
+            mask=0xFFFF if bdf or trigger_mask is not None else None,
             mask_type="and",
             verbose="error",
         )

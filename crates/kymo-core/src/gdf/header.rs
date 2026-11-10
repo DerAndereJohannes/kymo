@@ -286,6 +286,13 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
             // GDF marks missing integer samples with the type's smallest value.
             decoder = decoder.with_nan_minimum();
         }
+        // A Status channel holds BioSemi's status word, as in BDF files converted to GDF:
+        // trigger codes in the low 16 bits, the amplifier's own status above. Float samples
+        // get no mask, since masking a float32 can lose bits.
+        let trigger_mask = (kind == ChannelKind::Stim
+            && label.eq_ignore_ascii_case("status")
+            && decoder.native() != SampleType::F32)
+            .then_some(0xffff);
         file_channels.push(Some(ChannelId(channels.len() as u32)));
         channels.push(Channel {
             name: label,
@@ -298,7 +305,7 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
             transducer: b.text(transducer_at(i), 80),
             physical_range: Some((pmin, pmax)),
             digital_range: Some((dmin, dmax)),
-            trigger_mask: None,
+            trigger_mask,
         });
         blocks.push(RecordBlock {
             offset,
