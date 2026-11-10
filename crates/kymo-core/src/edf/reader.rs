@@ -1,29 +1,15 @@
-//! The EDF/BDF block reader over a read-only memory map.
+//! Opening EDF/BDF files: the header, the index pass, and the shared record reader over a
+//! read-only memory map.
 
 use std::fs::File;
-use std::ops::Range;
 use std::path::Path;
 
-use memmap2::Mmap;
-
 use super::index::index;
-use super::{Block, EdfError, RecordLayout, parse_header};
+use super::{EdfError, parse_header};
 use crate::decode::{ByteOrder, Decoder, Encoding};
-use crate::mapped::{self, map_read_only};
-use crate::{BlockReader, ChannelId, GridId, OpenError, Opened, ReadError, Sample, SamplesMut};
-
-/// Reads samples straight from the memory-mapped file.
-#[derive(Debug)]
-pub struct EdfReader {
-    map: Mmap,
-    /// The mapped file, for reading ahead.
-    file: File,
-    layout: RecordLayout,
-    /// The grid of each data channel.
-    channel_grid: Vec<GridId>,
-    /// EDF+D/BDF+D: per grid, the first grid sample of each record.
-    record_starts: Option<Vec<Vec<u64>>>,
-}
+use crate::mapped::map_read_only;
+use crate::records::{RecordBlock, RecordReader};
+use crate::{OpenError, Opened};
 
 /// Opens an EDF, EDF+ or BDF/BDF+ file. The file is memory-mapped, never loaded.
 ///
@@ -63,148 +49,35 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         }));
     }
     let channel_grid = parsed.header.channels.iter().map(|c| c.grid).collect();
+    let layout = parsed.layout;
+    let encoding = match layout.bytes_per_sample {
+        3 => Encoding::I24,
+        _ => Encoding::I16,
+    };
+    let decoder = Decoder::new(encoding, ByteOrder::Little);
+    let blocks = layout
+        .channels
+        .iter()
+        .map(|b| RecordBlock {
+            offset: b.offset,
+            samples: b.samples,
+            decoder,
+        })
+        .collect();
     Ok(Opened {
         header: parsed.header,
         annotations,
         warnings: parsed.warnings,
         sources: vec![path.to_owned()],
-        reader: Box::new(EdfReader {
+        reader: Box::new(RecordReader {
             map,
             file,
-            layout: parsed.layout,
+            header_bytes: layout.header_bytes,
+            record_bytes: layout.record_bytes,
+            n_records: layout.n_records,
+            blocks,
             channel_grid,
             record_starts,
         }),
     })
-}
-
-impl BlockReader for EdfReader {
-    fn read(
-        &self,
-        grid: GridId,
-        channels: &[ChannelId],
-        range: Range<u64>,
-        out: SamplesMut<'_>,
-    ) -> Result<(), ReadError> {
-        let blocks = channels
-            .iter()
-            .map(|&channel| match self.channel_grid.get(channel.0 as usize) {
-                Some(&g) if g == grid => Ok(self.layout.channels[channel.0 as usize]),
-                _ => Err(ReadError::ChannelNotInGrid { channel, grid }),
-            })
-            .collect::<Result<Vec<Block>, _>>()?;
-        let n = usize::try_from(range.end.saturating_sub(range.start)).unwrap_or(usize::MAX);
-        let expected = blocks.len().saturating_mul(n);
-        let encoding = match self.layout.bytes_per_sample {
-            3 => Encoding::I24,
-            _ => Encoding::I16,
-        };
-        let decoder = Decoder::new(encoding, ByteOrder::Little);
-        match out {
-            SamplesMut::I16(dst) if dst.len() == expected => {
-                self.copy(grid, &blocks, range, n, dst, &decoder)
-            }
-            SamplesMut::I32(dst) if dst.len() == expected => {
-                self.copy(grid, &blocks, range, n, dst, &decoder)
-            }
-            out => Err(ReadError::BufferMismatch {
-                expected,
-                expected_type: decoder.native(),
-                found: out.len(),
-                found_type: out.sample_type(),
-            }),
-        }
-    }
-
-    fn prefetch(&self, grid: GridId, range: Range<u64>) {
-        let Some(records) = self.records(grid, &range) else {
-            return;
-        };
-        let layout = &self.layout;
-        let start = layout.header_bytes + records.start * layout.record_bytes;
-        let end = layout.header_bytes + records.end * layout.record_bytes;
-        mapped::prefetch(&self.file, self.map.len() as u64, [start..end]);
-    }
-}
-
-impl EdfReader {
-    /// The records holding samples of `range` of `grid`, if the grid has channels.
-    fn records(&self, grid: GridId, range: &Range<u64>) -> Option<Range<u64>> {
-        let channel = self.channel_grid.iter().position(|&g| g == grid)?;
-        let spr = self.layout.channels[channel].samples;
-        let n = self.layout.n_records;
-        let records = match &self.record_starts {
-            Some(starts) => {
-                let starts = &starts[grid.0 as usize];
-                let first = starts
-                    .partition_point(|&s| s <= range.start)
-                    .saturating_sub(1);
-                first as u64..starts.partition_point(|&s| s < range.end) as u64
-            }
-            None if spr == 0 => return None,
-            None => range.start / spr..range.end.div_ceil(spr),
-        };
-        Some(records.start.min(n)..records.end.min(n))
-    }
-
-    /// Copies `range` of every block into `dst` (channel-major, `n` samples per channel),
-    /// record by record so the file is read in order.
-    fn copy<T: Sample>(
-        &self,
-        grid: GridId,
-        blocks: &[Block],
-        range: Range<u64>,
-        n: usize,
-        dst: &mut [T],
-        decoder: &Decoder,
-    ) -> Result<(), ReadError> {
-        let Some(spr) = blocks.first().map(|b| b.samples) else {
-            return Ok(());
-        };
-        let layout = &self.layout;
-        let bps = layout.bytes_per_sample;
-        let starts = self
-            .record_starts
-            .as_ref()
-            .map(|s| s[grid.0 as usize].as_slice());
-        let not_present = || ReadError::NotPresent {
-            grid,
-            range: range.clone(),
-        };
-        let mut record = match starts {
-            Some(starts) => starts
-                .partition_point(|&s| s <= range.start)
-                .checked_sub(1)
-                .ok_or_else(not_present)?,
-            None => (range.start / spr) as usize,
-        };
-        let mut i = range.start;
-        while i < range.end {
-            let first = match starts {
-                Some(starts) => *starts.get(record).ok_or_else(not_present)?,
-                None => record as u64 * spr,
-            };
-            if record as u64 >= layout.n_records || i < first || i - first >= spr {
-                return Err(not_present());
-            }
-            let j = i - first;
-            let take = (spr - j).min(range.end - i);
-            let record_start = layout.header_bytes + record as u64 * layout.record_bytes;
-            let at = (i - range.start) as usize;
-            for (k, block) in blocks.iter().enumerate() {
-                let start = record_start + block.offset + j * bps as u64;
-                let bytes = (start as usize)
-                    .checked_add(take as usize * bps)
-                    .and_then(|end| self.map.get(start as usize..end))
-                    .ok_or_else(|| {
-                        ReadError::Corrupt(format!("record {record} is outside the file"))
-                    })?;
-                let samples = &mut dst[k * n + at..][..take as usize];
-                decoder.decode(bytes, bps, samples)?;
-            }
-            i += take;
-            record += 1;
-        }
-        Ok(())
-    }
 }

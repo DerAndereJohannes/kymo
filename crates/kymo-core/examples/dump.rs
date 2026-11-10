@@ -15,7 +15,8 @@
 //! - `grid{g}.i32`: for integer grids, the same samples as raw digital values (little-endian
 //!   i32, 0 in gaps); float grids have none
 //! - `events.json`: per stim channel, its events (sample and code) under the default rule
-//!   (every change to a non-zero code, none at the first sample), from a pyramid build
+//!   (every change to a non-zero code, none at the first sample), and its value changes
+//!   (sample and new value, starting with the first sample's), from a pyramid build
 //!
 //! A grid with at most N values (channels × samples, default 20 million) is dumped whole;
 //! otherwise 16 windows, the first at the start, the last at the end, the others spread
@@ -141,12 +142,18 @@ fn events_json(rec: &Recording) -> Result<String> {
                 .iter()
                 .map(|e| format!("[{}, {}]", e.sample, e.value))
                 .collect();
+            let changes: Vec<String> = s
+                .changes
+                .iter()
+                .map(|c| format!("[{}, {}]", c.sample, c.value))
+                .collect();
             let sep = if json.len() > 1 { "," } else { "" };
             let _ = write!(
                 json,
-                "{sep}\n  {{\"channel\": {}, \"events\": [{}]}}",
+                "{sep}\n  {{\"channel\": {}, \"events\": [{}], \"changes\": [{}]}}",
                 s.channel.0,
-                events.join(", ")
+                events.join(", "),
+                changes.join(", ")
             );
         }
     }

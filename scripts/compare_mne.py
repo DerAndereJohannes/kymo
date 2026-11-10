@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mne", "numpy", "pandas"]
 # ///
-"""Compare Kymo's reading of EDF/BDF, BrainVision and EEGLAB files with MNE-Python's.
+"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB and GDF files with MNE-Python's.
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
@@ -16,9 +16,9 @@ through uv:
     uv run scripts/compare_mne.py ...
 
 For each file this runs `cargo run --release -p kymo-core --example dump`, reads the
-same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision/read_raw_eeglab
-(preload=False, so large files work; BrainVision files are given by their .vhdr, EEGLAB
-datasets by their .set),
+same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision/read_raw_eeglab/
+read_raw_gdf (preload=False, so large files work; BrainVision files are given by their
+.vhdr, EEGLAB datasets by their .set),
 and compares channel names, sampling rate, start time, samples (in SI units, at float32
 precision) and annotations. It exits with status 1 if anything differs.
 
@@ -86,6 +86,29 @@ EEGLAB, where Kymo deliberately differs from MNE:
   from their names, as for BrainVision (MNE makes them EEG), and the types mag, grad and
   ref_meg as such (MNE makes them EEG too).
 
+GDF, where Kymo deliberately differs from MNE:
+- MNE reads only files whose channels share one sample type (it refuses types of
+  different sizes and misreads different types of one size), and no GDF 2 file with a
+  tag-length-value header; Kymo reads both. Such files are skipped.
+- Kymo reads the smallest value of a signed integer type (-32768 for int16) as a missing
+  sample (NaN), as GDF writes them (sample_nan.gdf); MNE scales it like any value. Where
+  Kymo has NaN, MNE's value must be that of the type's minimum.
+- MNE scales only uV in GDF 1 (labels starting with "uV", not "\u00b5V") and the codes
+  for uV and mV in GDF 2; Kymo scales every unit it knows. MNE's values of the other
+  units are compared after scaling them as Kymo does. Stim channels are unscaled in both.
+- GDF 2 stores the start time in steps of 2**-32 days (about 20 us); Kymo rounds it to
+  the coarsest of whole seconds, milliseconds and microseconds within half a step, MNE
+  to the microsecond. Start times are compared within a step.
+- Event onsets and durations count samples of the event table's rate in Kymo (the
+  highest channel rate if it is 0); MNE counts them at its sampling rate. MNE's onsets
+  and durations are compared after converting them to the event table's rate.
+- Events of mode 1, and of mode 3 with duration 0, are points in time in Kymo; MNE makes
+  them one sample long. MNE's one-sample durations are compared as 0 where Kymo's are 0.
+- Kymo leaves out events at position 0 (before the first sample) and entries of type
+  0x7FFF (sparse samples, not events); MNE keeps them. They are left out of MNE's too.
+- Channel kinds and filters are not compared (Kymo reads kinds from the labels, "EOG:1"
+  or "EOG 1", as for EDF; MNE makes every channel but stim channels EEG).
+
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
 with `read_events_table` (the snippet in the docs) equal MNE's own reading of the file;
@@ -93,6 +116,7 @@ and MNE's CSV of them (`Annotations.save`) loaded by Kymo equals Kymo's own read
 """
 
 import argparse
+import datetime
 import json
 import subprocess
 import sys
@@ -115,6 +139,88 @@ MNE_SCALED = {
     "EDF": {"\u00b5V", "\u03bcV", "\x83\xcaV", "uV", "mV", "V"},
     "BrainVision": {"V", "\u00b5V", "uV", "mV", "nV", "\u00b5S", "uS", "S"},
 }
+# GDF's type codes: size in bytes, and the smallest value of signed integer types (which
+# Kymo reads as a missing sample).
+GDF_TYPES = {
+    1: (1, -(2**7)),
+    2: (1, None),
+    3: (2, -(2**15)),
+    4: (2, None),
+    5: (4, -(2**31)),
+    6: (4, None),
+    7: (8, -(2**63)),
+    8: (8, None),
+    16: (4, None),
+    17: (8, None),
+    279: (3, -(2**23)),
+    535: (3, None),
+}
+
+# GDF types Kymo reads relative to each channel's first sample (and int32 too, unless
+# in a stim channel, since its smallest value is a missing sample).
+GDF_RELATIVE = {6, 7, 8, 17}
+
+
+def gdf_info(path):
+    """What the comparison needs from a GDF header: version, each channel's type code
+    and samples per record, whether it has a tag-length-value part, the event rate."""
+    with open(path, "rb") as f:
+        head = f.read(256)
+        version = float(head[4:8].decode("latin-1"))
+        gdf2 = version >= 1.9
+        if gdf2:
+            header_bytes = int.from_bytes(head[184:186], "little") * 256
+            ns = int.from_bytes(head[252:254], "little")
+        else:
+            header_bytes = int.from_bytes(head[184:192], "little", signed=True)
+            ns = int.from_bytes(head[252:256], "little")
+        records = int.from_bytes(head[236:244], "little", signed=True)
+        f.seek(256 + 216 * ns)  # samples per record and type follow 216 bytes of fields
+        rest = f.read(8 * ns)
+        spr = np.frombuffer(rest[: 4 * ns], "<i4")
+        types = np.frombuffer(rest[4 * ns :], "<u4")
+        record_bytes = sum(
+            GDF_TYPES.get(int(t), (0, None))[0] * int(n) for t, n in zip(types, spr)
+        )
+        event_rate = None
+        if records > 0:
+            f.seek(header_bytes + records * record_bytes)
+            table = f.read(8)
+            if len(table) == 8:
+                if version < 1.94:
+                    event_rate = int.from_bytes(table[1:4], "little")
+                else:
+                    event_rate = float(np.frombuffer(table[4:8], "<f4")[0])
+    return {
+        "version": version,
+        "types": [int(t) for t in types],
+        "spr": [int(n) for n in spr],
+        "tlv": gdf2 and header_bytes > 256 * (ns + 1),
+        "event_rate": event_rate or None,
+    }
+
+
+def mne_scales(channel, scaled, gdf_info=None):
+    """Whether MNE scales the channel's unit to SI: the units in `scaled`, or for GDF
+    (given its `gdf_info`) uV in GDF 1 and the codes for uV and mV in GDF 2."""
+    unit = channel["unit"].strip()
+    if gdf_info is None:
+        return unit in scaled
+    if channel["kind"] == "Stim":
+        return False
+    if gdf_info["version"] < 1.9:
+        return unit.startswith("uV")
+    return unit in ("\u00b5V", "mV")
+
+
+def gdf_skip_reason(info):
+    """Why MNE can't read a GDF file, if it can't."""
+    used = {t for t, n in zip(info["types"], info["spr"]) if n > 0}
+    if len(used) > 1:
+        return "channels of different sample types, which MNE doesn't read"
+    if info["tlv"]:
+        return "a tag-length-value header (GDF 2), which MNE doesn't read"
+    return None
 
 
 def repair(text):
@@ -169,9 +275,16 @@ def read_events_table(path):
     )
 
 
-def compare_annotation_files(path, raw, annotations, first_onset, tmp):
-    """Problems with annotation files saved by one side and loaded by the other."""
+def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=None):
+    """Problems with annotation files saved by one side and loaded by the other. With
+    `sample`, Kymo's points in time (duration 0) match MNE's durations of one sample of
+    that length (BrainVision's and GDF's)."""
     problems = []
+
+    def same_duration(ours, theirs, tolerance):
+        point = sample is not None and ours == 0 and abs(theirs - sample) < 1e-9
+        return abs(ours - theirs) <= tolerance or point
+
     table = tmp / "kymo.tsv"
     cargo(
         "run",
@@ -198,7 +311,7 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp):
         for k in range(len(got)):
             if (
                 abs(got.onset[k] - theirs.onset[k]) > 1e-9
-                or abs(got.duration[k] - theirs.duration[k]) > 1e-9
+                or not same_duration(got.duration[k], theirs.duration[k], 1e-9)
                 or got.description[k] != theirs.description[k]
             ):
                 problems.append(
@@ -243,7 +356,11 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp):
     else:
         for a, b in zip(got, want):
             # MNE writes onsets in milliseconds.
-            if abs(a[0] - b[0]) > 5e-4 or abs(a[1] - b[1]) > 1e-6 or a[2] != b[2]:
+            if (
+                abs(a[0] - b[0]) > 5e-4
+                or not same_duration(b[1], a[1], 1e-6)
+                or a[2] != b[2]
+            ):
                 problems.append(f"MNE's CSV in Kymo: {a}, Kymo has {b}")
                 break
     return problems
@@ -268,8 +385,17 @@ def compare(path, max_values=None, annotation_files=False):
 
         brainvision = header["format"] == "BrainVision"
         eeglab = header["format"] == "EEGLAB"
+        gdf = header["format"] == "GDF"
+        if gdf:
+            info = gdf_info(path)
+            reason = gdf_skip_reason(info)
+            if reason:
+                print(f"SKIPPED: {path}\n  {reason}")
+                return None
         try:
-            if brainvision:
+            if gdf:
+                raw = mne.io.read_raw_gdf(path, preload=False, verbose="error")
+            elif brainvision:
                 raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
             elif eeglab:
                 raw = mne.io.read_raw_eeglab(
@@ -315,12 +441,21 @@ def compare(path, max_values=None, annotation_files=False):
 
         if header["start_time"] is not None and raw.info["meas_date"] is not None:
             date = raw.info["meas_date"].replace(tzinfo=None)
-            if brainvision:
+            if gdf:
+                # GDF 2 stores the time in steps of 2**-32 days (about 20 us), which Kymo
+                # rounds to the coarsest whole unit within half a step, MNE to the
+                # microsecond.
+                ours = datetime.datetime.fromisoformat(header["start_time"])
+                if abs((ours - date).total_seconds()) > 2**-32 * 86400:
+                    problems.append(
+                        f"start time: Kymo {header['start_time']}, MNE {date}"
+                    )
+            elif brainvision:
                 # Kymo prints microseconds without trailing zeros.
                 theirs = date.isoformat(timespec="microseconds").rstrip("0").rstrip(".")
             else:
                 theirs = date.replace(microsecond=0).isoformat()
-            if theirs != header["start_time"]:
+            if not gdf and theirs != header["start_time"]:
                 problems.append(
                     f"start time: Kymo {header['start_time']}, MNE {theirs}"
                 )
@@ -339,10 +474,11 @@ def compare(path, max_values=None, annotation_files=False):
             # Units Kymo scales and MNE doesn't: MNE's values are in the file's unit.
             # MNE scales every EEGLAB channel.
             scaled = MNE_SCALED["BrainVision" if brainvision else "EDF"]
+
             unscaled = [
                 not eeglab
                 and channels[c]["to_si"] is not None
-                and channels[c]["unit"].strip() not in scaled
+                and not mne_scales(channels[c], scaled, info if gdf else None)
                 for c in ids
             ]
             theirs_scale = np.where(unscaled, scale, 1.0)
@@ -369,12 +505,19 @@ def compare(path, max_values=None, annotation_files=False):
                     f"unit without SI factor, compared unscaled: {', '.join(unknown)}"
                 )
             stim = [
-                header["format"].startswith("BDF") and names[c].lower() in STIM_NAMES
+                (header["format"].startswith("BDF") or gdf)
+                and names[c].lower() in STIM_NAMES
+                for c in ids
+            ]
+            # MNE masks the physical value of GDF stim channels; BDF's are unscaled.
+            stim_scaling = [
+                (channels[c]["gain"], channels[c]["offset"]) if gdf else (1.0, 0.0)
                 for c in ids
             ]
             if any(stim):
+                what = "int(physical)" if gdf else "digital"
                 notes.append(
-                    "BDF stim channel(s) compared as digital & 0x1FFFF, as MNE reads "
+                    f"stim channel(s) compared as {what} & 0x1FFFF, as MNE reads "
                     "them: " + ", ".join(names[c] for c, s in zip(ids, stim) if s)
                 )
             # The reference value of float64 samples, in SI units (0 for other formats).
@@ -386,6 +529,33 @@ def compare(path, max_values=None, annotation_files=False):
                     for c in ids
                 ]
             )
+            if gdf:
+                # Types read relative to the first sample: Kymo's offset holds it, on top
+                # of the file's offset (MNE's).
+                extras = raw._raw_extras[0]
+                data_channels = [k for k, n in enumerate(info["spr"]) if n > 0]
+                for k, c in enumerate(ids):
+                    t = info["types"][data_channels[c]]
+                    relative = t in GDF_RELATIVE or (
+                        t == 5 and channels[c]["kind"] != "Stim"
+                    )
+                    if relative:
+                        reference[k] = (
+                            abs(channels[c]["offset"]) * scale[k]
+                            + abs(extras["offsets"][c] * extras["units"][c])
+                            * theirs_scale[k]
+                        )
+            # GDF: MNE's value of a sample Kymo reads as missing, per channel (None for
+            # types without one, and for stim channels).
+            missing = [None] * len(ids)
+            if gdf:
+                for k, c in enumerate(ids):
+                    t = info["types"][data_channels[c]]
+                    minimum = GDF_TYPES.get(t, (0, None))[1]
+                    if minimum is not None and channels[c]["kind"] != "Stim":
+                        missing[k] = (
+                            minimum * extras["cal"][c] + extras["offsets"][c]
+                        ) * extras["units"][c]
             p, w, n = compare_grid(
                 raw,
                 tmp,
@@ -398,17 +568,29 @@ def compare(path, max_values=None, annotation_files=False):
                 stim,
                 names,
                 reference,
+                missing,
+                notes,
+                stim_scaling,
             )
             problems += p
             worst = max(worst, w)
             compared += n
 
         problems += compare_annotations(
-            raw, annotations, header["grids"][0]["start"], header["format"]
+            raw,
+            annotations,
+            header["grids"][0]["start"],
+            header["format"],
+            (info["event_rate"] or fmax) if gdf else None,
         )
         if annotation_files:
             problems += compare_annotation_files(
-                path, raw, annotations, header["grids"][0]["start"], tmp
+                path,
+                raw,
+                annotations,
+                header["grids"][0]["start"],
+                tmp,
+                1 / raw.info["sfreq"] if brainvision or gdf else None,
             )
         events = json.loads((tmp / "events.json").read_text())
         if eeglab:
@@ -436,9 +618,22 @@ def compare(path, max_values=None, annotation_files=False):
 
 
 def compare_grid(
-    raw, tmp, g, grid, windows, ids, scale, theirs_scale, stim, names, reference
+    raw,
+    tmp,
+    g,
+    grid,
+    windows,
+    ids,
+    scale,
+    theirs_scale,
+    stim,
+    names,
+    reference,
+    missing,
+    notes,
+    stim_scaling,
 ):
-    problems, worst, compared = [], 0.0, 0
+    problems, worst, compared, n_missing = [], 0.0, 0, 0
     data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
     if grid["sample_type"] != "F32":
         digital = np.fromfile(tmp / f"grid{g}.i32", dtype="<i4")
@@ -455,11 +650,19 @@ def compare_grid(
             data[offset : offset + len(ids) * n].reshape(len(ids), n).astype(np.float64)
         )
         if stim.any():
-            raw_values = digital[offset : offset + len(ids) * n].reshape(len(ids), n)
+            if grid["sample_type"] != "F32":
+                raw_values = digital[offset : offset + len(ids) * n].reshape(
+                    len(ids), n
+                )
+                gain, shift = np.array(stim_scaling).T[:, :, None]
+                physical = raw_values * gain + shift
+            else:
+                physical = np.nan_to_num(block)  # float grids have no digital values
+            values = np.trunc(physical).astype(np.int64)  # as MNE's int()
             block[stim] = np.where(
                 np.isnan(block[stim]),
                 np.nan,
-                np.bitwise_and(raw_values[stim], STIM_MASK),
+                np.bitwise_and(values[stim], STIM_MASK),
             )
         offset += len(ids) * n
         idx = np.arange(a, b)
@@ -473,8 +676,23 @@ def compare_grid(
         mne_idx = joined_start[seg[present]] + idx[present] - segments[seg[present], 0]
         lo, hi = int(mne_idx.min()), int(mne_idx.max()) + 1
         theirs = raw.get_data(picks=ids, start=lo, stop=hi)[:, mne_idx - lo]
-        theirs = theirs * theirs_scale[:, None]
         ours = block[:, present] * scale[:, None]
+        for k, value in enumerate(missing):
+            if value is None:
+                continue
+            # Kymo's missing samples: MNE must have the type minimum's value there.
+            gone = np.isnan(ours[k]) & ~np.isnan(theirs[k])
+            wrong = gone & ~np.isclose(theirs[k], value, rtol=RTOL, atol=0)
+            if wrong.any():
+                col = np.argmax(wrong)
+                problems.append(
+                    f"window {a}..{b}: Kymo has NaN in {names[ids[k]]} at sample "
+                    f"{idx[present][col]}, MNE {theirs[k, col]!r} (a missing sample "
+                    f"would be {value!r})"
+                )
+            theirs[k, gone] = np.nan
+            n_missing += int(gone.sum())
+        theirs = theirs * theirs_scale[:, None]
         if (np.isnan(ours) != np.isnan(theirs)).any():
             problems.append(f"window {a}..{b}: NaNs differ between Kymo and MNE")
         error = np.abs(np.nan_to_num(ours) - np.nan_to_num(theirs))
@@ -492,6 +710,10 @@ def compare_grid(
         if nonzero.any():
             worst = max(worst, float((error[nonzero] / np.abs(theirs[nonzero])).max()))
         compared += ours.size
+    if n_missing:
+        notes.append(
+            f"{n_missing} missing sample(s) (NaN in Kymo, the type's minimum in MNE)"
+        )
     return problems, worst, compared
 
 
@@ -499,6 +721,7 @@ def compare_events(raw, header, events, fmax, notes):
     """Compares Kymo's stim events with mne.find_events; returns problems and count."""
     problems, count = [], 0
     bdf = header["format"].startswith("BDF")
+    gdf = header["format"] == "GDF"
     for entry in events:
         c = entry["channel"]
         channel = header["channels"][c]
@@ -509,6 +732,17 @@ def compare_events(raw, header, events, fmax, notes):
             )
             continue
         ours = np.array(entry["events"], dtype=np.int64).reshape(-1, 2)
+        if gdf:
+            # MNE masks GDF stim channels' physical values: events of the masked values,
+            # under the same rule (every change to a non-zero code, none at the start).
+            masked, previous = [], None
+            for sample, value in entry["changes"]:
+                code = int(value * channel["gain"] + channel["offset"])
+                code &= STIM_MASK
+                if previous is not None and code != previous and code != 0:
+                    masked.append((sample, code))
+                previous = code
+            ours = np.array(masked, dtype=np.int64).reshape(-1, 2)
         ours = ours[ours[:, 1] > 0]
         # Each sample's position in MNE's joined data (gaps dropped).
         segments = np.array(grid["segments"], dtype=np.int64).reshape(-1, 2)
@@ -564,11 +798,29 @@ def data_end(raw, first_onset):
     return first_onset + raw.n_times / raw.info["sfreq"]
 
 
-def compare_annotations(raw, annotations, first_onset, format_name):
+def compare_annotations(raw, annotations, first_onset, format_name, event_rate=None):
     ours = cropped(annotations, data_end(raw, first_onset))
     theirs = zip(
         raw.annotations.onset, raw.annotations.duration, raw.annotations.description
     )
+    if format_name == "GDF":
+        # Kymo's rules for events; see the docstring.
+        sfreq = raw.info["sfreq"]
+        theirs = [
+            (o * sfreq / event_rate, d * sfreq / event_rate, s)
+            for o, d, s in theirs
+            if o >= 0 and s != str(0x7FFF)
+        ]
+        ours = sorted(ours, key=lambda a: (a[0], a[2], a[1]))
+        theirs = sorted(theirs, key=lambda a: (a[0], a[2], a[1]))
+        if len(ours) != len(theirs):
+            return [f"annotation count: Kymo {len(ours)}, MNE {len(theirs)}"]
+        for k, (a, b) in enumerate(zip(ours, theirs)):
+            point = a[1] == 0 and abs(b[1] - 1 / event_rate) < 1e-9
+            same_duration = abs(a[1] - b[1]) <= 1e-6 or point
+            if abs(a[0] - b[0]) > 1e-6 or not same_duration or a[2] != b[2]:
+                return [f"annotation {k} differs: Kymo {a}, MNE {b}"]
+        return []
     if format_name == "EEGLAB":
         # Kymo's rules for events; see the docstring.
         theirs = [(o, 0.0 if np.isnan(d) else d, s) for o, d, s in theirs if o >= 0]
@@ -616,6 +868,9 @@ def testgen_files(directory):
         ("eeglab-fdt", "set", []),
         ("eeglab-set-single", "set", []),
         ("eeglab-set-double", "set", []),
+        ("gdf1-float64", "gdf", []),
+        ("gdf2-int32", "gdf", []),
+        ("gdf2-mixed", "gdf", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -642,7 +897,7 @@ def find_files(arguments):
             files += sorted(
                 p
                 for p in a.rglob("*")
-                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set")
+                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set", ".gdf")
             )
         else:
             files.append(a)
@@ -654,7 +909,7 @@ def main():
     parser.add_argument(
         "paths",
         nargs="*",
-        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set) files or directories",
+        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF files or directories",
     )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
@@ -681,7 +936,7 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF, BDF, BrainVision or EEGLAB files found")
+            sys.exit("no EDF, BDF, BrainVision, EEGLAB or GDF files found")
         skipped = 0
         for path in files:
             if path.suffix.lower() == ".set" and is_mat_v73(path):

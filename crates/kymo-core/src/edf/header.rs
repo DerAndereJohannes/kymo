@@ -371,7 +371,7 @@ fn usable_records(
 /// TODO(later): also recognize the type prefix without a space ("EOG-L", "EMG_chin",
 /// "ECGII"), and decide whether the channel name keeps the full label or drops the prefix
 /// ("L"). Until then such channels are EEG.
-fn kind(label: &str, unit: &Unit) -> ChannelKind {
+pub(crate) fn kind(label: &str, unit: &Unit) -> ChannelKind {
     match unit.quantity() {
         Some(Quantity::MagneticField) => return ChannelKind::Mag,
         Some(Quantity::FieldGradient) => return ChannelKind::Grad,

@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::{OpenError, Opened, brainvision, edf, eeglab};
+use crate::{OpenError, Opened, brainvision, edf, eeglab, gdf};
 
 /// Bytes read to recognize a format: enough for MATLAB's 116-byte text header.
 const HEAD: u64 = 128;
@@ -69,11 +69,10 @@ fn is_brainvision(head: &[u8]) -> bool {
 /// Why a recognized format can't be opened (yet).
 fn unsupported(format: Format) -> &'static str {
     match format {
-        Format::Edf | Format::BrainVision | Format::Mat => {
-            unreachable!("EDF, BDF, BrainVision and EEGLAB are read")
+        Format::Edf | Format::BrainVision | Format::Mat | Format::Gdf => {
+            unreachable!("EDF, BDF, BrainVision, EEGLAB and GDF are read")
         }
-        Format::Gdf => "GDF files are not supported yet",
-        Format::OtherGdf => "only GDF 1 and 2 files will be supported",
+        Format::OtherGdf => "only GDF 1 and 2 files are supported",
         Format::Fiff => "FIFF files are not supported yet",
         Format::Xdf => "XDF files are not supported yet",
         Format::MatHdf5 => {
@@ -115,7 +114,7 @@ fn header_sibling(path: &Path) -> Option<PathBuf> {
 ///
 /// A data or marker file whose content is not recognized (BrainVision's `.eeg` and `.vmrk`,
 /// EEGLAB's `.fdt`) opens the header file beside it, if there is one. EDF and BDF (with
-/// their + variants) and BrainVision are read for now.
+/// their + variants), BrainVision, EEGLAB and GDF 1 and 2 are read for now.
 pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let (path, format) = match detect(&head(path)?) {
         Some(format) => (path.to_owned(), format),
@@ -128,8 +127,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 _ => {
                     return Err(OpenError::Unsupported {
                         path: path.to_owned(),
-                        reason: "not a supported file format (EDF, BDF, BrainVision and EEGLAB \
-                                 are read)"
+                        reason: "not a supported file format (EDF, BDF, BrainVision, EEGLAB \
+                                 and GDF are read)"
                             .into(),
                     });
                 }
@@ -140,6 +139,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         Format::Edf => edf::open(&path),
         Format::BrainVision => brainvision::open(&path),
         Format::Mat => eeglab::open(&path),
+        Format::Gdf => gdf::open(&path),
         other => Err(OpenError::Unsupported {
             path,
             reason: unsupported(other).into(),

@@ -1,9 +1,10 @@
-//! Synthetic EDF/BDF, BrainVision and EEGLAB files for tests and benchmarks.
+//! Synthetic EDF/BDF, BrainVision, EEGLAB and GDF files for tests and benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
 //! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
-//! BrainVision, events in EEGLAB). [`write()`] streams it to disk. Records are EDF's data
-//! records; formats without them (BrainVision, EEGLAB) only take their length from them.
+//! BrainVision, events in EEGLAB and GDF). [`write()`] streams it to disk. Records are
+//! EDF's and GDF's data records; formats without them (BrainVision, EEGLAB) only take their
+//! length from them.
 //! The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
@@ -16,6 +17,7 @@
 
 mod brainvision;
 mod eeglab;
+mod gdf;
 mod header;
 pub mod mat;
 mod signal;
@@ -24,6 +26,7 @@ mod write;
 
 use std::ops::Range;
 
+pub use gdf::MANUFACTURER as GDF_MANUFACTURER;
 pub use temp::{TempDir, TempFile};
 pub use write::{write, write_to};
 
@@ -47,6 +50,117 @@ pub enum Format {
     /// as physical values (µV), `digital × gain`; no gaps; a "record" is only a unit of
     /// length. Annotations are events.
     Eeglab(Storage, Layout),
+    /// GDF: data records as in EDF, each channel in its own sample type
+    /// ([`ChannelSpec::stored`]), then an event table of the annotations (their texts are
+    /// the type codes). No gaps.
+    Gdf(GdfVersion),
+}
+
+/// The GDF version written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GdfVersion {
+    /// GDF 1.25: text units, prefilters as text, events of mode 1 (points in time).
+    V1,
+    /// GDF 2.20: unit codes, filters as numbers, events of mode 3 (with durations).
+    V2,
+    /// GDF 2.20 with a tag-length-value part in the header (the manufacturer), which MNE
+    /// doesn't read.
+    V2Tagged,
+}
+
+/// A GDF channel's sample type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Stored {
+    I8,
+    U8,
+    I16,
+    U16,
+    I24,
+    U24,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+}
+
+impl Stored {
+    pub const ALL: [Stored; 12] = [
+        Stored::I8,
+        Stored::U8,
+        Stored::I16,
+        Stored::U16,
+        Stored::I24,
+        Stored::U24,
+        Stored::I32,
+        Stored::U32,
+        Stored::I64,
+        Stored::U64,
+        Stored::F32,
+        Stored::F64,
+    ];
+
+    /// Bytes per sample.
+    pub fn size(self) -> usize {
+        match self {
+            Stored::I8 | Stored::U8 => 1,
+            Stored::I16 | Stored::U16 => 2,
+            Stored::I24 | Stored::U24 => 3,
+            Stored::I32 | Stored::U32 | Stored::F32 => 4,
+            Stored::I64 | Stored::U64 | Stored::F64 => 8,
+        }
+    }
+
+    /// GDF's type code.
+    pub fn code(self) -> u32 {
+        match self {
+            Stored::I8 => 1,
+            Stored::U8 => 2,
+            Stored::I16 => 3,
+            Stored::U16 => 4,
+            Stored::I32 => 5,
+            Stored::U32 => 6,
+            Stored::I64 => 7,
+            Stored::U64 => 8,
+            Stored::F32 => 16,
+            Stored::F64 => 17,
+            Stored::I24 => 279,
+            Stored::U24 => 535,
+        }
+    }
+
+    /// The digital values a channel of this type may use: within `i32` (the truth
+    /// function's type), from 0 for unsigned types, exact integers for float32, and never
+    /// a signed type's smallest value, which GDF readers take as a missing sample.
+    pub fn limits(self) -> (i32, i32) {
+        match self {
+            Stored::I8 => (-127, 127),
+            Stored::U8 => (0, 255),
+            Stored::I16 => (-32_767, 32_767),
+            Stored::U16 => (0, 65_535),
+            Stored::I24 => (-8_388_607, 8_388_607),
+            Stored::U24 => (0, 16_777_215),
+            Stored::I32 => (-i32::MAX, i32::MAX),
+            Stored::U32 | Stored::U64 => (0, i32::MAX),
+            Stored::I64 | Stored::F64 => (i32::MIN, i32::MAX),
+            Stored::F32 => (-16_777_216, 16_777_216),
+        }
+    }
+
+    /// Writes `value` (within [`limits`](Self::limits)) little-endian.
+    pub fn put(self, value: i32, out: &mut [u8]) {
+        let v = i64::from(value);
+        match self {
+            Stored::I8 | Stored::U8 => out[0] = v as u8,
+            Stored::I16 | Stored::U16 => out.copy_from_slice(&(v as u16).to_le_bytes()),
+            Stored::I24 | Stored::U24 => out.copy_from_slice(&(v as u32).to_le_bytes()[..3]),
+            Stored::I32 | Stored::U32 => out.copy_from_slice(&(v as u32).to_le_bytes()),
+            Stored::I64 | Stored::U64 => out.copy_from_slice(&v.to_le_bytes()),
+            Stored::F32 => out.copy_from_slice(&(value as f32).to_le_bytes()),
+            Stored::F64 => out.copy_from_slice(&f64::from(value).to_le_bytes()),
+        }
+    }
 }
 
 /// Where and how an EEGLAB dataset stores its samples.
@@ -132,6 +246,13 @@ impl Format {
         Format::BrainVision(Orientation::Vectorized, Binary::Float32),
     ];
 
+    /// Every GDF version.
+    pub const GDF: [Format; 3] = [
+        Format::Gdf(GdfVersion::V1),
+        Format::Gdf(GdfVersion::V2),
+        Format::Gdf(GdfVersion::V2Tagged),
+    ];
+
     /// Every EEGLAB storage and layout.
     pub const EEGLAB: [Format; 6] = [
         Format::Eeglab(Storage::Fdt, Layout::Struct),
@@ -153,7 +274,12 @@ impl Format {
             Format::BdfPlusD => "BDF+D",
             Format::BrainVision(..) => "BrainVision",
             Format::Eeglab(..) => "EEGLAB",
+            Format::Gdf(..) => "GDF",
         }
+    }
+
+    pub fn is_gdf(self) -> bool {
+        matches!(self, Format::Gdf(..))
     }
 
     pub fn is_bdf(self) -> bool {
@@ -168,9 +294,9 @@ impl Format {
         matches!(self, Format::Eeglab(..))
     }
 
-    /// EDF or BDF, with or without +: has data records.
+    /// EDF or BDF, with or without +.
     pub fn is_edf(self) -> bool {
-        !self.is_brainvision() && !self.is_eeglab()
+        !self.is_brainvision() && !self.is_eeglab() && !self.is_gdf()
     }
 
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
@@ -189,12 +315,14 @@ impl Format {
     /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's
     /// and EEGLAB's are `digital × gain`.
     pub fn has_offset(self) -> bool {
-        self.is_edf()
+        self.is_edf() || self.is_gdf()
     }
 
-    /// Bytes per stored sample.
+    /// Bytes per stored sample; for GDF, of the default sample type (int16, see
+    /// [`ChannelSpec::stored`]).
     pub fn bytes_per_sample(self) -> usize {
         match self {
+            Format::Gdf(_) => 2,
             Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
             Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
             Format::Eeglab(Storage::Double, _) => 8,
@@ -214,14 +342,17 @@ impl Format {
             Format::BrainVision(_, Binary::Float32) => (-16_777_216, 16_777_216),
             // Stored as physical values, so any digital range.
             Format::Eeglab(..) => (i32::MIN, i32::MAX),
+            // The default type, int16 (see `ChannelSpec::stored`).
+            Format::Gdf(_) => Stored::I16.limits(),
             f if f.is_bdf() => (-8_388_608, 8_388_607),
             _ => (-32_768, 32_767),
         }
     }
 
-    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"` or `"set"`.
+    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"` or `"gdf"`.
     pub fn extension(self) -> &'static str {
         match self {
+            Format::Gdf(_) => "gdf",
             Format::BrainVision(..) => "vhdr",
             Format::Eeglab(..) => "set",
             f if f.is_bdf() => "bdf",
@@ -277,6 +408,9 @@ pub struct ChannelSpec {
     /// The channel's type where the format stores one (EEGLAB's `chanlocs.type`, MNE's type
     /// names); empty writes none.
     pub kind: String,
+    /// GDF: the sample type, `None` for int16. Its [limits](Stored::limits) bound the
+    /// digital range.
+    pub stored: Option<Stored>,
 }
 
 impl ChannelSpec {
@@ -286,8 +420,12 @@ impl ChannelSpec {
     ///
     /// BrainVision channels get 0.1 µV per step and no offset: int16 over its whole range,
     /// uint16 from 0 (so its signal sits at 3276.75 µV), int32 and float32 over BDF's range.
-    /// EEGLAB channels too, stored as the physical values.
+    /// EEGLAB channels too, stored as the physical values. GDF channels are int16 at 0.1 µV
+    /// per step (see [`ChannelSpec::gdf`] for the other types).
     pub fn eeg(label: impl Into<String>, samples_per_record: u32, format: Format) -> Self {
+        if format.is_gdf() {
+            return ChannelSpec::gdf(label, samples_per_record, Stored::I16);
+        }
         let (digital_min, digital_max, physical_min, physical_max) = match format {
             Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
@@ -310,6 +448,38 @@ impl ChannelSpec {
             trigger: false,
             amplitude: EEG_AMPLITUDE,
             kind: String::new(),
+            stored: None,
+        }
+    }
+
+    /// A GDF EEG channel of sample type `stored`, over the type's whole
+    /// [range](Stored::limits), with physical values centred on 0 µV (so unsigned types get
+    /// an offset): about 0.25 µV per step for 8-bit types, 0.1 µV for 16-bit ones and
+    /// float32, 1/32 µV for 24-bit ones and 2^-13 µV for wider ones.
+    pub fn gdf(label: impl Into<String>, samples_per_record: u32, stored: Stored) -> Self {
+        let (lo, hi) = stored.limits();
+        let gain = match stored {
+            Stored::I8 | Stored::U8 => 0.25,
+            Stored::I16 | Stored::U16 | Stored::F32 => 0.1,
+            Stored::I24 | Stored::U24 => 0.031_25,
+            _ => 1.0 / 8192.0,
+        };
+        let middle = (f64::from(lo) + f64::from(hi)) / 2.0;
+        let middle = if lo < 0 { 0.0 } else { middle.floor() };
+        ChannelSpec {
+            label: label.into(),
+            transducer: "AgAgCl electrode".into(),
+            dimension: "uV".into(),
+            physical_min: (f64::from(lo) - middle) * gain,
+            physical_max: (f64::from(hi) - middle) * gain,
+            digital_min: lo,
+            digital_max: hi,
+            prefilter: "HP:0.1Hz LP:100Hz".into(),
+            samples_per_record,
+            trigger: false,
+            amplitude: EEG_AMPLITUDE,
+            kind: String::new(),
+            stored: Some(stored),
         }
     }
 
@@ -343,6 +513,7 @@ impl ChannelSpec {
             trigger: true,
             amplitude: 0.0,
             kind: if format.is_eeglab() { "STIM" } else { "" }.into(),
+            stored: None,
         }
     }
 
@@ -557,6 +728,9 @@ impl Spec {
 
     /// Size of the file in bytes; for BrainVision and EEGLAB, of the samples.
     pub fn file_size(&self) -> Result<u64, Error> {
+        if self.format.is_gdf() {
+            return gdf::file_size(self);
+        }
         if !self.format.is_edf() {
             self.validate()?;
             let samples = self.len(0) * self.channels.len() as u64;
@@ -595,8 +769,8 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 
 mod presets {
     use super::{
-        Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Layout, Orientation, Spec, Storage,
-        Tal,
+        Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, GdfVersion, Layout, Orientation, Spec,
+        Storage, Stored, Tal,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -663,6 +837,21 @@ mod presets {
             "EEGLAB, float64 samples inside the .set, 8 channels at 1000 Hz, 1 min, a 1 V DC \
              channel and a stim channel, events",
         ),
+        (
+            "gdf1-float64",
+            "GDF 1.25, float64, 7 channels at 256/128 Hz in records of 0.25 s, 1 min, \
+             labels with types (EEG:Fz, EOG:L), a 1 V DC channel, a STATUS channel, events",
+        ),
+        (
+            "gdf2-int32",
+            "GDF 2.20, int32, 8 channels at 500 Hz (EEG, ECG in mV, SpO2 in %, a trigger), \
+             1 min, events with durations",
+        ),
+        (
+            "gdf2-mixed",
+            "GDF 2.20 with a tag-length-value header, a channel of each of the 12 sample \
+             types at 256 or 128 Hz, 1 min, events with durations (MNE reads neither)",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -680,6 +869,9 @@ mod presets {
             "eeglab-fdt" => eeglab_fdt(),
             "eeglab-set-single" => eeglab_set_single(),
             "eeglab-set-double" => eeglab_set_double(),
+            "gdf1-float64" => gdf1_float64(),
+            "gdf2-int32" => gdf2_int32(),
+            "gdf2-mixed" => gdf2_mixed(),
             _ => return None,
         };
         Some(spec)
@@ -1023,6 +1215,119 @@ mod presets {
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = eeglab_events(60, 1000);
         spec.seed = 11;
+        spec
+    }
+
+    /// Events every 1.5 s on whole samples of `rate`, with GDF's codes for trial starts
+    /// (768), cues (769, 770), a rejected trial (1023) and a new segment (32766), some
+    /// with a duration (if `durations`).
+    fn gdf_events(seconds: u32, rate: u32, durations: bool) -> Vec<Tal> {
+        (0..seconds * 2 / 3)
+            .map(|k| {
+                let onset = f64::from(k * 3 * rate / 2 + k % 5) / f64::from(rate);
+                let (code, duration) = match k % 5 {
+                    0 => (768, 0.5),
+                    1 => (769, 1.25),
+                    2 => (770, 0.0),
+                    3 => (1023, 3.0),
+                    _ => (32766, 0.0),
+                };
+                Tal {
+                    onset,
+                    duration: durations.then_some(duration),
+                    texts: vec![code.to_string()],
+                }
+            })
+            .collect()
+    }
+
+    fn gdf1_float64() -> Spec {
+        let f = Format::Gdf(GdfVersion::V1);
+        let typed = |label: &str, spr: u32| ChannelSpec::gdf(label, spr, Stored::F64);
+        let channels = vec![
+            typed("EEG:Fz", 64),
+            typed("EEG:Cz", 64),
+            typed("EEG:Pz", 64),
+            typed("EOG:L", 64),
+            ChannelSpec {
+                // A large DC offset, 1 V at 0.1 µV per step; float64 keeps it, and kymo
+                // keeps it through the channel's reference value.
+                label: "DC".into(),
+                digital_min: 9_995_000,
+                digital_max: 10_005_000,
+                physical_min: 999_500.0,
+                physical_max: 1_000_500.0,
+                ..typed("", 64)
+            },
+            ChannelSpec {
+                dimension: "mV".into(),
+                amplitude: 0.4,
+                physical_min: -100.0,
+                physical_max: 100.0,
+                ..typed("ECG", 32)
+            },
+            ChannelSpec {
+                label: "STATUS".into(),
+                stored: Some(Stored::F64),
+                ..ChannelSpec::trigger(64, f)
+            },
+        ];
+        let mut spec = Spec::new(f, channels, 0.25, 240);
+        spec.annotations = gdf_events(60, 256, false);
+        spec.seed = 12;
+        spec
+    }
+
+    fn gdf2_int32() -> Spec {
+        let f = Format::Gdf(GdfVersion::V2);
+        let typed = |label: &str| ChannelSpec::gdf(label, 500, Stored::I32);
+        let mut channels: Vec<ChannelSpec> = ["Fp1", "Fz", "Cz", "Pz", "Oz"]
+            .iter()
+            .map(|l| typed(l))
+            .collect();
+        channels.push(ChannelSpec {
+            dimension: "mV".into(),
+            amplitude: 0.4,
+            physical_min: -100.0,
+            physical_max: 100.0,
+            ..typed("ECG")
+        });
+        channels.push(ChannelSpec {
+            dimension: "%".into(),
+            prefilter: "LP:1Hz".into(),
+            amplitude: 5.0,
+            physical_min: -200.0,
+            physical_max: 200.0,
+            ..typed("SpO2")
+        });
+        channels.push(ChannelSpec {
+            stored: Some(Stored::I32),
+            ..ChannelSpec::trigger(500, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.start = jiff::civil::date(2025, 6, 30).at(23, 59, 58, 250_000_000);
+        spec.annotations = gdf_events(60, 500, true);
+        spec.seed = 13;
+        spec
+    }
+
+    fn gdf2_mixed() -> Spec {
+        let f = Format::Gdf(GdfVersion::V2Tagged);
+        let mut channels: Vec<ChannelSpec> = Stored::ALL
+            .iter()
+            .map(|&stored| {
+                // 8-bit types at half the rate.
+                let spr = if stored.size() == 1 { 128 } else { 256 };
+                ChannelSpec::gdf(format!("{stored:?}"), spr, stored)
+            })
+            .collect();
+        channels.push(ChannelSpec {
+            stored: Some(Stored::U16),
+            ..ChannelSpec::trigger(256, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = gdf_events(60, 256, true);
+        spec.seed = 14;
         spec
     }
 }

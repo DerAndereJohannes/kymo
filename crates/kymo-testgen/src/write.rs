@@ -107,16 +107,19 @@ pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
     if spec.format.is_eeglab() {
         return crate::eeglab::write(spec, path.as_ref());
     }
+    if spec.format.is_gdf() {
+        return crate::gdf::write(spec, path.as_ref());
+    }
     let file = File::create(path)?;
     write_to(spec, BufWriter::with_capacity(1 << 20, file))
 }
 
 /// Writes `spec` to `out`. EDF/BDF only: BrainVision and EEGLAB need [`write()`], as they
-/// write several files.
+/// write several files, and so does GDF.
 pub fn write_to<W: Write>(spec: &Spec, mut out: W) -> Result<(), Error> {
     if !spec.format.is_edf() {
         return Err(Error::Invalid(format!(
-            "{} writes several files; use write() with a path",
+            "{} is written by write() with a path",
             spec.format.name()
         )));
     }

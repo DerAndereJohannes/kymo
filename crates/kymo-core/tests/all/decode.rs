@@ -79,25 +79,35 @@ proptest! {
         padding in 0..6usize,
         bytes in proptest::collection::vec(any::<u8>(), 40 * 14),
         reference in prop_oneof![Just(0.0), -1e9..1e9f64, Just(f64::NAN)],
+        nan_minimum in any::<bool>(),
     ) {
         let size = encoding.size();
         let stride = size + padding;
-        let decoder = Decoder::new(encoding, order).with_reference(reference);
-        let used = if encoding.uses_reference() && reference.is_finite() { reference } else { 0.0 };
+        let decoder = Decoder::new(encoding, order);
+        let decoder = if nan_minimum { decoder.with_nan_minimum() } else { decoder };
+        let decoder = decoder.with_reference(reference);
+        let signed = matches!(encoding, Encoding::I8 | Encoding::I16 | Encoding::I24 | Encoding::I32 | Encoding::I64);
+        let missing = nan_minimum && signed;
+        prop_assert_eq!(decoder.nan_minimum(), missing);
+        let uses = encoding.uses_reference() || (missing && encoding == Encoding::I32);
+        prop_assert_eq!(decoder.uses_reference(), uses);
+        let used = if uses && reference.is_finite() { reference } else { 0.0 };
         prop_assert_eq!(decoder.reference(), used);
         // Exactly as many bytes as the samples need: no padding after the last one.
         let src = &bytes[..if n == 0 { 0 } else { stride * (n - 1) + size }];
         let got = decoded(&decoder, src, stride, n).unwrap();
         for (i, &g) in got.iter().enumerate() {
             let value = stored(encoding, order, &src[i * stride..]);
+            let minimum = -(2f64.powi(8 * size as i32 - 1));
+            let value = if missing && value == minimum { f64::NAN } else { value };
             prop_assert!(same(decoder.value(&src[i * stride..]).unwrap(), value));
-            let want = match encoding.native() {
-                SampleType::F32 if encoding.uses_reference() => f64::from((value - used) as f32),
+            let want = match decoder.native() {
+                SampleType::F32 if uses => f64::from((value - used) as f32),
                 SampleType::F32 => f64::from(value as f32),
                 _ => value,
             };
             prop_assert!(same(g, want), "{:?} {:?} sample {}: {} != {}", encoding, order, i, g, want);
-            if encoding.native() != SampleType::F32 {
+            if decoder.native() != SampleType::F32 {
                 // Integers decode exactly, so native + reference is the stored value.
                 prop_assert_eq!(g + decoder.reference(), value);
             }
@@ -149,6 +159,63 @@ fn native_types_and_references() {
             [U32, I64, U64, F64].contains(&e),
             "{e:?}"
         );
+    }
+}
+
+/// Random bytes rarely hold a type's smallest value, so each signed encoding gets it here:
+/// with a NaN minimum it reads as NaN, its neighbours as they are; without, as a number.
+#[test]
+fn the_smallest_signed_value_can_be_missing() {
+    for encoding in [
+        Encoding::I8,
+        Encoding::I16,
+        Encoding::I24,
+        Encoding::I32,
+        Encoding::I64,
+    ] {
+        let size = encoding.size();
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            // The minimum is 0x80 followed by zeros (big-endian), then the minimum + 1.
+            let mut min = vec![0u8; size];
+            min[0] = 0x80;
+            let mut next = min.clone();
+            next[size - 1] |= 1;
+            if order == ByteOrder::Little {
+                min.reverse();
+                next.reverse();
+            }
+            let bytes = [min, next].concat();
+            let minimum = -(2f64.powi(8 * size as i32 - 1));
+            let plain = Decoder::new(encoding, order);
+            let missing = plain.with_nan_minimum().with_reference(5.0);
+            assert_eq!(missing.native(), SampleType::F32, "{encoding:?}");
+            assert_eq!(plain.value(&bytes), Some(minimum), "{encoding:?} {order:?}");
+            assert!(
+                missing.value(&bytes).unwrap().is_nan(),
+                "{encoding:?} {order:?}"
+            );
+            assert_eq!(missing.reference_from(&bytes), 0.0, "{encoding:?}");
+            let mut out = [0f32; 2];
+            missing.decode(&bytes, size, &mut out).unwrap();
+            assert!(out[0].is_nan(), "{encoding:?} {order:?}");
+            let r = missing.reference();
+            assert_eq!(out[1], (minimum + 1.0 - r) as f32, "{encoding:?} {order:?}");
+            // Interleaved too.
+            let spaced = [&bytes[..size], &[7, 7], &bytes[size..]].concat();
+            missing.decode(&spaced, size + 2, &mut out).unwrap();
+            assert!(out[0].is_nan() && out[1] == (minimum + 1.0 - r) as f32);
+        }
+    }
+    for encoding in [
+        Encoding::U8,
+        Encoding::U16,
+        Encoding::U32,
+        Encoding::F32,
+        Encoding::F64,
+    ] {
+        let d = Decoder::new(encoding, ByteOrder::Little).with_nan_minimum();
+        assert!(!d.nan_minimum(), "{encoding:?}");
+        assert_eq!(d.native(), encoding.native());
     }
 }
 

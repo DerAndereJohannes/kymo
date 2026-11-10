@@ -16,6 +16,7 @@ mod edf_header;
 mod edf_plus;
 mod edf_reader;
 mod eeglab;
+mod gdf;
 mod grid;
 mod open;
 mod prefetch;
