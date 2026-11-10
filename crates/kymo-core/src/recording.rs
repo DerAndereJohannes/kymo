@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use crate::{
     AnnotationData, Channel, ChannelId, Grid, GridId, ModelError, ReadError, Sample, SampleType,
@@ -28,6 +29,11 @@ pub struct Opened {
     pub annotations: Vec<AnnotationData>,
     /// Problems the reader worked around, e.g. a truncated last record.
     pub warnings: Vec<String>,
+    /// The files the samples are read from, in a fixed order: the data file and any header
+    /// that defines its layout (e.g. BrainVision's `.vhdr` and `.eeg`), but not files that
+    /// hold only annotations. They identify the recording's pyramid in the disk cache.
+    /// Empty for recordings without files.
+    pub sources: Vec<PathBuf>,
     pub reader: Box<dyn BlockReader>,
 }
 
@@ -37,6 +43,7 @@ impl fmt::Debug for Opened {
             .field("header", &self.header)
             .field("annotations", &self.annotations)
             .field("warnings", &self.warnings)
+            .field("sources", &self.sources)
             .finish_non_exhaustive()
     }
 }
@@ -77,6 +84,7 @@ pub trait BlockReader: Send + Sync {
 pub struct Recording {
     header: Header,
     warnings: Vec<String>,
+    sources: Vec<PathBuf>,
     reader: Box<dyn BlockReader>,
 }
 
@@ -85,6 +93,7 @@ impl fmt::Debug for Recording {
         f.debug_struct("Recording")
             .field("header", &self.header)
             .field("warnings", &self.warnings)
+            .field("sources", &self.sources)
             .finish_non_exhaustive()
     }
 }
@@ -97,6 +106,7 @@ impl Recording {
             header,
             annotations,
             warnings,
+            sources,
             reader,
         } = opened;
         validate_header(&header)?;
@@ -104,6 +114,7 @@ impl Recording {
         let recording = Recording {
             header,
             warnings,
+            sources,
             reader,
         };
         Ok((recording, annotations))
@@ -157,6 +168,11 @@ impl Recording {
 
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// The files the samples are read from (see [`Opened::sources`]).
+    pub fn sources(&self) -> &[PathBuf] {
+        &self.sources
     }
 
     /// Reads native samples of `channels` (all in `grid`) over `range` into `out`, channel-major.

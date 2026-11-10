@@ -335,10 +335,7 @@ impl KymoApp {
     /// Opens `path` on a background thread, with its tile service.
     pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         let store = match &self.options.sidecar_dir {
-            Some(dir) => PyramidStore::Sidecar {
-                dir: dir.clone(),
-                source: path.clone(),
-            },
+            Some(dir) => PyramidStore::Sidecar { dir: dir.clone() },
             None => PyramidStore::Memory,
         };
         let repaint = ctx.clone();

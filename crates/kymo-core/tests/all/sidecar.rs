@@ -4,10 +4,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::common::{TempDir, TempFile, len_and_segments, mem_recording, sample_types};
+use crate::common::{TempDir, TempFile, len_and_segments, mem_opened, sample_types};
 use kymo_core::pyramid::{Pyramid, PyramidBuilder, Sidecar};
 use kymo_core::tile::{ChannelBlock, Level, SignalVersion, TILE_LEN, TileKey};
-use kymo_core::{GridId, Recording, SampleType};
+use kymo_core::{GridId, Opened, Recording, SampleType};
 use kymo_testgen::Spec;
 use proptest::prelude::*;
 
@@ -60,8 +60,19 @@ fn generated(preset: &str) -> (TempFile, Recording) {
     (file, rec)
 }
 
-fn built(dir: &TempDir, source: &Path, rec: &Recording) -> Sidecar {
-    let sidecar = Sidecar::open_or_create(dir.path(), source, rec).unwrap();
+/// `opened` read from `sources` instead.
+fn with_sources(mut opened: Opened, sources: &[&Path]) -> Recording {
+    opened.sources = sources.iter().map(|s| s.to_path_buf()).collect();
+    Recording::new(opened).unwrap().0
+}
+
+/// `file` opened as if it were read from `sources`.
+fn reopened(file: &TempFile, sources: &[&Path]) -> Recording {
+    with_sources(kymo_core::open(file.path()).unwrap(), sources)
+}
+
+fn built(dir: &TempDir, rec: &Recording) -> Sidecar {
+    let sidecar = Sidecar::open_or_create(dir.path(), rec).unwrap();
     assert!(!sidecar.is_complete());
     assert!(sidecar.build(rec).unwrap());
     sidecar
@@ -70,9 +81,9 @@ fn built(dir: &TempDir, source: &Path, rec: &Recording) -> Sidecar {
 #[test]
 fn build_then_reopen_serves_identical_tiles() {
     for preset in ["edf+d-mixed", "bdf+c-small"] {
-        let (file, rec) = generated(preset);
+        let (_file, rec) = generated(preset);
         let dir = TempDir::new();
-        let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(!sidecar.is_complete());
         assert!(sidecar.path().to_string_lossy().ends_with(".tmp"));
         // Nothing is served before the build.
@@ -92,7 +103,7 @@ fn build_then_reopen_serves_identical_tiles() {
         assert_eq!(dir.path().join(&files[0]), sidecar.path());
         drop(sidecar);
 
-        let reopened = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let reopened = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(reopened.is_complete(), "{preset}: reopened sidecar rebuilt");
         for g in 0..rec.grids().len() {
             let id = GridId(g as u32);
@@ -121,8 +132,8 @@ fn changed_source_invalidates_the_sidecar() {
     let file = TempFile::written(&spec);
     let rec = open(&file);
     let dir = TempDir::new();
-    built(&dir, file.path(), &rec);
-    let reopen = |rec: &Recording| Sidecar::open_or_create(dir.path(), file.path(), rec).unwrap();
+    built(&dir, &rec);
+    let reopen = |rec: &Recording| Sidecar::open_or_create(dir.path(), rec).unwrap();
     assert!(reopen(&rec).is_complete());
 
     // A new modification time alone.
@@ -137,7 +148,7 @@ fn changed_source_invalidates_the_sidecar() {
 
     // Same size and modification time, different samples at the start. The source is only
     // changed while no recording maps it, which Windows enforces.
-    built(&dir, file.path(), &rec);
+    built(&dir, &rec);
     drop(rec);
     let mtime = std::fs::metadata(file.path()).unwrap().modified().unwrap();
     let mut other = spec.clone();
@@ -152,7 +163,7 @@ fn changed_source_invalidates_the_sidecar() {
     assert!(!reopen(&rec).is_complete());
 
     // A different size.
-    built(&dir, file.path(), &rec);
+    built(&dir, &rec);
     drop(rec);
     let len = f.metadata().unwrap().len();
     f.set_len(len + 1).unwrap();
@@ -162,9 +173,9 @@ fn changed_source_invalidates_the_sidecar() {
 
 #[test]
 fn corrupt_or_truncated_sidecars_are_rebuilt() {
-    let (file, rec) = generated("bdf+c-small");
+    let (_file, rec) = generated("bdf+c-small");
     let dir = TempDir::new();
-    let path = built(&dir, file.path(), &rec).path();
+    let path = built(&dir, &rec).path();
     let good = std::fs::read(&path).unwrap();
     let want = Pyramid::build(&rec, GridId(0)).unwrap();
 
@@ -194,11 +205,11 @@ fn corrupt_or_truncated_sidecars_are_rebuilt() {
     }
     for (name, bytes) in cases {
         std::fs::write(&path, &bytes).unwrap();
-        let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(!sidecar.is_complete(), "{name}: accepted");
         assert!(sidecar.build(&rec).unwrap(), "{name}: rebuild");
         drop(sidecar);
-        let reopened = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let reopened = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(reopened.is_complete(), "{name}: rebuilt sidecar not reused");
         assert_same(
             &rec,
@@ -217,9 +228,9 @@ proptest! {
     /// makes reading panic.
     #[test]
     fn flipped_bytes_never_panic(at in any::<proptest::sample::Index>(), mask in 1u8..=255) {
-        let (file, rec) = generated("bdf+c-small");
+        let (_file, rec) = generated("bdf+c-small");
         let dir = TempDir::new();
-        let path = built(&dir, file.path(), &rec).path();
+        let path = built(&dir, &rec).path();
         let mut bytes = std::fs::read(&path).unwrap();
         let trailer = bytes
             .windows(8)
@@ -228,7 +239,7 @@ proptest! {
         let i = at.index(bytes.len());
         bytes[i] ^= mask;
         std::fs::write(&path, &bytes).unwrap();
-        let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         if i < trailer {
             prop_assert_eq!(sidecar.is_complete(), i >= 4096, "byte {}", i);
         }
@@ -250,12 +261,13 @@ proptest! {
         chunk in 1000..=60_000u64,
         seed in any::<u64>(),
     ) {
-        let (rec, _) = mem_recording(sample_type, n, len, segments, seed);
-        let want = Pyramid::build(&rec, GridId(0)).unwrap();
         let source = TempFile::new("bin");
         std::fs::write(source.path(), seed.to_le_bytes()).unwrap();
+        let (opened, _) = mem_opened(sample_type, n, len, segments, seed);
+        let rec = with_sources(opened, &[source.path()]);
+        let want = Pyramid::build(&rec, GridId(0)).unwrap();
         let dir = TempDir::new();
-        let sidecar = Sidecar::open_or_create(dir.path(), source.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         let reader = sidecar.pyramid(GridId(0)).unwrap();
         let mut in_sidecar = sidecar.builder(&rec, GridId(0)).unwrap().with_chunk_len(chunk);
         let mut in_memory = PyramidBuilder::new(&rec, GridId(0)).unwrap().with_chunk_len(chunk);
@@ -300,12 +312,13 @@ proptest! {
 #[test]
 fn readers_during_a_build_see_only_final_tiles() {
     let len = 2_000_000;
-    let (rec, _) = mem_recording(SampleType::I32, 3, len, vec![0..len / 3, len / 2..len], 9);
-    let want = Pyramid::build(&rec, GridId(0)).unwrap();
     let source = TempFile::new("bin");
     std::fs::write(source.path(), b"source").unwrap();
+    let (opened, _) = mem_opened(SampleType::I32, 3, len, vec![0..len / 3, len / 2..len], 9);
+    let rec = with_sources(opened, &[source.path()]);
+    let want = Pyramid::build(&rec, GridId(0)).unwrap();
     let dir = TempDir::new();
-    let sidecar = Sidecar::open_or_create(dir.path(), source.path(), &rec).unwrap();
+    let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
     let keys = keys(&rec, GridId(0));
     let building = AtomicBool::new(true);
     std::thread::scope(|s| {
@@ -337,7 +350,7 @@ fn readers_during_a_build_see_only_final_tiles() {
 fn one_builder_per_grid() {
     let (file, rec) = generated("edf+d-mixed");
     let dir = TempDir::new();
-    let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+    let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
     let first = sidecar.builder(&rec, GridId(0)).unwrap();
     assert!(sidecar.builder(&rec, GridId(0)).is_none());
     let past = GridId(rec.grids().len() as u32);
@@ -349,15 +362,16 @@ fn one_builder_per_grid() {
 
     // A recording whose grid differs gets no builder.
     let (other_file, other) = generated("bdf+c-small");
-    let fresh = Sidecar::open_or_create(dir.path(), other_file.path(), &rec).unwrap();
+    let fresh =
+        Sidecar::open_or_create(dir.path(), &reopened(&file, &[other_file.path()])).unwrap();
     assert!(fresh.builder(&other, GridId(0)).is_none());
 }
 
 #[test]
 fn unfinished_sidecars_leave_no_file() {
-    let (file, rec) = generated("bdf+c-small");
+    let (_file, rec) = generated("bdf+c-small");
     let dir = TempDir::new();
-    let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+    let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
     let mut builder = sidecar
         .builder(&rec, GridId(0))
         .unwrap()
@@ -371,10 +385,95 @@ fn unfinished_sidecars_leave_no_file() {
 
 #[test]
 fn missing_source_is_an_error() {
-    let (_file, rec) = generated("bdf+c-small");
+    let (file, _) = generated("bdf+c-small");
     let dir = TempDir::new();
     let missing = dir.path().join("missing.bdf");
-    assert!(Sidecar::open_or_create(dir.path(), &missing, &rec).is_err());
+    let rec = reopened(&file, &[file.path(), &missing]);
+    let error = Sidecar::open_or_create(dir.path(), &rec).unwrap_err();
+    assert!(error.to_string().contains("missing.bdf"), "{error}");
+    let rec = reopened(&file, &[]);
+    assert!(Sidecar::open_or_create(dir.path(), &rec).is_err());
+}
+
+/// The sidecar key of one file, as computed before sources could be several files: canonical
+/// path, size, modification time, first and last MiB, after the magic and format version.
+fn single_file_key(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const EDGE: u64 = 1 << 20;
+    let path = std::fs::canonicalize(path).unwrap();
+    let mut file = std::fs::File::open(&path).unwrap();
+    let meta = file.metadata().unwrap();
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"KYMOPYR\0");
+    hasher.update(&3u32.to_le_bytes());
+    let name = path.as_os_str().as_encoded_bytes();
+    hasher.update(&(name.len() as u64).to_le_bytes());
+    hasher.update(name);
+    hasher.update(&size.to_le_bytes());
+    hasher.update(&mtime.to_le_bytes());
+    let mut buf = vec![0u8; EDGE.min(size) as usize];
+    file.read_exact(&mut buf).unwrap();
+    hasher.update(&buf);
+    if size > EDGE {
+        file.seek(SeekFrom::Start(size - EDGE)).unwrap();
+        file.read_exact(&mut buf).unwrap();
+        hasher.update(&buf);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Sidecars of recordings read from one file keep the name they had before sources could be
+/// several files, so they are reused, not rebuilt. Both sizes: whole file and two edges.
+#[test]
+fn a_single_source_keeps_its_sidecar_name() {
+    for preset in ["bdf+c-small", "edf+d-mixed"] {
+        let (file, rec) = generated(preset);
+        let dir = TempDir::new();
+        let path = built(&dir, &rec).path();
+        assert!(std::fs::metadata(file.path()).unwrap().len() > 0);
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(
+            name,
+            format!("{}.kymo-pyramid", single_file_key(file.path()))
+        );
+    }
+}
+
+/// With several source files, every one of them and their order is part of the key: a
+/// changed file or another order rebuilds, the same files reopen the sidecar.
+#[test]
+fn every_source_file_keys_the_sidecar() {
+    let (file, _) = generated("bdf+c-small");
+    let extra = TempFile::new("vmrk");
+    std::fs::write(extra.path(), b"companion").unwrap();
+    let dir = TempDir::new();
+    let open =
+        |sources: &[&Path]| Sidecar::open_or_create(dir.path(), &reopened(&file, sources)).unwrap();
+    let both = reopened(&file, &[file.path(), extra.path()]);
+    let first = built(&dir, &both).path();
+    let reopened_both = open(&[file.path(), extra.path()]);
+    assert!(reopened_both.is_complete());
+    assert_eq!(reopened_both.path(), first);
+    drop(reopened_both);
+
+    for sources in [
+        vec![extra.path(), file.path()],
+        vec![file.path()],
+        vec![file.path(), extra.path(), extra.path()],
+    ] {
+        let other = open(&sources);
+        assert!(!other.is_complete(), "{sources:?}");
+    }
+
+    std::fs::write(extra.path(), b"changed!!").unwrap();
+    assert!(!open(&[file.path(), extra.path()]).is_complete());
 }
 
 #[test]

@@ -35,7 +35,7 @@ fn full_view(c: &mut Criterion) {
     let rec = common::open(&path);
     let dir = std::env::var_os("KYMO_BENCH_SIDECARS")
         .map_or_else(|| common::dir().join("sidecars"), PathBuf::from);
-    let sidecar = Sidecar::open_or_create(&dir, &path, &rec).unwrap();
+    let sidecar = Sidecar::open_or_create(&dir, &rec).unwrap();
     if !sidecar.is_complete() {
         eprintln!("building the pyramid sidecar once, in {}", dir.display());
         let start = Instant::now();

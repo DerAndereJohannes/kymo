@@ -154,7 +154,7 @@ fn main() {
 fn build_sidecar(dir: &Path, path: &Path) -> bool {
     std::fs::create_dir_all(dir).unwrap();
     let document = kymo::document::open(path).unwrap();
-    let sidecar = Sidecar::open_or_create(dir, path, &document.recording).unwrap();
+    let sidecar = Sidecar::open_or_create(dir, &document.recording).unwrap();
     if sidecar.is_complete() {
         return false;
     }

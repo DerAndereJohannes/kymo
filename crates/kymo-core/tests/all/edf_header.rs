@@ -459,6 +459,7 @@ proptest! {
                 header: parsed.header,
                 annotations: Vec::new(),
                 warnings: parsed.warnings,
+                sources: vec![],
                 reader: Box::new(NoReader),
             };
             prop_assert!(Recording::new(opened).is_ok());

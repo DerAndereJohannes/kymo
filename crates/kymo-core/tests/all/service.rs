@@ -383,7 +383,6 @@ fn start_on_file(
     start(kymo_core::open(file.path()).unwrap(), |options, probe| {
         options.pyramids = PyramidStore::Sidecar {
             dir: dir.path().to_owned(),
-            source: file.path().to_owned(),
         };
         configure(options, probe);
     })
@@ -472,7 +471,7 @@ fn a_finished_build_stays_for_the_next_open() {
         .unwrap()
         .0;
     assert!(
-        Sidecar::open_or_create(dir.path(), file.path(), &rec)
+        Sidecar::open_or_create(dir.path(), &rec)
             .unwrap()
             .is_complete()
     );

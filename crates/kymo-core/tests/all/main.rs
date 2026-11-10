@@ -9,10 +9,12 @@ mod common;
 
 mod annotation_file;
 mod annotations;
+mod decode;
 mod edf_header;
 mod edf_plus;
 mod edf_reader;
 mod grid;
+mod open;
 mod prefetch;
 mod pyramid;
 mod query;

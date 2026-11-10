@@ -384,14 +384,14 @@ fn generated_files_and_sidecars_have_the_written_codes() {
         assert!(every > 50, "{preset}: {every} events");
 
         let dir = TempDir::new();
-        let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(sidecar.build(&rec).unwrap());
         assert_eq!(
             sidecar.pyramid(channel.grid).unwrap().stim_changes(&rec),
             want
         );
         drop(sidecar);
-        let reopened = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let reopened = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(reopened.is_complete(), "{preset}: not reused");
         assert_eq!(
             reopened.pyramid(channel.grid).unwrap().stim_changes(&rec),
@@ -420,7 +420,7 @@ fn broken_stim_trailer_is_rebuilt() {
         .unwrap()
         .0;
     let dir = TempDir::new();
-    let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+    let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
     sidecar.build(&rec).unwrap();
     let path = sidecar.path();
     let want = sidecar.pyramid(GridId(0)).unwrap().stim_changes(&rec);
@@ -444,7 +444,7 @@ fn broken_stim_trailer_is_rebuilt() {
     ];
     for (name, bytes) in cases {
         std::fs::write(&path, &bytes).unwrap();
-        let sidecar = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+        let sidecar = Sidecar::open_or_create(dir.path(), &rec).unwrap();
         assert!(!sidecar.is_complete(), "{name}: accepted");
         sidecar.build(&rec).unwrap();
         assert_eq!(
@@ -534,11 +534,11 @@ fn stim_tiles_hold_the_codes() {
     assert!(pyramid.top() >= Level::new(1).unwrap());
     check(&pyramid);
     let dir = TempDir::new();
-    Sidecar::open_or_create(dir.path(), file.path(), &rec)
+    Sidecar::open_or_create(dir.path(), &rec)
         .unwrap()
         .build(&rec)
         .unwrap();
-    let reopened = Sidecar::open_or_create(dir.path(), file.path(), &rec).unwrap();
+    let reopened = Sidecar::open_or_create(dir.path(), &rec).unwrap();
     assert!(reopened.is_complete());
     check(&reopened.pyramid(channel.grid).unwrap());
 

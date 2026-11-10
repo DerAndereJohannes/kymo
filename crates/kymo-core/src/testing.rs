@@ -258,6 +258,7 @@ pub fn opened(channels: Vec<Channel>, grids: Vec<Grid>, data: Vec<MemData>) -> O
         },
         annotations: Vec::new(),
         warnings: Vec::new(),
+        sources: Vec::new(),
         reader: Box::new(reader),
     }
 }

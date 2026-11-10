@@ -80,7 +80,7 @@ fn build(c: &mut Criterion) {
                 for i in 0..iters {
                     let dir = common::dir().join(format!("build-{}-{i}", std::process::id()));
                     let start = Instant::now();
-                    let sidecar = Sidecar::open_or_create(&dir, &path, &rec).unwrap();
+                    let sidecar = Sidecar::open_or_create(&dir, &rec).unwrap();
                     assert!(sidecar.build(&rec).unwrap());
                     total += start.elapsed();
                     drop(sidecar);

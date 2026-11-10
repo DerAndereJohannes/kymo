@@ -27,9 +27,9 @@ use crate::{ChannelId, GridId, Recording, TileError, lock};
 /// Where the pyramid is kept.
 #[derive(Clone, Debug)]
 pub enum PyramidStore {
-    /// A sidecar file in `dir` for the recording read from `source`, reused when complete
-    /// (see [`Sidecar`]).
-    Sidecar { dir: PathBuf, source: PathBuf },
+    /// A sidecar file in `dir`, found by the recording's source files and reused when
+    /// complete (see [`Sidecar`]).
+    Sidecar { dir: PathBuf },
     /// In memory, about a twelfth of the recording's samples: for tests and recordings
     /// without a file.
     Memory,
@@ -187,8 +187,8 @@ impl TileService {
     ) -> Result<TileService, ServiceError> {
         let grids = (0..recording.grids().len()).map(|g| GridId(g as u32));
         let (sidecar, pyramids, storages) = match &options.pyramids {
-            PyramidStore::Sidecar { dir, source } => {
-                let sidecar = Sidecar::open_or_create(dir, source, &recording)?;
+            PyramidStore::Sidecar { dir } => {
+                let sidecar = Sidecar::open_or_create(dir, &recording)?;
                 let pyramids = grids.filter_map(|g| sidecar.pyramid(g)).collect::<Vec<_>>();
                 (Some(sidecar), pyramids, None)
             }

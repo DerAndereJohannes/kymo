@@ -1,7 +1,7 @@
 //! The pyramid sidecar: all pyramids of a recording in one memory-mapped cache file.
 //!
-//! The file is named after a BLAKE3 hash of the source's canonical path, size, modification
-//! time and first and last MiB, plus this format's version. It holds a header (magic,
+//! The file is named after a BLAKE3 hash of each source file's canonical path, size,
+//! modification time and first and last MiB, plus this format's version. It holds a header (magic,
 //! version, that key, the layout of every grid and a completion flag), then per grid each
 //! level's tiles in time order (all channels, channel-major, little-endian (min, max)
 //! pairs) and the block sums (one little-endian f64 per channel and block). A trailer after
@@ -62,6 +62,8 @@ pub enum SidecarError {
     Io { path: PathBuf, source: io::Error },
     #[error("a sidecar of {0} bytes does not fit in the address space")]
     TooLarge(u64),
+    #[error("the recording has no source files to key a sidecar by")]
+    NoSources,
     #[error(transparent)]
     Read(#[from] ReadError),
 }
@@ -156,9 +158,25 @@ fn header(key: &blake3::Hash, layouts: &[GridLayout], header_len: usize, total: 
     h
 }
 
-/// The identity of the source file: canonical path, size, modification time, first and
-/// last MiB, and the sidecar format version.
-fn source_key(source: &Path) -> io::Result<blake3::Hash> {
+/// The identity of the source files: for each, its canonical path, size, modification time
+/// and first and last MiB; and the sidecar format version. A single file is hashed as
+/// before sources could be several files, so its sidecars stay valid. On failure, the file
+/// that could not be read.
+fn source_key(sources: &[PathBuf]) -> Result<blake3::Hash, (PathBuf, io::Error)> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(MAGIC);
+    hasher.update(&VERSION.to_le_bytes());
+    if let [_, _, ..] = sources {
+        hasher.update(b"SOURCES\0");
+        hasher.update(&(sources.len() as u64).to_le_bytes());
+    }
+    for source in sources {
+        hash_source(&mut hasher, source).map_err(|e| (source.clone(), e))?;
+    }
+    Ok(hasher.finalize())
+}
+
+fn hash_source(hasher: &mut blake3::Hasher, source: &Path) -> io::Result<()> {
     let path = fs::canonicalize(source)?;
     let mut file = File::open(&path)?;
     let meta = file.metadata()?;
@@ -168,9 +186,6 @@ fn source_key(source: &Path) -> io::Result<blake3::Hash> {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(MAGIC);
-    hasher.update(&VERSION.to_le_bytes());
     let name = path.as_os_str().as_encoded_bytes();
     hasher.update(&(name.len() as u64).to_le_bytes());
     hasher.update(name);
@@ -185,7 +200,7 @@ fn source_key(source: &Path) -> io::Result<blake3::Hash> {
         file.read_exact(&mut buf)?;
         hasher.update(&buf);
     }
-    Ok(hasher.finalize())
+    Ok(())
 }
 
 /// The pyramids of one recording, kept in a sidecar file: complete and opened from the
@@ -238,14 +253,15 @@ impl Sidecar {
         dirs::cache_dir().map(|d| d.join("kymo"))
     }
 
-    /// Opens the complete sidecar of `recording`, read from the file `source`, in `dir`; or,
-    /// if there is none or it is invalid, creates an empty one to build.
-    pub fn open_or_create(
-        dir: &Path,
-        source: &Path,
-        recording: &Recording,
-    ) -> Result<Sidecar, SidecarError> {
-        let key = source_key(source).map_err(io_error(source))?;
+    /// Opens the complete sidecar of `recording` in `dir`, found by its
+    /// [source files](Recording::sources); or, if there is none or it is invalid, creates an
+    /// empty one to build.
+    pub fn open_or_create(dir: &Path, recording: &Recording) -> Result<Sidecar, SidecarError> {
+        if recording.sources().is_empty() {
+            return Err(SidecarError::NoSources);
+        }
+        let key = source_key(recording.sources())
+            .map_err(|(path, source)| SidecarError::Io { path, source })?;
         let grids = recording.grids().to_vec();
         let (layouts, header_len, total) = layout(&grids);
         let size = usize::try_from(total).map_err(|_| SidecarError::TooLarge(total))?;

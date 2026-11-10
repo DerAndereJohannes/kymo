@@ -8,7 +8,8 @@ use memmap2::Mmap;
 
 use super::index::index;
 use super::{Block, EdfError, RecordLayout, parse_header};
-use crate::{BlockReader, ChannelId, GridId, OpenError, Opened, ReadError, SampleType, SamplesMut};
+use crate::decode::{ByteOrder, Decoder, Encoding};
+use crate::{BlockReader, ChannelId, GridId, OpenError, Opened, ReadError, Sample, SamplesMut};
 
 /// Reads samples straight from the memory-mapped file.
 #[derive(Debug)]
@@ -65,6 +66,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         header: parsed.header,
         annotations,
         warnings: parsed.warnings,
+        sources: vec![path.to_owned()],
         reader: Box::new(EdfReader {
             map,
             file,
@@ -101,25 +103,21 @@ impl BlockReader for EdfReader {
             .collect::<Result<Vec<Block>, _>>()?;
         let n = usize::try_from(range.end.saturating_sub(range.start)).unwrap_or(usize::MAX);
         let expected = blocks.len().saturating_mul(n);
-        let (expected_type, bdf) = match self.layout.bytes_per_sample {
-            3 => (SampleType::I32, true),
-            _ => (SampleType::I16, false),
+        let encoding = match self.layout.bytes_per_sample {
+            3 => Encoding::I24,
+            _ => Encoding::I16,
         };
+        let decoder = Decoder::new(encoding, ByteOrder::Little);
         match out {
-            SamplesMut::I16(dst) if !bdf && dst.len() == expected => {
-                self.copy(grid, &blocks, range, n, dst, |b| {
-                    i16::from_le_bytes([b[0], b[1]])
-                })
+            SamplesMut::I16(dst) if dst.len() == expected => {
+                self.copy(grid, &blocks, range, n, dst, &decoder)
             }
-            SamplesMut::I32(dst) if bdf && dst.len() == expected => {
-                // Little-endian int24, sign-extended by the arithmetic shift.
-                self.copy(grid, &blocks, range, n, dst, |b| {
-                    i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8
-                })
+            SamplesMut::I32(dst) if dst.len() == expected => {
+                self.copy(grid, &blocks, range, n, dst, &decoder)
             }
             out => Err(ReadError::BufferMismatch {
                 expected,
-                expected_type,
+                expected_type: decoder.native(),
                 found: out.len(),
                 found_type: out.sample_type(),
             }),
@@ -188,14 +186,14 @@ impl EdfReader {
 
     /// Copies `range` of every block into `dst` (channel-major, `n` samples per channel),
     /// record by record so the file is read in order.
-    fn copy<T>(
+    fn copy<T: Sample>(
         &self,
         grid: GridId,
         blocks: &[Block],
         range: Range<u64>,
         n: usize,
         dst: &mut [T],
-        decode: impl Fn(&[u8]) -> T,
+        decoder: &Decoder,
     ) -> Result<(), ReadError> {
         let Some(spr) = blocks.first().map(|b| b.samples) else {
             return Ok(());
@@ -239,9 +237,7 @@ impl EdfReader {
                         ReadError::Corrupt(format!("record {record} is outside the file"))
                     })?;
                 let samples = &mut dst[k * n + at..][..take as usize];
-                for (d, s) in samples.iter_mut().zip(bytes.chunks_exact(bps)) {
-                    *d = decode(s);
-                }
+                decoder.decode(bytes, bps, samples)?;
             }
             i += take;
             record += 1;

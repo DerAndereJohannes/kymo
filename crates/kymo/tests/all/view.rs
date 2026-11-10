@@ -76,6 +76,7 @@ fn recording(eeg: u32, seconds: u64) -> Recording {
         },
         annotations: vec![],
         warnings: vec![],
+        sources: vec![],
         reader: Box::new(NoReader),
     };
     Recording::new(opened).unwrap().0

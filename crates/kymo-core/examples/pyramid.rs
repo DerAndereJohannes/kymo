@@ -43,7 +43,7 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     let built = match &sidecar {
-        Some(dir) => in_sidecar(&rec, &file, dir, threads)?,
+        Some(dir) => in_sidecar(&rec, dir, threads)?,
         None => {
             for g in 0..rec.grids().len() as u32 {
                 let builder = PyramidBuilder::new(&rec, GridId(g))?;
@@ -66,8 +66,8 @@ fn main() -> Result<()> {
 }
 
 /// Builds the sidecar in `dir`; returns false if it was complete already.
-fn in_sidecar(rec: &Recording, file: &Path, dir: &Path, threads: Option<usize>) -> Result<bool> {
-    let sidecar = Sidecar::open_or_create(dir, file, rec)?;
+fn in_sidecar(rec: &Recording, dir: &Path, threads: Option<usize>) -> Result<bool> {
+    let sidecar = Sidecar::open_or_create(dir, rec)?;
     if sidecar.is_complete() {
         return Ok(false);
     }

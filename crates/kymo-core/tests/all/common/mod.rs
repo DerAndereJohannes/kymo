@@ -158,6 +158,7 @@ pub fn shape_recording(grids: &[(f64, f64, u64, usize)]) -> Recording {
         },
         annotations: vec![],
         warnings: vec![],
+        sources: vec![],
         reader: Box::new(NoReader),
     };
     Recording::new(opened).unwrap().0
