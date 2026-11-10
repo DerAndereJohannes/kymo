@@ -221,6 +221,8 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         title: "Go",
         role: Role::Plain,
         items: vec![
+            a(Action::GoToTime),
+            Item::Separator,
             a(Action::ToStart),
             a(Action::ToEnd),
             Item::Separator,

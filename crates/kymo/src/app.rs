@@ -15,12 +15,13 @@ use kymo_core::stim::EventOptions;
 use crate::action::Action;
 use crate::annotations::AnnotationColors;
 use crate::app_mode::AppMode;
-use crate::document::{self, Document, Loading, error_text, file_name, plural};
+use crate::document::{self, Document, Loading, error_text, file_name, format_duration, plural};
 use crate::keymap::{Keymap, Platform};
 use crate::native_menu::NativeMenu;
 use crate::recent::Recent;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::Overlay;
+use crate::ui::go_to::{GoToField, go_to_window};
 use crate::ui::gpu::Gpu;
 use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
@@ -81,6 +82,9 @@ pub struct KymoApp {
     shortcuts_open: bool,
     about_open: bool,
     settings_open: bool,
+    /// Go to Time…, and what its field holds.
+    go_to_open: bool,
+    go_to: GoToField,
     /// Show the file dialog once the window is on screen.
     pick_file: bool,
     /// Whether a frame has been shown yet.
@@ -157,6 +161,8 @@ impl KymoApp {
             shortcuts_open: false,
             about_open: false,
             settings_open: false,
+            go_to_open: false,
+            go_to: GoToField::default(),
             pick_file: path.is_none(),
             shown: false,
             // As the window opens.
@@ -313,6 +319,7 @@ impl KymoApp {
                 Overlay::Settings => self.settings_open,
                 Overlay::Shortcuts => self.shortcuts_open,
                 Overlay::About => self.about_open,
+                Overlay::GoToTime => self.go_to_open,
             })
             .collect()
     }
@@ -322,6 +329,7 @@ impl KymoApp {
             Overlay::Settings => &mut self.settings_open,
             Overlay::Shortcuts => &mut self.shortcuts_open,
             Overlay::About => &mut self.about_open,
+            Overlay::GoToTime => &mut self.go_to_open,
         }
     }
 
@@ -429,6 +437,14 @@ impl KymoApp {
         self.take_dropped(&ctx);
         shortcuts_window(&ctx, &mut self.shortcuts_open, self.keymap.platform());
         about_window(&ctx, &mut self.about_open);
+        if self.viewer().is_none() {
+            self.go_to_open = false;
+        }
+        if let Some(seconds) = go_to_window(&ctx, &mut self.go_to_open, &mut self.go_to)
+            && let State::Ready(viewer) = &mut self.state
+        {
+            viewer.go_to(seconds);
+        }
         let mut settings = self.options.settings;
         if settings_window(&ctx, &mut self.settings_open, &mut settings) {
             self.set_settings(settings);
@@ -542,6 +558,12 @@ impl KymoApp {
                 ..self.options.settings
             }),
             Action::Settings => self.settings_open = true,
+            Action::GoToTime => {
+                if let Some(viewer) = self.viewer() {
+                    self.go_to = GoToField::new(format_duration(viewer.view().start()));
+                    self.go_to_open = true;
+                }
+            }
             _ => {
                 if let Some(options) = action.stim_options(self.stim_options) {
                     self.stim_options = options;
@@ -731,6 +753,11 @@ impl KymoApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+    }
+
+    /// Whether Go to Time… is open.
+    pub fn go_to_open(&self) -> bool {
+        self.go_to_open
     }
 
     /// The recordings in File → Open Recent.

@@ -4,6 +4,7 @@
 
 pub mod axis;
 pub mod color;
+pub mod go_to;
 pub mod gpu;
 pub mod header;
 pub mod menus;
@@ -19,10 +20,16 @@ pub enum Overlay {
     Settings,
     Shortcuts,
     About,
+    GoToTime,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 3] = [Overlay::Settings, Overlay::Shortcuts, Overlay::About];
+    pub const ALL: [Overlay; 4] = [
+        Overlay::Settings,
+        Overlay::Shortcuts,
+        Overlay::About,
+        Overlay::GoToTime,
+    ];
 
     /// The window's id, which also names its layer, so the one in front can be found.
     pub fn id(self) -> eframe::egui::Id {

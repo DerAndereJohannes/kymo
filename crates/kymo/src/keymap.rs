@@ -170,6 +170,7 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::PanRight, Chord::key(Key::ArrowRight)),
     (Action::PageLeft, Chord::alt(Key::ArrowLeft)),
     (Action::PageRight, Chord::alt(Key::ArrowRight)),
+    (Action::GoToTime, Chord::cmd(Key::G)),
     (Action::ToStart, Chord::cmd(Key::ArrowLeft)),
     (Action::ToStart, Chord::key(Key::Home)),
     (Action::ToEnd, Chord::cmd(Key::ArrowRight)),

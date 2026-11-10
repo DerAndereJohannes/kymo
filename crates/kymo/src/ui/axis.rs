@@ -139,3 +139,44 @@ pub fn format_time(t: f64, decimals: usize, clock: Clock) -> String {
         ),
     }
 }
+
+/// A time as people write it, the inverse of [`format_time`]: seconds ("90", "12.5 s"),
+/// minutes and seconds ("1:30"), or hours, minutes and seconds ("1:02:03.5"), with a
+/// decimal point or comma. Parts after a colon have two digits below 60; the first part
+/// may be any size ("75:00"). `None` for anything else, negative times included.
+pub fn parse_time(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let text = text
+        .strip_suffix('s')
+        .map_or(text, str::trim_end)
+        .replace(',', ".");
+    let parts: Vec<&str> = text.split(':').collect();
+    if parts.len() > 3 {
+        return None;
+    }
+    let number = |part: &str| {
+        let digits = part.chars().all(|c| c.is_ascii_digit() || c == '.');
+        let value: f64 = part.parse().ok()?;
+        (digits && !part.is_empty() && part != ".").then_some(value)
+    };
+    let (last, leading) = parts.split_last()?;
+    let mut seconds = 0.0;
+    for (i, part) in leading.iter().enumerate() {
+        // Whole hours or minutes; after the first, two digits below 60.
+        if !part.chars().all(|c| c.is_ascii_digit()) || part.is_empty() {
+            return None;
+        }
+        if i > 0 && (part.len() != 2 || number(part)? >= 60.0) {
+            return None;
+        }
+        seconds = seconds * 60.0 + number(part)?;
+    }
+    let tail = number(last)?;
+    if !leading.is_empty() {
+        let whole = last.split('.').next().unwrap_or("");
+        if whole.len() != 2 || tail >= 60.0 {
+            return None;
+        }
+    }
+    Some(seconds * 60f64.powi(i32::from(!leading.is_empty())) + tail).filter(|t| t.is_finite())
+}

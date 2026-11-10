@@ -31,6 +31,8 @@ pub enum Action {
     PageRight,
     ToStart,
     ToEnd,
+    /// Asks for a time and moves the window to start there.
+    GoToTime,
     ZoomIn,
     ZoomOut,
     /// 20 s from the current start.
@@ -82,7 +84,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 46] = [
+    pub const ALL: [Action; 47] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -100,6 +102,7 @@ impl Action {
         Action::PageRight,
         Action::ToStart,
         Action::ToEnd,
+        Action::GoToTime,
         Action::ZoomIn,
         Action::ZoomOut,
         Action::DefaultWindow,
@@ -152,6 +155,7 @@ impl Action {
             Action::PageRight => "Forward a Window",
             Action::ToStart => "Start of Recording",
             Action::ToEnd => "End of Recording",
+            Action::GoToTime => "Go to Time…",
             Action::ZoomIn => "Zoom In",
             Action::ZoomOut => "Zoom Out",
             Action::DefaultWindow => "Default Window",

@@ -253,6 +253,12 @@ impl Viewer {
         &self.view
     }
 
+    /// Moves the window to start at `seconds` from the start of the recording, as far as
+    /// the recording goes.
+    pub fn go_to(&mut self, seconds: f64) {
+        self.view.pan(seconds - self.view.start());
+    }
+
     pub fn hover(&self) -> Hover {
         self.hover
     }

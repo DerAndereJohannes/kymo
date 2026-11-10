@@ -304,6 +304,7 @@ impl ViewState {
             Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
             Action::ToggleDc => self.dc = !self.dc,
             Action::Open
+            | Action::GoToTime
             | Action::OpenRecent(_)
             | Action::ClearRecent
             | Action::Close

@@ -4315,3 +4315,58 @@ fn open_recent_reopens_recordings_and_forgets_missing_ones() {
             .is_disabled()
     );
 }
+
+#[test]
+fn go_to_time_moves_the_window_there() {
+    use egui::accesskit::Role;
+    // A minute, 20 s in view.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let press = |h: &mut Harness<'_, KymoApp>, modifiers, key| {
+        h.key_press_modifiers(modifiers, key);
+        h.run_steps(2);
+    };
+    let field =
+        |h: &Harness<'_, KymoApp>| h.get_by_role(Role::TextInput).value().unwrap_or_default();
+
+    // It opens with the current time, selected, so typing replaces it.
+    press(&mut harness, command(), Key::G);
+    assert!(harness.state().go_to_open());
+    assert_eq!(field(&harness), "0 s");
+    harness.get_by_role(Role::TextInput).type_text("0:25");
+    harness.run_steps(2);
+    assert_eq!(field(&harness), "0:25");
+    press(&mut harness, Modifiers::NONE, Key::Enter);
+    assert!(!harness.state().go_to_open());
+    assert_eq!(viewer(&harness).view().start(), 25.0);
+
+    // Something that isn't a time says how to write one, and stays.
+    press(&mut harness, command(), Key::G);
+    assert_eq!(field(&harness), "25 s");
+    harness.get_by_role(Role::TextInput).type_text("soon");
+    harness.run_steps(2);
+    press(&mut harness, Modifiers::NONE, Key::Enter);
+    assert!(harness.state().go_to_open());
+    harness.get_by_label_contains("Write a time as");
+    // Past the end, the window ends with the recording.
+    harness.get_by_role(Role::TextInput).type_text("1:00:00");
+    harness.run_steps(2);
+    // The last "Go" button: the menu bar's comes first.
+    harness
+        .get_all_by_role_and_label(Role::Button, "Go")
+        .last()
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    assert!(!harness.state().go_to_open());
+    assert_eq!(viewer(&harness).view().start(), 40.0);
+
+    // Esc closes it and goes nowhere.
+    press(&mut harness, command(), Key::G);
+    harness.get_by_role(Role::TextInput).type_text("10");
+    harness.run_steps(2);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(!harness.state().go_to_open());
+    assert_eq!(viewer(&harness).view().start(), 40.0);
+}

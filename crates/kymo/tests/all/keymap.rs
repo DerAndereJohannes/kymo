@@ -69,6 +69,7 @@ fn looks_up_the_tables_bindings() {
             (Key::D, true, false, false, Action::ToggleDc),
             (Key::W, true, false, false, Action::Close),
             (Key::S, true, false, false, Action::SaveAnnotations),
+            (Key::G, true, false, false, Action::GoToTime),
             (Key::Q, true, false, false, Action::Quit),
             (Key::Comma, true, false, false, Action::Settings),
             (Key::Slash, true, false, false, Action::Shortcuts),

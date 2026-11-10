@@ -114,3 +114,37 @@ fn nothing_to_divide_gives_no_ticks() {
     assert!(ticks(0.0..f64::INFINITY, 800.0, 80.0).is_empty());
     assert!(ticks(f64::NAN..1.0, 800.0, 80.0).is_empty());
 }
+
+#[test]
+fn times_parse_as_seconds_minutes_or_hours() {
+    use kymo::ui::axis::parse_time;
+    assert_eq!(parse_time("90"), Some(90.0));
+    assert_eq!(parse_time(" 12.5 s "), Some(12.5));
+    assert_eq!(parse_time("12,5"), Some(12.5));
+    assert_eq!(parse_time("1:30"), Some(90.0));
+    assert_eq!(parse_time("1:30.25"), Some(90.25));
+    assert_eq!(parse_time("1:02:03.5"), Some(3723.5));
+    assert_eq!(parse_time("0:00:00"), Some(0.0));
+    // Minutes beyond an hour are fine in front, not after a colon.
+    assert_eq!(parse_time("75:00"), Some(4500.0));
+    for bad in [
+        "", "s", "abc", "1:60", "1:5", "1:02:60", "-3", "1::2", "1:2:3:4", "nan", "inf",
+    ] {
+        assert_eq!(parse_time(bad), None, "{bad:?}");
+    }
+}
+
+proptest! {
+    /// What the axis writes reads back as its time.
+    #[test]
+    fn written_times_parse_back(units in 0u64..100_000_000, decimals in 0usize..4) {
+        use kymo::ui::axis::parse_time;
+        let t = units as f64 / 1000.0;
+        let t = (t * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32);
+        for clock in [Clock::Seconds, Clock::Minutes, Clock::Hours] {
+            let text = format_time(t, decimals, clock);
+            let back = parse_time(&text).unwrap();
+            prop_assert!((back - t).abs() < 1e-6, "{text} read as {back}, not {t}");
+        }
+    }
+}
