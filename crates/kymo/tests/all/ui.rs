@@ -1842,11 +1842,11 @@ fn the_shortcut_overview_and_about_open() {
     harness.step();
     assert!(harness.state().shortcuts_open());
     harness.get_by_label("Trackpad and Mouse");
-    harness.get_by_label("Pinch");
+    harness.get_by_label("Scroll channels");
     harness.key_press_modifiers(command(), Key::Slash);
     harness.step();
     assert!(!harness.state().shortcuts_open());
-    assert!(harness.query_by_label("Pinch").is_none());
+    assert!(harness.query_by_label("Scroll channels").is_none());
 
     choose(&mut harness, "Help", "About Kymo");
     assert!(harness.state().about_open());
@@ -1876,7 +1876,7 @@ fn esc_and_close_close_the_window_in_front() {
     // A click brings one to the front.
     press(&mut harness, command(), Key::Slash);
     press(&mut harness, command(), Key::Comma);
-    harness.get_by_label("Pinch").click();
+    harness.get_by_label("Pan time").click();
     harness.run_steps(2);
     press(&mut harness, Modifiers::NONE, Key::Escape);
     assert_eq!(open(&harness), (true, false));

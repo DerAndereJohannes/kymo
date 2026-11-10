@@ -78,12 +78,32 @@ fn gestures_use_the_platform_modifiers() {
     let gestures = |p| overview(p).remove(0);
     let mac = gestures(Platform::Mac);
     assert_eq!(mac.title, "Trackpad and Mouse");
-    let keys: Vec<_> = mac.rows.iter().map(|r| r.keys.as_str()).collect();
-    assert!(keys.contains(&"⌘ + scroll"), "{keys:?}");
-    assert!(keys.contains(&"⌥ + scroll or ⌥ + pinch"), "{keys:?}");
-    assert!(keys.contains(&"Pinch"));
+    let keys = |section: &kymo::shortcuts::Section, action: &str| {
+        section
+            .rows
+            .iter()
+            .find(|r| r.action == action)
+            .unwrap()
+            .keys
+            .clone()
+    };
+    assert_eq!(
+        keys(&mac, "Zoom time around the pointer"),
+        "Pinch or ⌘ + scroll"
+    );
+    assert_eq!(keys(&mac, "Scale amplitudes"), "⌥ + pinch or ⌥ + scroll");
     let linux = gestures(Platform::Linux);
-    let keys: Vec<_> = linux.rows.iter().map(|r| r.keys.as_str()).collect();
-    assert!(keys.contains(&"Ctrl + scroll"), "{keys:?}");
-    assert!(keys.contains(&"Shift + wheel"), "{keys:?}");
+    assert_eq!(
+        keys(&linux, "Zoom time around the pointer"),
+        "Pinch or Ctrl + scroll"
+    );
+    assert!(keys(&linux, "Pan time").contains("Shift + wheel"));
+    // A row per action.
+    for section in [mac, linux] {
+        let mut actions: Vec<_> = section.rows.iter().map(|r| r.action).collect();
+        actions.sort_unstable();
+        let count = actions.len();
+        actions.dedup();
+        assert_eq!(actions.len(), count, "{actions:?}");
+    }
 }

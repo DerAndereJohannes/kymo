@@ -69,43 +69,42 @@ fn row(platform: Platform, action: Action) -> Option<Row> {
     })
 }
 
-/// The trackpad and mouse gestures, with the platform's modifier names.
+/// The trackpad and mouse gestures, a row per action with every way to do it, with the
+/// platform's modifier names.
 fn gestures(platform: Platform) -> Vec<Row> {
     let (command, alt, shift) = match platform {
         Platform::Mac => ("⌘", "⌥", "⇧"),
         Platform::Windows | Platform::Linux => ("Ctrl", "Alt", "Shift"),
     };
-    let row = |keys: String, action| Row { keys, action };
+    let row = |action, keys: String| Row { keys, action };
     vec![
-        row("Scroll sideways".into(), "Pan time"),
-        row("Scroll up or down".into(), "Scroll channels"),
-        row("Pinch".into(), "Zoom time around the pointer"),
         row(
-            format!("{command} + scroll"),
+            "Pan time",
+            format!("Scroll sideways, {shift} + wheel, or drag the traces"),
+        ),
+        row("Scroll channels", "Scroll up or down".into()),
+        row(
             "Zoom time around the pointer",
+            format!("Pinch or {command} + scroll"),
         ),
-        row(format!("{shift} + wheel"), "Pan time"),
         row(
-            format!("{alt} + scroll or {alt} + pinch"),
             "Scale amplitudes",
+            format!("{alt} + pinch or {alt} + scroll"),
         ),
-        row("Drag the traces".into(), "Pan time"),
         row(
-            "Drag the traces in annotation mode".into(),
             "Create an annotation",
+            "Drag the traces in annotation mode".into(),
         ),
-        row("Click an annotation in annotation mode".into(), "Select it"),
+        row("Select an annotation", "Click it in annotation mode".into()),
+        row("Move the selected annotation", "Drag it".into()),
         row(
-            "Drag the selected annotation".into(),
-            "Move it, or resize it at an edge",
-        ),
-        row(
-            "Click a channel name beside the traces".into(),
-            "Mark it bad or good",
+            "Resize the selected annotation",
+            "Drag one of its edges".into(),
         ),
         row(
-            "Click a channel name in the sidebar".into(),
-            "Go to the channel",
+            "Mark a channel bad or good",
+            "Click its name beside the traces".into(),
         ),
+        row("Go to a channel", "Click its name in the sidebar".into()),
     ]
 }

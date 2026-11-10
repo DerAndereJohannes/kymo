@@ -3,8 +3,8 @@
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{
-    self, Atom, Button, IdSalt, Response, RichText, ScrollArea, Shape, StrokeKind, Ui, Vec2,
-    WidgetInfo, pos2,
+    self, Align, Atom, Button, IdSalt, Label, Layout, Response, RichText, ScrollArea, Sense, Shape,
+    StrokeKind, TextStyle, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 
 use crate::action::Action;
@@ -159,35 +159,67 @@ fn check_item(
     response
 }
 
-/// The shortcut overview, while `open`.
+/// The shortcut overview, while `open`: per section a row per action, the action at the
+/// left and its keys or gestures right-aligned, in columns as wide as their widest entry in
+/// any section, so all sections line up.
 pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform) {
+    let sections = overview(platform);
     egui::Window::new(Action::Shortcuts.label())
         .id(Overlay::Shortcuts.id())
         .open(open)
         .collapsible(false)
+        .resizable([false, true])
         .default_height(480.0)
         .show(ctx, |ui| {
+            let font = TextStyle::Body.resolve(ui.style());
+            let color = ui.visuals().text_color();
+            let widest = |text: &dyn Fn(&crate::shortcuts::Row) -> &str| {
+                let rows = sections.iter().flat_map(|s| &s.rows);
+                ui.fonts_mut(|f| {
+                    rows.map(|row| {
+                        f.layout_no_wrap(text(row).to_owned(), font.clone(), color)
+                            .size()
+                            .x
+                    })
+                    .fold(0.0, f32::max)
+                })
+            };
+            let padding = 6.0;
+            let width = widest(&|r| r.action) + COLUMN_GAP + widest(&|r| &r.keys) + 2.0 * padding;
+            let row_height = ui.spacing().interact_size.y;
             ScrollArea::vertical().show(ui, |ui| {
-                for (i, section) in overview(platform).iter().enumerate() {
+                // Room for the scroll bar, which floats over the content's right edge.
+                let scroll = &ui.spacing().scroll;
+                ui.set_min_width(width + scroll.bar_width + scroll.bar_inner_margin);
+                for (i, section) in sections.iter().enumerate() {
                     if i > 0 {
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
                     }
                     ui.label(RichText::new(section.title).strong());
-                    egui::Grid::new(("shortcuts", i))
-                        .num_columns(2)
-                        .spacing([24.0, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for row in &section.rows {
-                                ui.label(RichText::new(&row.keys).monospace());
-                                ui.label(row.action);
-                                ui.end_row();
-                            }
+                    for (j, row) in section.rows.iter().enumerate() {
+                        let (rect, _) =
+                            ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
+                        if j % 2 == 1 {
+                            ui.painter()
+                                .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+                        }
+                        let mut cells = ui.new_child(
+                            UiBuilder::new()
+                                .max_rect(rect.shrink2(vec2(padding, 0.0)))
+                                .layout(Layout::left_to_right(Align::Center)),
+                        );
+                        cells.add(Label::new(row.action).extend());
+                        cells.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add(Label::new(RichText::new(&row.keys).weak()).extend());
                         });
+                    }
                 }
             });
         });
 }
+
+/// Room between an action and its keys in the shortcut overview, in points.
+const COLUMN_GAP: f32 = 32.0;
 
 /// The About window (Windows and Linux; macOS uses the system's About panel).
 pub fn about_window(ctx: &egui::Context, open: &mut bool) {
