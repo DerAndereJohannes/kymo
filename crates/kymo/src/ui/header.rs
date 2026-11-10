@@ -62,8 +62,11 @@ const LEGEND_ROWS: f32 = 8.0;
 /// annotation mode, `annotations.field` edits the description new annotations get, or the
 /// selected annotation's, above the legend, which then shows even without annotations.
 /// Returns a description picked from the field's menu for the selected annotation.
+/// `recording` names this opening of the recording (the viewer's serial): the lists start
+/// at their top for each.
 pub fn header_panel(
     ui: &mut Ui,
+    recording: u64,
     document: &Document,
     summary: &Summary,
     view: &mut ViewState,
@@ -144,13 +147,13 @@ pub fn header_panel(
                     relabel = description_row(ui, field, legend);
                 }
                 if !legend.is_empty() {
-                    legend_list(ui, legend, annotation_colors);
+                    legend_list(ui, recording, legend, annotation_colors);
                 }
             });
     }
     kind_list(ui, view, type_colors);
     ui.separator();
-    channel_list(ui, document, view, type_colors);
+    channel_list(ui, recording, document, view, type_colors);
     relabel
 }
 
@@ -256,7 +259,7 @@ fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) ->
 /// many there are; then a row per description: a checkbox, its color (a click picks
 /// another, kept in `picked`), the description and how many annotations have it. Counts
 /// are right-aligned. Scrolls beyond [`LEGEND_ROWS`] description rows.
-fn legend_list(ui: &mut Ui, legend: &mut Legend, picked: &mut AnnotationColors) {
+fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut AnnotationColors) {
     let (shown, all) = legend.shown_count();
     let row_height = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -283,7 +286,7 @@ fn legend_list(ui: &mut Ui, legend: &mut Legend, picked: &mut AnnotationColors) 
     let height = (entries.len() as f32).min(LEGEND_ROWS)
         * (row_height + ui.spacing().item_spacing.y)
         - ui.spacing().item_spacing.y;
-    ScrollArea::vertical()
+    from_top(ui, "legend", recording, ScrollArea::vertical())
         .id_salt("legend")
         .min_scrolled_height(height)
         .max_height(height)
@@ -404,16 +407,20 @@ impl Columns {
 /// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
 /// it), whether it is bad, its type, its unit as the readout shows values (µV for EEG
 /// whatever the file stores) and its rate (right-aligned).
-fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_colors: &TypeColors) {
+fn channel_list(
+    ui: &mut Ui,
+    recording: u64,
+    document: &Document,
+    view: &mut ViewState,
+    type_colors: &TypeColors,
+) {
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
     let gap = 8.0;
-    ScrollArea::vertical().auto_shrink(false).show_rows(
-        ui,
-        row_height,
-        rec.channels().len(),
-        |ui, rows| {
+    from_top(ui, "channels", recording, ScrollArea::vertical())
+        .auto_shrink(false)
+        .show_rows(ui, row_height, rec.channels().len(), |ui, rows| {
             for i in rows {
                 let (rect, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -492,8 +499,7 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
                 let right = Layout::right_to_left(Align::Center);
                 cell(ui, columns.rate, right, weak(format_rate(rate)));
             }
-        },
-    );
+        });
 }
 
 /// Names a widget whose text doesn't say what it is for, for screen readers (and tests).
@@ -518,5 +524,22 @@ pub fn kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Resp => "Resp",
         ChannelKind::Bio => "Bio",
         _ => "Misc",
+    }
+}
+
+/// `area` scrolled to its top the first time it shows for `recording`. egui keeps scroll
+/// offsets by id, so another recording would start where the last one was, and, as egui's
+/// memory is saved, so would the first one after a restart.
+fn from_top(ui: &Ui, salt: &str, recording: u64, area: ScrollArea) -> ScrollArea {
+    let id = ui.scope_id().with(("scrolled for", salt));
+    let first = ui.data_mut(|d| {
+        let first = d.get_temp::<u64>(id) != Some(recording);
+        d.insert_temp(id, recording);
+        first
+    });
+    if first {
+        area.vertical_scroll_offset(0.0)
+    } else {
+        area
     }
 }

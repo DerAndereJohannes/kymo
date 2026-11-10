@@ -690,6 +690,7 @@ impl Viewer {
                     relabel = within_width(ui, |ui| {
                         header_panel(
                             ui,
+                            self.serial,
                             &self.document,
                             &self.summary,
                             &mut self.view,

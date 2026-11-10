@@ -4137,3 +4137,44 @@ fn the_sidebar_has_no_open_button() {
     harness.run_steps(2);
     harness.get_by_label("Open…");
 }
+
+/// A recording with 60 channels, more than the channel list shows at once.
+fn many_channels() -> TempFile {
+    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    let status = spec.channels.pop().unwrap();
+    for k in 0..55 {
+        spec.channels.push(kymo_testgen::ChannelSpec::eeg(
+            format!("E{k}"),
+            512,
+            spec.format,
+        ));
+    }
+    spec.channels.push(status);
+    let file = TempFile::new(spec.format.extension());
+    kymo_testgen::write(&spec, file.path()).unwrap();
+    file
+}
+
+/// Another recording's channel list starts at its top, not where the last one was.
+#[test]
+fn the_channel_list_starts_at_the_top_for_each_recording() {
+    use egui::accesskit::Role;
+    let (first, second) = (many_channels(), many_channels());
+    let mut harness = window(first.path());
+    ready(&mut harness);
+    let a1 = harness
+        .get_by_role_and_label(Role::Label, "A1")
+        .rect()
+        .center();
+    harness.hover_at(a1);
+    for _ in 0..10 {
+        scroll(&mut harness, egui::vec2(0.0, -2000.0), Modifiers::NONE);
+    }
+    harness.run_steps(2);
+    assert!(harness.query_by_label("A1 bad").is_none(), "not scrolled");
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open(&ctx, second.path().to_owned());
+    ready(&mut harness);
+    assert!(harness.query_by_label("A1 bad").is_some(), "still scrolled");
+}
