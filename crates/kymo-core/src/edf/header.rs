@@ -192,7 +192,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
         let kind = kind(&label);
         channels.push(Channel {
             kind,
-            unit: unit(dimension),
+            unit: Unit::from_label(dimension),
             gain,
             offset,
             grid: GridId(0), // assigned below
@@ -380,17 +380,6 @@ fn kind(label: &str) -> ChannelKind {
         Some("EMG") => ChannelKind::Emg,
         _ => ChannelKind::Eeg,
     }
-}
-
-fn unit(label: String) -> Unit {
-    let to_si = match label.trim() {
-        "V" => Some(1.0),
-        "mV" => Some(1e-3),
-        "uV" | "\u{b5}V" | "UV" | "uv" => Some(1e-6),
-        "nV" => Some(1e-9),
-        _ => None,
-    };
-    Unit { label, to_si }
 }
 
 /// Parses `dd.mm.yy` and `hh.mm.ss`. Two-digit years are 1985-2084; for EDF+/BDF+ the

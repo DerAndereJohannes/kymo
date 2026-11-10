@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a024fdfe00e5eee9e4e4ab92da7fae029b787f4313d6b714ac9ec44de5313d8a # shrinks to case = Case { spec: Spec { format: BrainVision(Vectorized, Int16), start: 2024-01-02T03:04:05, patient: "X X X X", recording: "kymo-testgen", record_duration: 1.0, n_records: 2, first_onset: 0.0, channels: [ChannelSpec { label: "E0", transducer: "AgAgCl electrode", dimension: "µV", physical_min: -3276.8, physical_max: 3276.7, digital_min: -32768, digital_max: 32767, prefilter: "HP:0.1Hz LP:100Hz", samples_per_record: 1, trigger: false, amplitude: 15.0 }], gaps: [], annotations: [], seed: 0, spike_every: 7 }, reads: [([0], 1..2)] }

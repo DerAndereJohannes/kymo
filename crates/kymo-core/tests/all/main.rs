@@ -9,6 +9,7 @@ mod common;
 
 mod annotation_file;
 mod annotations;
+mod brainvision;
 mod decode;
 mod edf_header;
 mod edf_plus;

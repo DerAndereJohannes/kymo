@@ -42,7 +42,7 @@ cargo test --workspace
 cargo run -p kymo --release -- file.bdf
 ```
 
-`cargo run -p kymo-testgen -- --help` lists the synthetic EDF/BDF files the generator can write, if you need a recording to open.
+`cargo run -p kymo-testgen -- --help` lists the synthetic EDF/BDF and BrainVision files the generator can write, if you need a recording to open.
 
 Without a GPU, the renderer's tests pass and print that they were skipped. Set `KYMO_REQUIRE_GPU=1` to make them fail instead, as CI does on Linux.
 

@@ -3,6 +3,7 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
+use crate::brainvision::BrainVisionError;
 use crate::edf::EdfError;
 use crate::tile::TileKey;
 use crate::{AnnotationId, ChannelId, GridId, SampleType};
@@ -123,6 +124,11 @@ pub enum OpenError {
     },
     #[error("{}: {source}", path.display())]
     Edf { path: PathBuf, source: EdfError },
+    #[error("{}: {source}", path.display())]
+    BrainVision {
+        path: PathBuf,
+        source: BrainVisionError,
+    },
     #[error("{}: {reason}", path.display())]
     Unsupported { path: PathBuf, reason: String },
 }

@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use kymo_testgen::{ChannelSpec, Error, Format, GapSpec, PRESETS, Spec, Tal};
+use kymo_testgen::{
+    Binary, ChannelSpec, Error, Format, GapSpec, Orientation, PRESETS, Spec, Tal, TempFile,
+};
 
 /// A small spec of `format` with mixed rates, scaling edge cases, and (where the format allows)
 /// gaps, a sub-second first onset and annotations.
@@ -171,7 +173,7 @@ fn parse_tals(bytes: &[u8]) -> Vec<ParsedTal> {
 
 #[test]
 fn file_size_is_header_plus_records() {
-    for format in Format::ALL {
+    for format in Format::EDF {
         let spec = small(format);
         let bps = format.bytes_per_sample() as u64;
         let annotation = spec.annotation_samples_per_record().unwrap();
@@ -197,7 +199,7 @@ fn writes_the_same_bytes_to_a_file() {
 
 #[test]
 fn header_fields_are_padded_ascii() {
-    for format in Format::ALL {
+    for format in Format::EDF {
         let spec = small(format);
         let out = bytes(&spec);
         let header_len = spec.header_bytes() as usize;
@@ -277,7 +279,7 @@ fn header_fields_are_padded_ascii() {
 
 #[test]
 fn samples_decode_to_the_truth_function() {
-    for format in Format::ALL {
+    for format in Format::EDF {
         let spec = small(format);
         let out = bytes(&spec);
         let record_bytes = spec.record_bytes().unwrap() as usize;
@@ -300,7 +302,7 @@ fn samples_decode_to_the_truth_function() {
 
 #[test]
 fn records_carry_time_keeping_and_annotations() {
-    for format in Format::ALL.into_iter().filter(|f| f.is_plus()) {
+    for format in Format::EDF.into_iter().filter(|f| f.is_plus()) {
         let spec = small(format);
         let out = bytes(&spec);
         let record_bytes = spec.record_bytes().unwrap() as usize;
@@ -686,4 +688,186 @@ fn cli_writes_a_preset() {
         let out = cli(bad);
         assert!(!out.status.success(), "{bad:?} should fail");
     }
+}
+
+/// A BrainVision spec of `format`: three channels, one with a comma in its name.
+fn brainvision(format: Format) -> Spec {
+    let channels = vec![
+        ChannelSpec::eeg("Fz", 50, format),
+        ChannelSpec::eeg("Cz, left", 50, format),
+        ChannelSpec {
+            dimension: "%".into(),
+            ..ChannelSpec::eeg("SpO2", 50, format)
+        },
+    ];
+    let mut spec = Spec::new(format, channels, 0.5, 9);
+    spec.seed = 13;
+    spec.spike_every = 11;
+    spec.annotations = vec![
+        Tal {
+            onset: 0.2,
+            duration: None,
+            texts: vec!["Stimulus/S  1".into(), "a, b".into()],
+        },
+        Tal {
+            onset: 1.0,
+            duration: Some(0.5),
+            texts: vec!["Bad Interval/Bad Min-Max".into()],
+        },
+    ];
+    spec
+}
+
+/// The stored values of a BrainVision data file, as i64.
+fn brainvision_values(bytes: &[u8], binary: Binary) -> Vec<i64> {
+    match binary {
+        Binary::Int16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i64::from(i16::from_le_bytes(*b)))
+            .collect(),
+        Binary::UInt16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i64::from(u16::from_le_bytes(*b)))
+            .collect(),
+        Binary::Int32 => bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i64::from(i32::from_le_bytes(*b)))
+            .collect(),
+        Binary::Float32 => bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b) as i64)
+            .collect(),
+    }
+}
+
+#[test]
+fn brainvision_writes_three_files() {
+    for format in Format::BRAINVISION {
+        let Format::BrainVision(orientation, binary) = format else {
+            unreachable!()
+        };
+        let spec = brainvision(format);
+        let file = TempFile::written(&spec);
+        let vhdr = std::fs::read_to_string(file.path()).unwrap();
+        let eeg = std::fs::read(file.companion("eeg")).unwrap();
+        let vmrk = std::fs::read_to_string(file.companion("vmrk")).unwrap();
+        assert_eq!(eeg.len() as u64, spec.file_size().unwrap());
+
+        let lines: Vec<&str> = vhdr.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Brain Vision Data Exchange Header File Version 1.0"
+        );
+        let orientation_line = match orientation {
+            Orientation::Multiplexed => "DataOrientation=MULTIPLEXED",
+            Orientation::Vectorized => "DataOrientation=VECTORIZED",
+        };
+        for expected in [
+            orientation_line,
+            &format!("BinaryFormat={}", binary.name()),
+            "NumberOfChannels=3",
+            "DataPoints=450",
+            "SamplingInterval=10000",
+            "Ch2=Cz\\1 left,,0.1,\u{b5}V",
+            "Ch3=SpO2,,0.1,%",
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "{format:?}: no {expected:?} in\n{vhdr}"
+            );
+        }
+
+        // Samples in the file's order, against the truth function.
+        let values = brainvision_values(&eeg, binary);
+        for (k, v) in values.into_iter().enumerate() {
+            let (c, i) = match orientation {
+                Orientation::Multiplexed => (k % 3, k / 3),
+                Orientation::Vectorized => (k / 450, k % 450),
+            };
+            assert_eq!(
+                v,
+                i64::from(spec.digital(c, i as u64)),
+                "{format:?} {c} {i}"
+            );
+        }
+
+        // A New Segment with the start date, then a marker per text, positions from 1.
+        let markers: Vec<&str> = vmrk.lines().filter(|l| l.starts_with("Mk")).collect();
+        assert_eq!(
+            markers,
+            [
+                "Mk1=New Segment,,1,1,0,20240102030405000000",
+                "Mk2=Stimulus,S  1,21,1,0",
+                "Mk3=,a\\1 b,21,1,0",
+                "Mk4=Bad Interval,Bad Min-Max,101,50,0",
+            ]
+        );
+    }
+}
+
+#[test]
+fn brainvision_specs_are_checked() {
+    let format = Format::BrainVision(Orientation::Vectorized, Binary::Int32);
+    let cases: Vec<(Spec, &str)> = vec![
+        (
+            {
+                let mut s = brainvision(format);
+                s.channels[1].samples_per_record = 25;
+                s
+            },
+            "one rate",
+        ),
+        (
+            {
+                let mut s = brainvision(format);
+                s.channels[0].physical_min += 1000.0;
+                s
+            },
+            "no offsets",
+        ),
+        (
+            {
+                let mut s = brainvision(format);
+                s.annotations[0].onset = 0.205;
+                s
+            },
+            "on a sample",
+        ),
+        (
+            {
+                let mut s = brainvision(format);
+                s.annotations[1].duration = Some(0.01);
+                s
+            },
+            "at least 2 whole samples",
+        ),
+        (
+            {
+                let mut s = brainvision(format);
+                s.channels[0].dimension = "µV,".into();
+                s
+            },
+            "comma",
+        ),
+    ];
+    for (spec, message) in cases {
+        let path = temp_path("checked.vhdr");
+        let error = kymo_testgen::write(&spec, &path).unwrap_err();
+        assert!(
+            matches!(&error, Error::Invalid(m) if m.contains(message)),
+            "expected {message:?}, got {error}"
+        );
+    }
+    // One stream can't hold three files, and there are no EDF records.
+    let spec = brainvision(format);
+    assert!(kymo_testgen::write_to(&spec, &mut Vec::new()).is_err());
+    assert!(spec.record_bytes().is_err());
 }

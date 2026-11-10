@@ -15,27 +15,37 @@ fn fresh_path(extension: &str) -> PathBuf {
     std::env::temp_dir().join(name)
 }
 
-/// A path in the temp directory, unique within the process, whose file is deleted on drop.
+/// A path in the temp directory, unique within the process, whose file is deleted on drop
+/// (with the files written beside it, for formats of several files).
 ///
 /// Declare it before anything that maps the file, so the mapping is gone first: Windows
 /// refuses to delete mapped files.
 #[derive(Debug)]
-pub struct TempFile(PathBuf);
+pub struct TempFile {
+    path: PathBuf,
+    /// Files written beside `path`, deleted with it.
+    companions: Vec<PathBuf>,
+}
 
 impl TempFile {
     /// A fresh path ending in `.extension`; nothing is created.
     pub fn new(extension: &str) -> TempFile {
-        TempFile(fresh_path(extension))
+        TempFile {
+            path: fresh_path(extension),
+            companions: Vec::new(),
+        }
     }
 
-    /// `spec` written to a fresh file.
+    /// `spec` written to a fresh file; for BrainVision, [`path`](Self::path) is the header,
+    /// with the data and marker files beside it.
     ///
     /// # Panics
     /// If the spec is invalid or the file can't be written.
     pub fn written(spec: &Spec) -> TempFile {
-        let file = TempFile::new(spec.format.extension());
-        if let Err(error) = write(spec, &file.0) {
-            panic!("cannot write {}: {error}", file.0.display());
+        let mut file = TempFile::new(spec.format.extension());
+        file.companions = spec.format.files(&file.path).split_off(1);
+        if let Err(error) = write(spec, &file.path) {
+            panic!("cannot write {}: {error}", file.path.display());
         }
         file
     }
@@ -52,13 +62,31 @@ impl TempFile {
     }
 
     pub fn path(&self) -> &Path {
-        &self.0
+        &self.path
+    }
+
+    /// The path of the companion file with `extension` (BrainVision's "eeg" or "vmrk").
+    ///
+    /// # Panics
+    /// If there is none.
+    pub fn companion(&self, extension: &str) -> &Path {
+        match self
+            .companions
+            .iter()
+            .find(|p| p.extension().is_some_and(|e| e == extension))
+        {
+            Some(path) => path,
+            None => panic!("{} has no .{extension} companion", self.path.display()),
+        }
     }
 }
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.path);
+        for companion in &self.companions {
+            let _ = std::fs::remove_file(companion);
+        }
     }
 }
 

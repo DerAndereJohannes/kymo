@@ -296,11 +296,17 @@ fn pyramids_of_two_grids() {
     }
 }
 
-/// Through the real reader: generated EDF+D (mixed rates, gaps, huge offset, negative gain)
-/// and BDF+C files.
+/// Through the real readers: generated EDF+D (mixed rates, gaps, huge offset, negative
+/// gain), BDF+C and BrainVision files (both layouts; int16, int32 and float32).
 #[test]
 fn pyramids_of_generated_files() {
-    for preset in ["edf+d-mixed", "bdf+c-small"] {
+    for preset in [
+        "edf+d-mixed",
+        "bdf+c-small",
+        "bv-int16-multiplexed",
+        "bv-int32-vectorized",
+        "bv-float32-multiplexed",
+    ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
         let rec = Recording::new(kymo_core::open(file.path()).unwrap())

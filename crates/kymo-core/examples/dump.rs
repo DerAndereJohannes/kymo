@@ -6,13 +6,14 @@
 //! ```
 //!
 //! Writes to OUTDIR:
-//! - `header.json`: format, start time, duration, warnings, channels and grids (rate, start,
-//!   length, segments, channel ids)
+//! - `header.json`: format, start time, duration, warnings, channels (with their prefilter)
+//!   and grids (rate, start, length, segments, sample type, channel ids)
 //! - `annotations.json`: onset, duration and description of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
-//! - `grid{g}.i32`: the same samples as raw digital values (little-endian i32, 0 in gaps)
+//! - `grid{g}.i32`: for integer grids, the same samples as raw digital values (little-endian
+//!   i32, 0 in gaps); float grids have none
 //! - `events.json`: per stim channel, its events (sample and code) under the default rule
 //!   (every change to a non-zero code, none at the first sample), from a pyramid build
 //!
@@ -78,7 +79,11 @@ fn main() -> Result<()> {
                 out.join(format!("grid{g}.{ext}")),
             )?))
         };
-        let (mut physical, mut native) = (create("f32")?, create("i32")?);
+        let mut physical = create("f32")?;
+        let mut native = match grid.sample_type() {
+            SampleType::F32 => None,
+            _ => Some(create("i32")?),
+        };
         let id = GridId(g as u32);
         for w in windows {
             let n = grid.channels().len() * (w.end - w.start) as usize;
@@ -87,6 +92,9 @@ fn main() -> Result<()> {
             for v in values {
                 physical.write_all(&v.to_le_bytes())?;
             }
+            let Some(native) = native.as_mut() else {
+                continue;
+            };
             let digital: Vec<i32> = match grid.sample_type() {
                 SampleType::I16 => {
                     let mut buf = vec![0i16; n];
@@ -105,7 +113,9 @@ fn main() -> Result<()> {
             }
         }
         physical.flush()?;
-        native.flush()?;
+        if let Some(native) = native.as_mut() {
+            native.flush()?;
+        }
     }
     windows_json.push_str("\n]\n");
     fs::write(out.join("windows.json"), windows_json)?;
@@ -188,13 +198,14 @@ fn header_json(rec: &Recording) -> String {
         let _ = write!(
             j,
             "{sep}\n    {{\"name\": {}, \"kind\": {}, \"unit\": {}, \"to_si\": {to_si}, \
-             \"gain\": {}, \"offset\": {}, \"grid\": {}}}",
+             \"gain\": {}, \"offset\": {}, \"grid\": {}, \"prefilter\": {}}}",
             string(&c.name),
             string(&format!("{:?}", c.kind)),
             string(&c.unit.label),
             c.gain,
             c.offset,
-            c.grid.0
+            c.grid.0,
+            string(&c.prefilter)
         );
     }
     j.push_str("\n  ],\n  \"grids\": [");
@@ -209,11 +220,12 @@ fn header_json(rec: &Recording) -> String {
         let _ = write!(
             j,
             "{sep}\n    {{\"rate\": {}, \"start\": {}, \"len\": {}, \"segments\": [{}], \
-             \"channels\": [{}]}}",
+             \"sample_type\": \"{:?}\", \"channels\": [{}]}}",
             grid.rate(),
             grid.time_of(0),
             grid.len(),
             segments.join(", "),
+            grid.sample_type(),
             channels.join(", ")
         );
     }

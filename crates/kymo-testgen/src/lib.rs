@@ -1,8 +1,9 @@
-//! Synthetic EDF/BDF files for tests and benchmarks.
+//! Synthetic EDF/BDF and BrainVision files for tests and benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
-//! record layout, gaps (EDF+D/BDF+D) and TAL annotations (EDF+/BDF+). [`write()`] streams it to
-//! disk. The sample values come from a deterministic truth function, [`Spec::digital`], so tests
+//! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
+//! BrainVision). [`write()`] streams it to disk. Records are EDF's data records; formats
+//! without them (BrainVision) only take their length from them. The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
 //! The truth function is a sine plus a sawtooth ramp plus seeded hash noise, together within
@@ -12,6 +13,7 @@
 //! min/max pyramid that drops a peak is caught at once. Spikes are rare by default
 //! ([`Spec::spike_every`]), so they don't cover the traces in a viewer.
 
+mod brainvision;
 mod header;
 mod signal;
 mod temp;
@@ -33,10 +35,54 @@ pub enum Format {
     Bdf,
     BdfPlusC,
     BdfPlusD,
+    /// BrainVision: a header (`.vhdr`, the path written to), the samples (`.eeg`) and the
+    /// markers (`.vmrk`) beside it. One rate, no offsets (physical = digital × resolution),
+    /// no gaps; a "record" is only a unit of length.
+    BrainVision(Orientation, Binary),
+}
+
+/// How a BrainVision data file orders its samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Orientation {
+    /// Sample-major: every channel's sample, then the next sample.
+    Multiplexed,
+    /// Channel-major: all samples of a channel, then the next channel.
+    Vectorized,
+}
+
+/// The sample type of a BrainVision data file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Binary {
+    Int16,
+    /// Not read by MNE.
+    UInt16,
+    Int32,
+    /// The truth function's integers, stored as floats (exact up to 2^24).
+    Float32,
+}
+
+impl Binary {
+    pub const ALL: [Binary; 4] = [
+        Binary::Int16,
+        Binary::UInt16,
+        Binary::Int32,
+        Binary::Float32,
+    ];
+
+    /// The `BinaryFormat` value of the header.
+    pub fn name(self) -> &'static str {
+        match self {
+            Binary::Int16 => "INT_16",
+            Binary::UInt16 => "UINT_16",
+            Binary::Int32 => "INT_32",
+            Binary::Float32 => "IEEE_FLOAT_32",
+        }
+    }
 }
 
 impl Format {
-    pub const ALL: [Format; 6] = [
+    /// The EDF and BDF formats.
+    pub const EDF: [Format; 6] = [
         Format::Edf,
         Format::EdfPlusC,
         Format::EdfPlusD,
@@ -45,6 +91,19 @@ impl Format {
         Format::BdfPlusD,
     ];
 
+    /// Every BrainVision layout and sample type.
+    pub const BRAINVISION: [Format; 8] = [
+        Format::BrainVision(Orientation::Multiplexed, Binary::Int16),
+        Format::BrainVision(Orientation::Multiplexed, Binary::UInt16),
+        Format::BrainVision(Orientation::Multiplexed, Binary::Int32),
+        Format::BrainVision(Orientation::Multiplexed, Binary::Float32),
+        Format::BrainVision(Orientation::Vectorized, Binary::Int16),
+        Format::BrainVision(Orientation::Vectorized, Binary::UInt16),
+        Format::BrainVision(Orientation::Vectorized, Binary::Int32),
+        Format::BrainVision(Orientation::Vectorized, Binary::Float32),
+    ];
+
+    /// The format's name as kymo reports it (`Recording::format`).
     pub fn name(self) -> &'static str {
         match self {
             Format::Edf => "EDF",
@@ -53,23 +112,24 @@ impl Format {
             Format::Bdf => "BDF",
             Format::BdfPlusC => "BDF+C",
             Format::BdfPlusD => "BDF+D",
+            Format::BrainVision(..) => "BrainVision",
         }
-    }
-
-    /// Parses a name as returned by [`name`](Self::name), case-insensitively.
-    pub fn parse(name: &str) -> Option<Format> {
-        Format::ALL
-            .into_iter()
-            .find(|f| f.name().eq_ignore_ascii_case(name))
     }
 
     pub fn is_bdf(self) -> bool {
         matches!(self, Format::Bdf | Format::BdfPlusC | Format::BdfPlusD)
     }
 
+    pub fn is_brainvision(self) -> bool {
+        matches!(self, Format::BrainVision(..))
+    }
+
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
     pub fn is_plus(self) -> bool {
-        !matches!(self, Format::Edf | Format::Bdf)
+        matches!(
+            self,
+            Format::EdfPlusC | Format::EdfPlusD | Format::BdfPlusC | Format::BdfPlusD
+        )
     }
 
     /// EDF+D or BDF+D: records may be separated by gaps.
@@ -77,23 +137,55 @@ impl Format {
         matches!(self, Format::EdfPlusD | Format::BdfPlusD)
     }
 
-    /// Bytes per stored sample: 2 (int16) or 3 (int24).
-    pub fn bytes_per_sample(self) -> usize {
-        if self.is_bdf() { 3 } else { 2 }
+    /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's
+    /// are `digital × gain`.
+    pub fn has_offset(self) -> bool {
+        !self.is_brainvision()
     }
 
-    /// The range of the stored integer type.
-    pub fn digital_limits(self) -> (i32, i32) {
-        if self.is_bdf() {
-            (-8_388_608, 8_388_607)
-        } else {
-            (-32_768, 32_767)
+    /// Bytes per stored sample.
+    pub fn bytes_per_sample(self) -> usize {
+        match self {
+            Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
+            Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
+            f if f.is_bdf() => 3,
+            _ => 2,
         }
     }
 
-    /// File extension, `"edf"` or `"bdf"`.
+    /// The range of digital values the format stores (for float32, the integers it stores
+    /// exactly).
+    pub fn digital_limits(self) -> (i32, i32) {
+        match self {
+            Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767),
+            Format::BrainVision(_, Binary::UInt16) => (0, 65_535),
+            Format::BrainVision(_, Binary::Int32) => (i32::MIN, i32::MAX),
+            Format::BrainVision(_, Binary::Float32) => (-16_777_216, 16_777_216),
+            f if f.is_bdf() => (-8_388_608, 8_388_607),
+            _ => (-32_768, 32_767),
+        }
+    }
+
+    /// Extension of the file written to: `"edf"`, `"bdf"` or `"vhdr"`.
     pub fn extension(self) -> &'static str {
-        if self.is_bdf() { "bdf" } else { "edf" }
+        match self {
+            Format::BrainVision(..) => "vhdr",
+            f if f.is_bdf() => "bdf",
+            _ => "edf",
+        }
+    }
+
+    /// Every file [`write()`] writes for `path`: `path` itself, plus BrainVision's data and
+    /// marker files beside it.
+    pub fn files(self, path: &std::path::Path) -> Vec<std::path::PathBuf> {
+        match self {
+            Format::BrainVision(..) => vec![
+                path.to_owned(),
+                path.with_extension("eeg"),
+                path.with_extension("vmrk"),
+            ],
+            _ => vec![path.to_owned()],
+        }
     }
 }
 
@@ -133,17 +225,26 @@ impl ChannelSpec {
     /// An EEG channel with the usual full-range scaling of the format:
     /// 0.1 uV per bit for EDF, about 0.03125 uV per bit for BDF (as BioSemi). Its signal
     /// stays within [`EEG_AMPLITUDE`] of zero, as real EEG does.
+    ///
+    /// BrainVision channels get 0.1 µV per step and no offset: int16 over its whole range,
+    /// uint16 from 0 (so its signal sits at 3276.75 µV), int32 and float32 over BDF's range.
     pub fn eeg(label: impl Into<String>, samples_per_record: u32, format: Format) -> Self {
-        let (digital_min, digital_max) = format.digital_limits();
-        let (physical_min, physical_max) = if format.is_bdf() {
-            (-262_144.0, 262_143.0)
-        } else {
-            (-3276.8, 3276.7)
+        let (digital_min, digital_max, physical_min, physical_max) = match format {
+            Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
+            Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
+            Format::BrainVision(..) => (-8_388_608, 8_388_607, -838_860.8, 838_860.7),
+            f if f.is_bdf() => (-8_388_608, 8_388_607, -262_144.0, 262_143.0),
+            _ => (-32_768, 32_767, -3276.8, 3276.7),
         };
         ChannelSpec {
             label: label.into(),
             transducer: "AgAgCl electrode".into(),
-            dimension: "uV".into(),
+            dimension: if format.is_brainvision() {
+                "\u{b5}V"
+            } else {
+                "uV"
+            }
+            .into(),
             physical_min,
             physical_max,
             digital_min,
@@ -163,8 +264,14 @@ impl ChannelSpec {
     /// between them. The first pulse may start at sample 0. In BDF, bits 16 to 23 carry
     /// status bits as BioSemi's do: bit 20 always set, bit 16 toggling every 1.5 s, so the
     /// raw value is never 0 and only its low 16 bits hold the codes.
+    ///
+    /// BrainVision has no trigger channels (its events are markers); there this is a channel
+    /// of unit "Boolean" over codes 0 to 65535 (32767 for int16), which reads as misc.
     pub fn trigger(samples_per_record: u32, format: Format) -> Self {
-        let (digital_min, digital_max) = format.digital_limits();
+        let (digital_min, digital_max) = match format.digital_limits() {
+            (lo, hi) if format.is_brainvision() => (lo.max(0), hi.min(65_535)),
+            limits => limits,
+        };
         ChannelSpec {
             label: if format.is_bdf() { "Status" } else { "TRIGGER" }.into(),
             transducer: "Triggers and Status".into(),
@@ -366,24 +473,36 @@ impl Spec {
         signal::ChannelSignal::new(self, channel).spike(i).is_some()
     }
 
-    /// `digital(channel, i) * gain + offset`, in f64.
+    /// `digital(channel, i) * gain + offset`, in f64; without the offset for formats that
+    /// have none ([`Format::has_offset`]).
     pub fn physical(&self, channel: usize, i: u64) -> f64 {
         let c = &self.channels[channel];
-        f64::from(self.digital(channel, i)) * c.gain() + c.offset()
+        let offset = if self.format.has_offset() {
+            c.offset()
+        } else {
+            0.0
+        };
+        f64::from(self.digital(channel, i)) * c.gain() + offset
     }
 
-    /// Size of the header in bytes: 256 per signal plus 256, annotation signal included.
+    /// EDF/BDF: size of the header in bytes, 256 per signal plus 256, annotation signal
+    /// included.
     pub fn header_bytes(&self) -> u64 {
         256 * (self.signal_count() as u64 + 1)
     }
 
-    /// Size of one data record in bytes.
+    /// EDF/BDF: size of one data record in bytes. An error for other formats.
     pub fn record_bytes(&self) -> Result<u64, Error> {
         Ok(write::Layout::new(self)?.record_bytes as u64)
     }
 
-    /// Size of the whole file in bytes.
+    /// Size of the file in bytes; for BrainVision, of the data file.
     pub fn file_size(&self) -> Result<u64, Error> {
+        if self.format.is_brainvision() {
+            self.validate()?;
+            let samples = self.len(0) * self.channels.len() as u64;
+            return Ok(samples * self.format.bytes_per_sample() as u64);
+        }
         Ok(self.header_bytes() + self.n_records * self.record_bytes()?)
     }
 
@@ -416,7 +535,7 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 }
 
 mod presets {
-    use super::{ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Spec, Tal};
+    use super::{Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Orientation, Spec, Tal};
 
     pub const LIST: &[(&str, &str)] = &[
         (
@@ -447,6 +566,21 @@ mod presets {
             "EDF+C, 32 EEG channels at 256 Hz, 1 h, 10,000 annotations of 8 descriptions, \
              overlapping, a fifth of them events (59 MB)",
         ),
+        (
+            "bv-int16-multiplexed",
+            "BrainVision, multiplexed int16, 8 channels (EEG, EOG, ECG, misc) at 500 Hz, \
+             2 min, markers",
+        ),
+        (
+            "bv-int32-vectorized",
+            "BrainVision, vectorized int32, 8 channels at 1000 Hz, 1 min, a large DC \
+             channel, markers",
+        ),
+        (
+            "bv-float32-multiplexed",
+            "BrainVision, multiplexed float32, 4 channels at 256 Hz, 1 min, units with the \
+             Greek mu, markers",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -457,6 +591,9 @@ mod presets {
             "edf+d-mixed" => edf_d_mixed(),
             "bdf+c-small" => bdf_c_small(),
             "edf+c-annotations" => edf_c_annotations(),
+            "bv-int16-multiplexed" => bv_int16_multiplexed(),
+            "bv-int32-vectorized" => bv_int32_vectorized(),
+            "bv-float32-multiplexed" => bv_float32_multiplexed(),
             _ => return None,
         };
         Some(spec)
@@ -586,6 +723,86 @@ mod presets {
             })
             .collect();
         spec.seed = 3;
+        spec
+    }
+
+    /// Markers every 1.5 s, on whole samples of `rate`: stimuli as Recorder writes them
+    /// ("Stimulus/S  1"), responses, a bad interval with a duration, and a comment with a
+    /// comma and a µ.
+    fn bv_markers(seconds: u32, rate: u32) -> Vec<Tal> {
+        (0..seconds * 2 / 3)
+            .map(|k| {
+                let onset = f64::from(k * 3 * rate / 2 + k % 5) / f64::from(rate);
+                let (text, duration) = match k % 6 {
+                    0 | 2 => (format!("Stimulus/S{:>3}", 1 + k % 4), None),
+                    1 => (format!("Response/R{:>3}", 1 + k % 3), None),
+                    3 => ("Bad Interval/Bad Min-Max".into(), Some(0.5)),
+                    4 => ("Comment/eyes closed, relaxed (5 \u{b5}V)".into(), Some(0.0)),
+                    _ => ("Stimulus/S 15".into(), None),
+                };
+                Tal {
+                    onset,
+                    duration,
+                    texts: vec![text],
+                }
+            })
+            .collect()
+    }
+
+    fn bv_int16_multiplexed() -> Spec {
+        let f = Format::BrainVision(Orientation::Multiplexed, Binary::Int16);
+        let mut channels: Vec<ChannelSpec> = ["Fp1", "Fz", "Cz", "Pz", "Oz"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 500, f))
+            .collect();
+        channels.push(ChannelSpec::eeg("HEOG", 500, f));
+        channels.push(ChannelSpec::eeg("ECG", 500, f));
+        channels.push(ChannelSpec {
+            label: "SpO2".into(),
+            dimension: "%".into(),
+            ..ChannelSpec::eeg("", 500, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 120);
+        spec.start = jiff::civil::date(2024, 2, 8).at(11, 58, 41, 181_247_000);
+        spec.annotations = bv_markers(120, 500);
+        spec.seed = 5;
+        spec
+    }
+
+    fn bv_int32_vectorized() -> Spec {
+        let f = Format::BrainVision(Orientation::Vectorized, Binary::Int32);
+        let mut channels: Vec<ChannelSpec> = (1..=7)
+            .map(|i| ChannelSpec::eeg(format!("E{i}"), 1000, f))
+            .collect();
+        channels.push(ChannelSpec {
+            // A large DC offset, 1 V at 0.1 µV per step, as DC amplifiers record.
+            label: "DC, raw".into(),
+            digital_min: 9_995_000,
+            digital_max: 10_005_000,
+            physical_min: 999_500.0,
+            physical_max: 1_000_500.0,
+            ..ChannelSpec::eeg("", 1000, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = bv_markers(60, 1000);
+        spec.seed = 6;
+        spec
+    }
+
+    fn bv_float32_multiplexed() -> Spec {
+        let f = Format::BrainVision(Orientation::Multiplexed, Binary::Float32);
+        let channels = ["C3", "C4", "VEOG", "EMG chin"]
+            .iter()
+            .enumerate()
+            .map(|(k, l)| ChannelSpec {
+                // The Greek mu (U+03BC), which LiveAmp's PyCorder writes.
+                dimension: if k < 2 { "\u{3bc}V" } else { "\u{b5}V" }.into(),
+                ..ChannelSpec::eeg(*l, 256, f)
+            })
+            .collect();
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = bv_markers(60, 256);
+        spec.seed = 7;
         spec
     }
 }

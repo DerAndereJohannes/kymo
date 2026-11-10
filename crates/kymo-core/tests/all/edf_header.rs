@@ -87,7 +87,7 @@ fn put(field: &mut [u8], value: &[u8]) {
 
 #[test]
 fn parses_generated_headers() {
-    for format in Format::ALL {
+    for format in Format::EDF {
         let spec = spec(format);
         let parsed = parse(&generated(&spec));
         let (h, layout) = (&parsed.header, &parsed.layout);
@@ -431,7 +431,7 @@ proptest! {
     /// Mutations of valid headers reach the deeper checks that random bytes rarely get to.
     #[test]
     fn mutated_headers_never_panic(
-        format in proptest::sample::select(Format::ALL.to_vec()),
+        format in proptest::sample::select(Format::EDF.to_vec()),
         edits in proptest::collection::vec(
             (any::<prop::sample::Index>(), prop_oneof![
                 proptest::sample::select(b"0123456789 -.,+eE".to_vec()),

@@ -39,7 +39,11 @@ fn main() -> Result<()> {
     let start = Instant::now();
     let (rec, _) = Recording::new(kymo_core::open(&file)?)?;
     println!("opened in {:.3} s", start.elapsed().as_secs_f64());
-    let bytes = std::fs::metadata(&file)?.len() as f64;
+    // Every file the samples come from (a BrainVision header and its data file, say).
+    let mut bytes = 0.0;
+    for source in rec.sources() {
+        bytes += std::fs::metadata(source)?.len() as f64;
+    }
 
     let start = Instant::now();
     let built = match &sidecar {

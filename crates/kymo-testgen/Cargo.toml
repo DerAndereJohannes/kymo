@@ -1,6 +1,6 @@
 [package]
 name = "kymo-testgen"
-description = "Generates synthetic EDF/BDF files for Kymo tests and benchmarks"
+description = "Generates synthetic EDF/BDF and BrainVision files for Kymo tests and benchmarks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

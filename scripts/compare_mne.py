@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mne", "numpy", "pandas"]
 # ///
-"""Compare Kymo's reading of EDF/BDF files with MNE-Python's.
+"""Compare Kymo's reading of EDF/BDF and BrainVision files with MNE-Python's.
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
@@ -16,7 +16,8 @@ through uv:
     uv run scripts/compare_mne.py ...
 
 For each file this runs `cargo run --release -p kymo-core --example dump`, reads the
-same file with mne.io.read_raw_edf/read_raw_bdf (preload=False, so large files work),
+same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision (preload=False, so
+large files work; BrainVision files are given by their .vhdr),
 and compares channel names, sampling rate, start time, samples (in SI units, at float32
 precision) and annotations. It exits with status 1 if anything differs.
 
@@ -40,6 +41,24 @@ Known differences between the readers, which the comparison accounts for:
   compared with mne.find_events(consecutive=True, shortest_event=1, mask=0xFFFF for
   BDF), at their position in MNE's joined data. MNE counts only positive codes there,
   so Kymo's events with negative codes (possible in EDF only) are left out.
+- Float samples may be NaN (BrainVision float32); they must be NaN in both readers.
+
+BrainVision, where Kymo deliberately differs from MNE:
+- Units with the Greek mu ("\u03bcV", U+03BC, as LiveAmp's PyCorder writes) are microvolts
+  in Kymo; MNE doesn't recognize them and leaves the values unscaled (and the channels
+  misc). MNE's values of such channels are compared after scaling them as Kymo does.
+- Kymo trims whitespace around channel names ("Dummy\t\t" is "Dummy"); MNE's names are
+  compared trimmed.
+- Kymo skips every New Segment marker at position 1 (the recording start); MNE skips the
+  first marker if it is a New Segment, wherever it is. MNE's New Segment annotations at
+  onset 0 are left out.
+- Markers of size 1 are points in time (duration 0) in Kymo; MNE makes them one sample
+  long. MNE's one-sample durations are compared as 0.
+- Kymo's description of a marker with an empty type or description is the other part
+  alone ("New Segment", not "New Segment/"); MNE's are compared without the lone "/".
+- Kymo's start time is the New Segment date moved back to the first sample; MNE takes the
+  date as it is. They agree for New Segments at position 1, as in every file seen so far.
+- Channel kinds and filters are not compared.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -198,13 +217,17 @@ def compare(path, max_values=None, annotation_files=False):
         annotations = json.loads((tmp / "annotations.json").read_text())
         windows = json.loads((tmp / "windows.json").read_text())
 
-        reader = (
-            mne.io.read_raw_bdf
-            if path.suffix.lower() == ".bdf"
-            else mne.io.read_raw_edf
-        )
+        brainvision = header["format"] == "BrainVision"
         try:
-            raw = reader(path, preload=False, verbose="error", infer_types=False)
+            if brainvision:
+                raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
+            else:
+                reader = (
+                    mne.io.read_raw_bdf
+                    if path.suffix.lower() == ".bdf"
+                    else mne.io.read_raw_edf
+                )
+                raw = reader(path, preload=False, verbose="error", infer_types=False)
         except Exception as e:  # noqa: BLE001 - report whatever MNE raises
             return [f"MNE could not read the file: {e!r}"]
 
@@ -219,7 +242,11 @@ def compare(path, max_values=None, annotation_files=False):
                 mne_names = _unique_channel_names(list(names))
         if mne_names != names:
             notes.append("duplicate channel names, compared after MNE's renaming")
-        if raw.ch_names != mne_names:
+        theirs_names = raw.ch_names
+        if brainvision and [n.strip() for n in theirs_names] != theirs_names:
+            theirs_names = [n.strip() for n in theirs_names]
+            notes.append("MNE's channel names compared trimmed")
+        if theirs_names != mne_names:
             problems.append(
                 f"channel names differ:\n    Kymo {names}\n    MNE  {raw.ch_names}"
             )
@@ -230,9 +257,12 @@ def compare(path, max_values=None, annotation_files=False):
             )
 
         if header["start_time"] is not None and raw.info["meas_date"] is not None:
-            theirs = (
-                raw.info["meas_date"].replace(tzinfo=None, microsecond=0).isoformat()
-            )
+            date = raw.info["meas_date"].replace(tzinfo=None)
+            if brainvision:
+                # Kymo prints microseconds without trailing zeros.
+                theirs = date.isoformat(timespec="microseconds").rstrip("0").rstrip(".")
+            else:
+                theirs = date.replace(microsecond=0).isoformat()
             if theirs != header["start_time"]:
                 problems.append(
                     f"start time: Kymo {header['start_time']}, MNE {theirs}"
@@ -249,6 +279,14 @@ def compare(path, max_values=None, annotation_files=False):
                 )
                 continue
             scale = np.array([channels[c]["to_si"] or 1.0 for c in ids])
+            # MNE leaves BrainVision's Greek-mu units unscaled.
+            greek = [brainvision and "\u03bc" in channels[c]["unit"] for c in ids]
+            theirs_scale = np.where(greek, scale, 1.0)
+            if any(greek):
+                notes.append(
+                    "Greek-mu unit(s), MNE's values scaled as Kymo's: "
+                    + ", ".join(names[c] for c, g in zip(ids, greek) if g)
+                )
             unknown = [names[c] for c in ids if channels[c]["to_si"] is None]
             if unknown:
                 notes.append(
@@ -264,13 +302,15 @@ def compare(path, max_values=None, annotation_files=False):
                     "them: " + ", ".join(names[c] for c, s in zip(ids, stim) if s)
                 )
             p, w, n = compare_grid(
-                raw, tmp, g, grid, windows[g], ids, scale, stim, names
+                raw, tmp, g, grid, windows[g], ids, scale, theirs_scale, stim, names
             )
             problems += p
             worst = max(worst, w)
             compared += n
 
-        problems += compare_annotations(raw, annotations, header["grids"][0]["start"])
+        problems += compare_annotations(
+            raw, annotations, header["grids"][0]["start"], brainvision
+        )
         if annotation_files:
             problems += compare_annotation_files(
                 path, raw, annotations, header["grids"][0]["start"], tmp
@@ -295,10 +335,11 @@ def compare(path, max_values=None, annotation_files=False):
     return problems
 
 
-def compare_grid(raw, tmp, g, grid, windows, ids, scale, stim, names):
+def compare_grid(raw, tmp, g, grid, windows, ids, scale, theirs_scale, stim, names):
     problems, worst, compared = [], 0.0, 0
     data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
-    digital = np.fromfile(tmp / f"grid{g}.i32", dtype="<i4")
+    if grid["sample_type"] != "F32":
+        digital = np.fromfile(tmp / f"grid{g}.i32", dtype="<i4")
     stim = np.array(stim, dtype=bool)
     scale = np.where(stim, 1.0, scale)
     segments = np.array(grid["segments"], dtype=np.int64).reshape(-1, 2)
@@ -323,16 +364,19 @@ def compare_grid(raw, tmp, g, grid, windows, ids, scale, stim, names):
         seg = np.searchsorted(segments[:, 0], idx, side="right") - 1
         present = (seg >= 0) & (idx < segments[np.maximum(seg, 0), 1])
         nan = np.isnan(block)
-        if (nan != ~present[None, :]).any():
-            problems.append(f"window {a}..{b}: Kymo's NaNs are not exactly the gaps")
+        if (~nan & ~present[None, :]).any():
+            problems.append(f"window {a}..{b}: Kymo has values in its gaps")
         if not present.any():
             continue
         mne_idx = joined_start[seg[present]] + idx[present] - segments[seg[present], 0]
         lo, hi = int(mne_idx.min()), int(mne_idx.max()) + 1
         theirs = raw.get_data(picks=ids, start=lo, stop=hi)[:, mne_idx - lo]
+        theirs = theirs * theirs_scale[:, None]
         ours = block[:, present] * scale[:, None]
-        error = np.abs(ours - theirs)
-        bad = error > RTOL * np.abs(theirs) + 1e-30
+        if (np.isnan(ours) != np.isnan(theirs)).any():
+            problems.append(f"window {a}..{b}: NaNs differ between Kymo and MNE")
+        error = np.abs(np.nan_to_num(ours) - np.nan_to_num(theirs))
+        bad = error > RTOL * np.abs(np.nan_to_num(theirs)) + 1e-30
         if bad.any():
             row, col = np.argwhere(bad)[0]
             problems.append(
@@ -341,7 +385,7 @@ def compare_grid(raw, tmp, g, grid, windows, ids, scale, stim, names):
                 f"Kymo {ours[row, col]!r}, "
                 f"MNE {theirs[row, col]!r}"
             )
-        nonzero = np.abs(theirs) > 0
+        nonzero = np.abs(np.nan_to_num(theirs)) > 0
         if nonzero.any():
             worst = max(worst, float((error[nonzero] / np.abs(theirs[nonzero])).max()))
         compared += ours.size
@@ -417,14 +461,20 @@ def data_end(raw, first_onset):
     return first_onset + raw.n_times / raw.info["sfreq"]
 
 
-def compare_annotations(raw, annotations, first_onset):
+def compare_annotations(raw, annotations, first_onset, brainvision=False):
     ours = cropped(annotations, data_end(raw, first_onset))
-    theirs = sorted(
-        (o + first_onset, d, s)
-        for o, d, s in zip(
-            raw.annotations.onset, raw.annotations.duration, raw.annotations.description
-        )
+    theirs = zip(
+        raw.annotations.onset, raw.annotations.duration, raw.annotations.description
     )
+    if brainvision:
+        # Kymo's own rules for markers; see the docstring.
+        sample = 1 / raw.info["sfreq"]
+        theirs = [
+            (o, 0.0 if abs(d - sample) < 1e-9 else d, s.strip("/"))
+            for o, d, s in theirs
+            if not (s.startswith("New Segment/") and o == 0)
+        ]
+    theirs = sorted((o + first_onset, d, s) for o, d, s in theirs)
     if len(ours) != len(theirs):
         return [f"annotation count: Kymo {len(ours)}, MNE {len(theirs)}"]
     for k, (a, b) in enumerate(zip(ours, theirs)):
@@ -440,6 +490,9 @@ def testgen_files(directory):
         ("bdf+c-small", "bdf", []),
         ("edf-64ch-1h", "edf", ["--duration", "60"]),
         ("bdf-256ch-8h", "bdf", ["--duration", "20"]),
+        ("bv-int16-multiplexed", "vhdr", []),
+        ("bv-int32-vectorized", "vhdr", []),
+        ("bv-float32-multiplexed", "vhdr", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -464,7 +517,9 @@ def find_files(arguments):
     for a in map(Path, arguments):
         if a.is_dir():
             files += sorted(
-                p for p in a.rglob("*") if p.suffix.lower() in (".edf", ".bdf")
+                p
+                for p in a.rglob("*")
+                if p.suffix.lower() in (".edf", ".bdf", ".vhdr")
             )
         else:
             files.append(a)
@@ -473,7 +528,9 @@ def find_files(arguments):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("paths", nargs="*", help="EDF/BDF files or directories")
+    parser.add_argument(
+        "paths", nargs="*", help="EDF/BDF/BrainVision (.vhdr) files or directories"
+    )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
     )
@@ -499,7 +556,7 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF/BDF files found")
+            sys.exit("no EDF, BDF or BrainVision files found")
         for path in files:
             failed += bool(compare(path, args.max_values, args.annotations))
     print(f"{len(files) - failed} of {len(files)} file(s) agree")

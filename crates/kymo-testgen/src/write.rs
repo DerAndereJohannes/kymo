@@ -23,6 +23,9 @@ pub(crate) struct Layout {
 
 impl Layout {
     pub(crate) fn new(spec: &Spec) -> Result<Self, Error> {
+        if spec.format.is_brainvision() {
+            return Err(Error::Invalid("BrainVision has no data records".into()));
+        }
         spec.validate()?;
         let bps = spec.format.bytes_per_sample();
         let data_bytes: usize = spec
@@ -92,14 +95,24 @@ impl Layout {
     }
 }
 
-/// Writes `spec` to a new file at `path` (overwriting it).
+/// Writes `spec` to a new file at `path` (overwriting it). BrainVision writes its data and
+/// marker files beside it too (see [`Format::files`](crate::Format::files)).
 pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
+    if spec.format.is_brainvision() {
+        return crate::brainvision::write(spec, path.as_ref());
+    }
     let file = File::create(path)?;
     write_to(spec, BufWriter::with_capacity(1 << 20, file))
 }
 
-/// Writes `spec` to `out`.
+/// Writes `spec` to `out`. EDF/BDF only: BrainVision needs [`write()`], as it writes
+/// three files.
 pub fn write_to<W: Write>(spec: &Spec, mut out: W) -> Result<(), Error> {
+    if spec.format.is_brainvision() {
+        return Err(Error::Invalid(
+            "BrainVision writes three files; use write() with a path".into(),
+        ));
+    }
     let layout = Layout::new(spec)?;
     out.write_all(&header::header(spec, layout.annotation_spr))?;
 

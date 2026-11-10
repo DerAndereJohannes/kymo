@@ -5,11 +5,13 @@
 
 mod annotation;
 pub mod annotation_file;
+pub mod brainvision;
 mod channel;
 pub mod decode;
 pub mod edf;
 mod error;
 mod grid;
+mod mapped;
 mod open;
 pub mod pyramid;
 mod recording;

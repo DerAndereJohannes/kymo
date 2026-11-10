@@ -8,12 +8,12 @@ const MONTHS: [&str; 12] = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
 
-fn invalid(message: impl Into<String>) -> Error {
+pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
 
 /// Shortest round-trip formatting: parsing the field gives back exactly `x`.
-fn num(x: f64) -> String {
+pub(crate) fn num(x: f64) -> String {
     format!("{x}")
 }
 
@@ -53,6 +53,9 @@ fn recording_field(spec: &Spec) -> String {
 }
 
 pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
+    if spec.format.is_brainvision() {
+        return crate::brainvision::validate(spec);
+    }
     let format = spec.format;
     if spec.channels.is_empty() {
         return Err(invalid("at least one data channel is needed"));
@@ -104,20 +107,16 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
                 "channel {i}: physical minimum equals maximum"
             )));
         }
-        if !(lo <= c.digital_min && c.digital_max <= hi && c.digital_max - c.digital_min >= 2) {
+        if !(lo <= c.digital_min
+            && c.digital_max <= hi
+            && i64::from(c.digital_max) - i64::from(c.digital_min) >= 2)
+        {
             return Err(invalid(format!(
                 "channel {i}: digital range {}..={} must lie in {lo}..={hi} and span at least 3 values",
                 c.digital_min, c.digital_max
             )));
         }
-        let half_range = (f64::from(c.digital_max) - f64::from(c.digital_min)) / 2.0;
-        let reach = c.amplitude / c.gain().abs();
-        if !c.trigger && !(c.amplitude > 0.0 && reach <= 0.6 * half_range) {
-            return Err(invalid(format!(
-                "channel {i}: amplitude {} must be > 0 and at most 60% of the half-range",
-                c.amplitude
-            )));
-        }
+        check_amplitude(i, c)?;
         if c.samples_per_record == 0 {
             return Err(invalid(format!("channel {i}: no samples per record")));
         }
@@ -167,6 +166,20 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
                 "annotation {i}: text contains a TAL separator"
             )));
         }
+    }
+    Ok(())
+}
+
+/// The signal (sine, ramp and noise) fits 60% of the half-range, so only spikes reach the
+/// digital limits.
+pub(crate) fn check_amplitude(i: usize, c: &crate::ChannelSpec) -> Result<(), Error> {
+    let half_range = (f64::from(c.digital_max) - f64::from(c.digital_min)) / 2.0;
+    let reach = c.amplitude / c.gain().abs();
+    if !c.trigger && !(c.amplitude > 0.0 && reach <= 0.6 * half_range) {
+        return Err(invalid(format!(
+            "channel {i}: amplitude {} must be > 0 and at most 60% of the half-range",
+            c.amplitude
+        )));
     }
     Ok(())
 }

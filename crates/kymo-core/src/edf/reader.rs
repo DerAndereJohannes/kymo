@@ -9,6 +9,7 @@ use memmap2::Mmap;
 use super::index::index;
 use super::{Block, EdfError, RecordLayout, parse_header};
 use crate::decode::{ByteOrder, Decoder, Encoding};
+use crate::mapped::{self, map_read_only};
 use crate::{BlockReader, ChannelId, GridId, OpenError, Opened, ReadError, Sample, SamplesMut};
 
 /// Reads samples straight from the memory-mapped file.
@@ -77,15 +78,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     })
 }
 
-#[allow(unsafe_code)]
-fn map_read_only(file: &File) -> std::io::Result<Mmap> {
-    // SAFETY: the mapping is read-only and kymo never writes to source files. Memory mapping
-    // is only unsound if another process modifies or truncates the file while it is mapped;
-    // like every viewer that maps its input, we accept that (design: source files are
-    // memory-mapped read-only and never modified). All reads go through bounds-checked slices.
-    unsafe { Mmap::map(file) }
-}
-
 impl BlockReader for EdfReader {
     fn read(
         &self,
@@ -130,38 +122,9 @@ impl BlockReader for EdfReader {
         };
         let layout = &self.layout;
         let start = layout.header_bytes + records.start * layout.record_bytes;
-        let end =
-            (layout.header_bytes + records.end * layout.record_bytes).min(self.map.len() as u64);
-        // Plain reads fill the page cache much faster than page faults on the mapping
-        // (on macOS about 6 against 2 GB/s, even with madvise). Errors only cost speed.
-        let mut buf = vec![0; (end.saturating_sub(start) as usize).min(PREFETCH_PIECE)];
-        let mut at = start;
-        while at < end {
-            let piece = &mut buf[..(end - at).min(PREFETCH_PIECE as u64) as usize];
-            match read_at(&self.file, piece, at) {
-                Ok(0) | Err(_) => return,
-                Ok(read) => at += read as u64,
-            }
-        }
+        let end = layout.header_bytes + records.end * layout.record_bytes;
+        mapped::prefetch(&self.file, self.map.len() as u64, [start..end]);
     }
-}
-
-/// Bytes read per call when prefetching.
-const PREFETCH_PIECE: usize = 8 << 20;
-
-#[cfg(unix)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(file, buf, offset)
-}
-
-#[cfg(windows)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn read_at(_: &File, _: &mut [u8], _: u64) -> std::io::Result<usize> {
-    Ok(0)
 }
 
 impl EdfReader {

@@ -27,6 +27,30 @@ pub struct Unit {
     pub to_si: Option<f64>,
 }
 
+impl Unit {
+    /// The unit of `label`, with its SI factor if it is a known unit: volts and siemens,
+    /// plain or with the prefix m, µ or n. The micro prefix may be the micro sign (U+00B5),
+    /// the Greek mu (U+03BC, which looks the same) or "u". Surrounding whitespace is ignored.
+    pub fn from_label(label: impl Into<String>) -> Unit {
+        let label = label.into();
+        let to_si = match label.trim() {
+            "V" | "S" => Some(1.0),
+            "mV" | "mS" => Some(1e-3),
+            "\u{b5}V" | "\u{3bc}V" | "uV" | "UV" | "uv" | "\u{b5}S" | "\u{3bc}S" | "uS" => {
+                Some(1e-6)
+            }
+            "nV" | "nS" => Some(1e-9),
+            _ => None,
+        };
+        Unit { label, to_si }
+    }
+
+    /// Whether this is a known voltage unit (V with or without a prefix).
+    pub fn is_voltage(&self) -> bool {
+        self.to_si.is_some() && self.label.trim().ends_with(['V', 'v'])
+    }
+}
+
 /// File metadata of one channel. Display state (visible, color, scale, bad) lives elsewhere.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Channel {
