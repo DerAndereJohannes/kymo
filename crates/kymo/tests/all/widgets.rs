@@ -7,7 +7,8 @@ use kymo::ui::axis::Clock;
 use kymo::ui::readout::Reading;
 use kymo::ui::scrollbar::{MIN_THUMB, start_at, thumb};
 use kymo::ui::status::{
-    annotations_text, build_text, format_value, pointer_text, reading_text, time_decimals,
+    annotations_text, build_text, format_value, pointer_text, reading_text, selection_text,
+    time_decimals,
 };
 use kymo_core::service::BuildProgress;
 use proptest::prelude::*;
@@ -149,4 +150,12 @@ fn build_progress_and_memory() {
     let text = build_text(&failed).unwrap();
     assert!(text.starts_with("Overview stopped: "), "{text}");
     assert!(text.contains("disk full"), "{text}");
+}
+
+#[test]
+fn the_selection_text_writes_lengths_on_their_own_clock() {
+    let text = |onset, duration| selection_text("BAD", onset, duration, 3, Clock::Hours);
+    assert_eq!(text(2.0, 2.0), "BAD at 0:00:02.000 for 2.000 s");
+    assert_eq!(text(150.0, 95.0), "BAD at 0:02:30.000 for 1:35.000");
+    assert_eq!(text(150.0, 0.0), "BAD at 0:02:30.000");
 }

@@ -9,6 +9,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use anyhow::{Context, Result, anyhow};
 use kymo_core::{AnnotationStore, Recording};
 
+use crate::ui::axis::{Clock, format_time};
+
 /// A recording opened for viewing, with the annotation store beside it.
 pub struct Document {
     pub path: PathBuf,
@@ -34,7 +36,10 @@ impl Document {
         let rec = &self.recording;
         Summary {
             format: rec.format(),
-            start: rec.start_time().map(|t| t.to_string()),
+            // ISO's order, which reads the same everywhere, with a space for its "T".
+            start: rec
+                .start_time()
+                .map(|t| t.to_string().replacen('T', " ", 1)),
             duration: rec.duration(),
             channels: rec.channels().len(),
             annotations: self.annotations.len(),
@@ -237,19 +242,23 @@ fn exact_rate(rate: f64) -> String {
     format!("{rate} Hz")
 }
 
-/// Seconds as "12.500 s" below a minute, "1:02:03.500" (h:mm:ss) above.
+/// Seconds on the clock the time axis would use for them (see [`Clock::for_end`]), to the
+/// millisecond, trailing zeros dropped: "12.5 s", "30:00", "1:02:03.5".
 pub fn format_duration(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0.0 {
         return format!("{seconds} s");
     }
-    let millis = (seconds * 1000.0).round() as u64;
-    if millis < 60_000 {
-        return format!("{}.{:03} s", millis / 1000, millis % 1000);
-    }
-    let (h, rest) = (millis / 3_600_000, millis % 3_600_000);
-    let (m, rest) = (rest / 60_000, rest % 60_000);
-    let (s, ms) = (rest / 1000, rest % 1000);
-    format!("{h}:{m:02}:{s:02}.{ms:03}")
+    // Rounded first, so 59.9996 s reads as "1:00", not "60 s".
+    let seconds = (seconds * 1000.0).round() / 1000.0;
+    let text = format_time(seconds, 3, Clock::for_end(seconds));
+    let (number, unit) = match text.strip_suffix(" s") {
+        Some(number) => (number, " s"),
+        None => (text.as_str(), ""),
+    };
+    format!(
+        "{}{unit}",
+        number.trim_end_matches('0').trim_end_matches('.')
+    )
 }
 
 /// An error and its causes on one line, joined by ": ". A cause is left out when the message
@@ -416,7 +425,8 @@ mod tests {
         );
         let value = |key: &str| &rows.iter().find(|r| r.key == key).unwrap().value;
         assert_eq!(value("Format"), "BDF+C");
-        assert_eq!(value("Duration"), "0:01:00.000");
+        assert_eq!(value("Start"), "2024-01-02 03:04:05");
+        assert_eq!(value("Duration"), "1:00");
         assert_eq!(value("Channels"), "5");
         assert_eq!(value("Sampling"), "512 Hz");
     }
@@ -570,12 +580,15 @@ mod tests {
 
     #[test]
     fn durations() {
-        assert_eq!(format_duration(0.0), "0.000 s");
-        assert_eq!(format_duration(12.5), "12.500 s");
-        assert_eq!(format_duration(60.0), "0:01:00.000");
-        assert_eq!(format_duration(3723.5), "1:02:03.500");
-        assert_eq!(format_duration(8.0 * 3600.0), "8:00:00.000");
-        assert_eq!(format_duration(59.9996), "0:01:00.000");
-        assert_eq!(format_duration(0.0004), "0.000 s");
+        assert_eq!(format_duration(0.0), "0 s");
+        assert_eq!(format_duration(12.5), "12.5 s");
+        assert_eq!(format_duration(10.0), "10 s");
+        assert_eq!(format_duration(60.0), "1:00");
+        assert_eq!(format_duration(1800.0), "30:00");
+        assert_eq!(format_duration(90.25), "1:30.25");
+        assert_eq!(format_duration(3723.5), "1:02:03.5");
+        assert_eq!(format_duration(8.0 * 3600.0), "8:00:00");
+        assert_eq!(format_duration(59.9996), "1:00");
+        assert_eq!(format_duration(0.0004), "0 s");
     }
 }

@@ -88,8 +88,8 @@ pub fn pointer_text(
     text
 }
 
-/// The selected annotation: "BAD at 0:12.345 for 1.500 s", or "spike at 0:12.345" for an
-/// event.
+/// The selected annotation: "BAD at 0:12.345 for 1.500 s" ("for 1:35.000" from a minute
+/// up), or "spike at 0:12.345" for an event.
 pub fn selection_text(
     description: &str,
     onset: f64,
@@ -99,7 +99,9 @@ pub fn selection_text(
 ) -> String {
     let start = format_time(onset, decimals, clock);
     if duration > 0.0 {
-        format!("{description} at {start} for {duration:.decimals$} s")
+        // A length, on its own clock rather than the recording's.
+        let length = format_time(duration, decimals, Clock::for_end(duration));
+        format!("{description} at {start} for {length}")
     } else {
         format!("{description} at {start}")
     }
