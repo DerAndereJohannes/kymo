@@ -10,12 +10,12 @@ Phase 3's plan, `docs/phase3-plan.md`, and phase 2's, `docs/phase2-plan.md`, hol
 
 ## Current scope
 
-Phases 1 to 3 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection). Phase 4 (display filters: high-pass and low-pass) is next; its scope is agreed in `docs/phase4-plan.md`, each step's details are proposed before it starts. The crates:
+Phases 1 to 3 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection). Phase 4 (file formats, part 1: BrainVision, EEGLAB, GDF, FIFF, XDF) is next; its scope is agreed in `docs/phase4-plan.md`. Phase 5 (display filters: high-pass and low-pass) follows; its scope is agreed in `docs/phase5-plan.md`. Each step's details are proposed before it starts. The crates:
 
 1. `crates/kymo-core`: recording model, EDF/BDF reader, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.
 
-Out of scope for now: other file formats, filters (phase 4, `docs/phase4-plan.md`), re-referencing (later), Python packaging (phase 5). SSP and bipolar montages are out of scope altogether.
+Out of scope for now: formats beyond EDF/BDF until phase 4 adds them (`docs/phase4-plan.md`), filters (phase 5, `docs/phase5-plan.md`), re-referencing (later), Python packaging (phase 6). SSP and bipolar montages are out of scope altogether.
 But don't build anything that assumes EDF's record layout or a single sampling rate above the reader interface.
 
 ## Layout
@@ -29,7 +29,8 @@ docs/design.md       design handoff
 CONTRIBUTING.md      toolchain setup per platform, build and checks
 docs/phase2-plan.md  plan for phase 2 (the viewer), done
 docs/phase3-plan.md  plan for phase 3 (viewer features), done
-docs/phase4-plan.md  plan for phase 4 (display filters)
+docs/phase4-plan.md  plan for phase 4 (file formats, part 1)
+docs/phase5-plan.md  plan for phase 5 (display filters)
 ```
 
 ## Non-negotiables
