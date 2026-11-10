@@ -42,11 +42,13 @@ Known differences between the readers, which the comparison accounts for:
   BDF), at their position in MNE's joined data. MNE counts only positive codes there,
   so Kymo's events with negative codes (possible in EDF only) are left out.
 - Float samples may be NaN (BrainVision float32); they must be NaN in both readers.
+- Kymo scales units MNE reads as they are (MNE scales only the units in MNE_SCALED):
+  in EDF, nV and the magnetic units (fT, fT/cm, ...); in BrainVision, units with the Greek
+  mu ("\u03bcV", U+03BC, as LiveAmp's PyCorder writes; MNE also makes such channels misc)
+  and the magnetic units. MNE's values of these channels are compared after scaling them
+  as Kymo does.
 
 BrainVision, where Kymo deliberately differs from MNE:
-- Units with the Greek mu ("\u03bcV", U+03BC, as LiveAmp's PyCorder writes) are microvolts
-  in Kymo; MNE doesn't recognize them and leaves the values unscaled (and the channels
-  misc). MNE's values of such channels are compared after scaling them as Kymo does.
 - Kymo trims whitespace around channel names ("Dummy\t\t" is "Dummy"); MNE's names are
   compared trimmed.
 - Kymo skips every New Segment marker at position 1 (the recording start); MNE skips the
@@ -84,6 +86,11 @@ REPO = Path(__file__).resolve().parent.parent
 RTOL = 1.5e-7
 STIM_NAMES = ("status", "trigger")  # MNE's default stim channel names
 STIM_MASK = 2**17 - 1  # MNE keeps the 16 trigger bits and bit 16
+# The unit labels each MNE reader scales to SI; it reads other units as they are.
+MNE_SCALED = {
+    "EDF": {"\u00b5V", "\u03bcV", "\x83\xcaV", "uV", "mV", "V"},
+    "BrainVision": {"V", "\u00b5V", "uV", "mV", "nV", "\u00b5S", "uS", "S"},
+}
 
 
 def cargo(*args):
@@ -279,13 +286,22 @@ def compare(path, max_values=None, annotation_files=False):
                 )
                 continue
             scale = np.array([channels[c]["to_si"] or 1.0 for c in ids])
-            # MNE leaves BrainVision's Greek-mu units unscaled.
-            greek = [brainvision and "\u03bc" in channels[c]["unit"] for c in ids]
-            theirs_scale = np.where(greek, scale, 1.0)
-            if any(greek):
+            # Units Kymo scales and MNE doesn't: MNE's values are in the file's unit.
+            scaled = MNE_SCALED["BrainVision" if brainvision else "EDF"]
+            unscaled = [
+                channels[c]["to_si"] is not None
+                and channels[c]["unit"].strip() not in scaled
+                for c in ids
+            ]
+            theirs_scale = np.where(unscaled, scale, 1.0)
+            if any(unscaled):
                 notes.append(
-                    "Greek-mu unit(s), MNE's values scaled as Kymo's: "
-                    + ", ".join(names[c] for c, g in zip(ids, greek) if g)
+                    "unit(s) MNE leaves unscaled, its values scaled as Kymo's: "
+                    + ", ".join(
+                        f"{names[c]} ({channels[c]['unit']})"
+                        for c, u in zip(ids, unscaled)
+                        if u
+                    )
                 )
             unknown = [names[c] for c in ids if channels[c]["to_si"] is None]
             if unknown:
@@ -488,6 +504,7 @@ def testgen_files(directory):
     presets = [
         ("edf+d-mixed", "edf", []),
         ("bdf+c-small", "bdf", []),
+        ("edf+c-kinds", "edf", []),
         ("edf-64ch-1h", "edf", ["--duration", "60"]),
         ("bdf-256ch-8h", "bdf", ["--duration", "20"]),
         ("bv-int16-multiplexed", "vhdr", []),

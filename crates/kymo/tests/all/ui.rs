@@ -109,10 +109,10 @@ fn step_until(harness: &mut Harness<'_, KymoApp>, what: &str, done: impl Fn(&Kym
     harness.step();
 }
 
-/// Whether the status line reads a value in uV; the annotations under the pointer may
-/// follow it.
+/// Whether the status line reads a value in µV (EEG's unit, whatever the file says); the
+/// annotations under the pointer may follow it.
 fn has_reading(status: &str) -> bool {
-    status.split(" · ").any(|part| part.ends_with(" uV"))
+    status.split(" · ").any(|part| part.ends_with(" \u{b5}V"))
 }
 
 /// Opens the recording and waits for the pyramid build and every tile of the view.
@@ -335,7 +335,7 @@ fn hovering_reads_the_value_under_the_pointer() {
     let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     let code = spec.trigger_code(4, 5120).unwrap();
     assert_ne!(spec.trigger_code(4, 5119), Some(code));
-    assert!(left.ends_with(&format!(" uV · {code}")), "{left}");
+    assert!(left.ends_with(&format!(" \u{b5}V · {code}")), "{left}");
     harness.get_by_label(&left);
 
     // Off the traces, the time goes away.
@@ -600,13 +600,13 @@ fn baselines_are_window_means(app: &KymoApp) -> bool {
     })
 }
 
-/// The numbers of the status line's reading ("12.5 uV" or "−3 … 4 uV").
+/// The numbers of the status line's reading ("12.5 µV" or "−3 … 4 µV").
 fn reading_numbers(status: &str) -> Vec<f64> {
     let reading = status.rsplit_once(" A1 ").unwrap().1;
     // Up to the annotations under the pointer, if any.
     let reading = reading.split(" · ").next().unwrap();
     reading
-        .trim_end_matches(" uV")
+        .trim_end_matches(" \u{b5}V")
         .split(" … ")
         .map(|x| x.replace('−', "-").parse().unwrap())
         .collect()
@@ -2575,10 +2575,26 @@ fn the_theme_follows_the_setting_and_the_system() {
             }
         }
         let background = counts.into_iter().max_by_key(|&(_, n)| n).unwrap().0;
-        // A row clear of the Settings window and its shadow, and of the fade at the
-        // legend's bottom edge.
-        let swatch = harness.get_by_label("Color of eyes closed").rect().center();
-        let color = viewer(harness).legend().entry("eyes closed").unwrap().color;
+        // A legend row clear of the Settings window and its shadow (below it), and of the
+        // fade at the legend's bottom edge.
+        let settings_bottom = harness.query_by_label("Close window").map_or(0.0, |_| {
+            harness.get_by_label("Restore Defaults").rect().bottom() + 40.0
+        });
+        let descriptions: Vec<String> = viewer(harness)
+            .legend()
+            .entries()
+            .map(|e| e.description.clone())
+            .collect();
+        let (description, swatch) = descriptions
+            .iter()
+            .filter_map(|d| {
+                let rect = harness.query_by_label(&format!("Color of {d}"))?.rect();
+                (rect.top() > settings_bottom && rect.bottom() < SIZE.y - 60.0)
+                    .then(|| (d.clone(), rect.center()))
+            })
+            .next()
+            .expect("a legend swatch below the Settings window");
+        let color = viewer(harness).legend().entry(&description).unwrap().color;
         let visuals = harness.ctx.global_style().visuals.clone();
         assert_eq!(background, visuals.extreme_bg_color, "trace area");
         // Within rounding: the swatch's variants differ by far more.
@@ -3890,4 +3906,84 @@ fn unsaved_changes_are_asked_about() {
     assert_eq!(harness.state().leaving(), Some(kymo::app::Leave::Quit));
     answer(&mut harness, "Don't Save");
     assert!(harness.state().closing());
+}
+
+/// The sidebar lists every type the recording has, in the sidebar's order, each in its
+/// color; Settings has a color swatch for every type, three to a row in the same order.
+#[test]
+fn every_channel_type_has_a_row_a_color_and_a_swatch() {
+    use egui::accesskit::Role;
+    use kymo::ui::header::kind_name;
+    let file = TempFile::preset("edf+c-kinds");
+    let mut harness = screenshot_window(file.path());
+    ready(&mut harness);
+    // Top to bottom, the types of edf+c-kinds: brain signals, other body signals, stim;
+    // none it lacks.
+    let present = [
+        "MEG mag", "MEG grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
+        "Stim",
+    ];
+    let tops: Vec<f32> = present
+        .iter()
+        .map(|name| {
+            harness
+                .get_by_role_and_label(Role::CheckBox, name)
+                .rect()
+                .top()
+        })
+        .collect();
+    assert!(tops.is_sorted_by(|a, b| a < b), "{tops:?}");
+    for absent in ["MEG ref", "Misc"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::CheckBox, absent)
+                .is_none()
+        );
+    }
+    // Each row's name in its type's color.
+    let image = harness.render().unwrap();
+    let visuals = harness.ctx.global_style().visuals.clone();
+    for kind in [
+        ChannelKind::Mag,
+        ChannelKind::Seeg,
+        ChannelKind::Dbs,
+        ChannelKind::Eog,
+    ] {
+        let r = harness
+            .get_by_role_and_label(Role::CheckBox, kind_name(kind))
+            .rect();
+        let color = trace_color(kind, &visuals);
+        let colored = (r.left() as u32..r.right() as u32)
+            .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .filter(|&(x, y)| near(&image.get_pixel(x, y).0, color))
+            .count();
+        assert!(colored > 10, "{kind:?}: {colored} pixels of {color:?}");
+    }
+
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(2);
+    let all = [
+        "MEG mag", "MEG grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
+        "MEG ref", "Stim", "Misc",
+    ];
+    assert_eq!(all.len(), KINDS.len());
+    let swatches: Vec<egui::Rect> = all
+        .iter()
+        .map(|name| harness.get_by_label(&format!("Color of {name}")).rect())
+        .collect();
+    for (i, pair) in swatches.windows(2).enumerate() {
+        let (a, b) = (pair[0], pair[1]);
+        if (i + 1) % 3 == 0 {
+            assert!(
+                b.top() > a.bottom() && b.left() < a.left(),
+                "row break after {i}"
+            );
+        } else {
+            assert!(
+                b.left() > a.right() && b.top() == a.top(),
+                "{i} and {}",
+                i + 1
+            );
+        }
+    }
 }

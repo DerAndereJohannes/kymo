@@ -567,6 +567,11 @@ mod presets {
              overlapping, a fifth of them events (59 MB)",
         ),
         (
+            "edf+c-kinds",
+            "EDF+C, a channel of every type EDF+ labels and units give (EEG, sEEG, ECoG, \
+             DBS, EOG, ECG, EMG, Resp, Bio, MEG mag and grad, a trigger) at 256 Hz, 1 min",
+        ),
+        (
             "bv-int16-multiplexed",
             "BrainVision, multiplexed int16, 8 channels (EEG, EOG, ECG, misc) at 500 Hz, \
              2 min, markers",
@@ -591,6 +596,7 @@ mod presets {
             "edf+d-mixed" => edf_d_mixed(),
             "bdf+c-small" => bdf_c_small(),
             "edf+c-annotations" => edf_c_annotations(),
+            "edf+c-kinds" => edf_c_kinds(),
             "bv-int16-multiplexed" => bv_int16_multiplexed(),
             "bv-int32-vectorized" => bv_int32_vectorized(),
             "bv-float32-multiplexed" => bv_float32_multiplexed(),
@@ -625,7 +631,8 @@ mod presets {
             dimension: "mV".into(),
             physical_min: 5.0,
             physical_max: -5.0,
-            // In mV: as large as EEG on screen, as both count as EEG there.
+            // A respiration channel (EDF+'s "Resp" type): MNE's default scale (1 V per
+            // spacing) shows it flat, Auto Scale fits it.
             amplitude: EEG_AMPLITUDE / 1000.0,
             ..ChannelSpec::eeg("", 32, f)
         });
@@ -723,6 +730,43 @@ mod presets {
             })
             .collect();
         spec.seed = 3;
+        spec
+    }
+
+    /// A channel of each type an EDF+ label's type prefix or a magnetic unit gives, each
+    /// within its type's default scale.
+    fn edf_c_kinds() -> Spec {
+        let f = Format::EdfPlusC;
+        let typed = |label: &str, dimension: &str, amplitude: f64| ChannelSpec {
+            label: label.into(),
+            dimension: dimension.into(),
+            amplitude,
+            ..ChannelSpec::eeg("", 256, f)
+        };
+        let channels = vec![
+            typed("EEG Fz", "uV", EEG_AMPLITUDE),
+            typed("SEEG LA1", "uV", 80.0),
+            typed("ECOG G1", "uV", 80.0),
+            typed("DBS L1", "uV", 80.0),
+            typed("EOG L", "uV", 120.0),
+            typed("ECG", "uV", 400.0),
+            typed("EMG chin", "uV", 800.0),
+            typed("Resp chest", "mV", 800.0),
+            typed("SaO2 finger", "%", 1.0),
+            // MEG by their units: about the size of MNE's default scales (1 pT, 400 fT/cm).
+            typed("MEG 0111", "fT", 800.0),
+            typed("MEG 0112", "fT/cm", 300.0),
+            ChannelSpec::trigger(256, f),
+        ];
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = (0..6)
+            .map(|k| Tal {
+                onset: f64::from(k) * 10.0 + 1.0,
+                duration: Some(2.0),
+                texts: vec![format!("artifact {k}")],
+            })
+            .collect();
+        spec.seed = 8;
         spec
     }
 

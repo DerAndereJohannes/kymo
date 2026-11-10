@@ -235,3 +235,44 @@ fn stim_channels_read_their_codes() {
         assert_eq!(got, want, "{span} s");
     }
 }
+
+/// Readings show each type's unit as MNE does, converted from the channel's own unit when
+/// it measures the same quantity; other channels keep their own unit.
+#[test]
+fn readings_show_each_types_unit() {
+    use kymo::ui::readout::display_unit;
+    use kymo_core::{Channel, GridId, Unit};
+    let typed = |kind: ChannelKind, unit: &str| Channel {
+        kind,
+        unit: Unit::from_label(unit),
+        ..Channel::new("c", GridId(0))
+    };
+    use ChannelKind::*;
+    let cases: [(ChannelKind, &str, &str, f64); 16] = [
+        (Mag, "T", "fT", 1e15),
+        (Mag, "pT", "fT", 1e3),
+        (RefMeg, "T", "fT", 1e15),
+        (RefMeg, "T/m", "fT/cm", 1e13),
+        (Grad, "T/m", "fT/cm", 1e13),
+        (Grad, "fT/cm", "fT/cm", 1.0),
+        (Eeg, "V", "\u{b5}V", 1e6),
+        (Eeg, "uV", "\u{b5}V", 1.0),
+        (Eog, "mV", "\u{b5}V", 1e3),
+        (Bio, "\u{3bc}V", "\u{b5}V", 1.0),
+        (Seeg, "uV", "mV", 1e-3),
+        // Units of another quantity, or none MNE has for the type: kept.
+        (Eeg, "AU", "AU", 1.0),
+        (Bio, "%", "%", 1.0),
+        (Resp, "mV", "mV", 1.0),
+        (Misc, "V", "V", 1.0),
+        (Stim, "Boolean", "", 1.0),
+    ];
+    for (kind, unit, label, factor) in cases {
+        let (got, f) = display_unit(&typed(kind, unit));
+        assert_eq!(got, label, "{kind:?} in {unit}");
+        assert!(
+            (f - factor).abs() <= 1e-9 * factor,
+            "{kind:?} in {unit}: {f}"
+        );
+    }
+}

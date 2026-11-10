@@ -113,12 +113,26 @@ fn starts_with_20_s_and_20_rows() {
     assert_eq!(view.visible_rows(), 0..20);
     assert!(!view.dc_removed());
     assert_eq!(view.bad_channels().count(), 0);
-    assert_eq!(view.amplitude(ChannelKind::Eeg), 20e-6);
-    assert_eq!(view.amplitude(ChannelKind::Eog), 150e-6);
-    assert_eq!(view.amplitude(ChannelKind::Ecg), 5e-3);
-    assert_eq!(view.amplitude(ChannelKind::Emg), 1e-3);
-    assert_eq!(view.amplitude(ChannelKind::Stim), 1.0);
-    assert_eq!(view.amplitude(ChannelKind::Misc), 1.0);
+    // MNE's scalings for raw.plot.
+    use ChannelKind::*;
+    for (kind, amplitude) in [
+        (Eeg, 20e-6),
+        (Eog, 150e-6),
+        (Ecg, 5e-4),
+        (Emg, 1e-3),
+        (Stim, 1.0),
+        (Misc, 1.0),
+        (Mag, 1e-12),
+        (Grad, 4e-11),
+        (RefMeg, 1e-12),
+        (Seeg, 1e-4),
+        (Ecog, 1e-4),
+        (Dbs, 1e-4),
+        (Resp, 1.0),
+        (Bio, 1e-6),
+    ] {
+        assert_eq!(view.amplitude(kind), amplitude, "{kind:?}");
+    }
 }
 
 #[test]
@@ -722,15 +736,18 @@ fn set_amplitudes_takes_only_positive_finite_ones() {
     let rec = recording(4, 60);
     let mut view = ViewState::new(&rec);
     let before = KINDS.map(|k| view.amplitude(k));
-    view.set_amplitudes([
+    let mut amplitudes = [None; KINDS.len()];
+    amplitudes[..5].copy_from_slice(&[
         Some(0.0),
         Some(-1.0),
         Some(f64::NAN),
         Some(f64::INFINITY),
         None,
-        Some(3e-6),
     ]);
+    amplitudes[5] = Some(3e-6);
+    view.set_amplitudes(amplitudes);
     let after = KINDS.map(|k| view.amplitude(k));
     assert_eq!(after[..5], before[..5]);
     assert_eq!(after[5], 3e-6);
+    assert_eq!(after[6..], before[6..]);
 }

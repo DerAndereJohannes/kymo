@@ -1,7 +1,8 @@
 //! EDF/BDF header parsing: bytes to the recording model plus the record layout.
 
 use crate::{
-    Channel, ChannelId, ChannelKind, Grid, GridId, Header, ModelError, SampleType, Timebase, Unit,
+    Channel, ChannelId, ChannelKind, Grid, GridId, Header, ModelError, Quantity, SampleType,
+    Timebase, Unit,
 };
 
 /// Widths of the general header fields, in order.
@@ -188,11 +189,11 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
         let (dmin, dmax) = (digital_min as f64, digital_max as f64);
         let gain = (physical_max - physical_min) / (dmax - dmin);
         let offset = physical_min - gain * dmin;
-        let dimension = text(column(2, i));
-        let kind = kind(&label);
+        let unit = Unit::from_label(text(column(2, i)));
+        let kind = kind(&label, &unit);
         channels.push(Channel {
             kind,
-            unit: Unit::from_label(dimension),
+            unit,
             gain,
             offset,
             grid: GridId(0), // assigned below
@@ -363,13 +364,19 @@ fn usable_records(
     }
 }
 
-/// Channel type from the label, following EDF+ conventions ("EEG Fpz-Cz") and BioSemi's
-/// status channel. Anything else is EEG, as in MNE.
+/// Channel type from the label's EDF+ type prefix ("EEG Fpz-Cz", "SaO2 finger"), as MNE
+/// reads them, and BioSemi's status channel. A magnetic unit makes a MEG channel whatever
+/// the label (T: magnetometer, T/m: gradiometer). Anything else is EEG, as in MNE.
 ///
 /// TODO(later): also recognize the type prefix without a space ("EOG-L", "EMG_chin",
 /// "ECGII"), and decide whether the channel name keeps the full label or drops the prefix
 /// ("L"). Until then such channels are EEG.
-fn kind(label: &str) -> ChannelKind {
+fn kind(label: &str, unit: &Unit) -> ChannelKind {
+    match unit.quantity() {
+        Some(Quantity::MagneticField) => return ChannelKind::Mag,
+        Some(Quantity::FieldGradient) => return ChannelKind::Grad,
+        _ => {}
+    }
     let upper = label.trim().to_ascii_uppercase();
     if upper == "STATUS" || upper == "TRIGGER" {
         return ChannelKind::Stim;
@@ -378,6 +385,13 @@ fn kind(label: &str) -> ChannelKind {
         Some("EOG") => ChannelKind::Eog,
         Some("ECG" | "EKG") => ChannelKind::Ecg,
         Some("EMG") => ChannelKind::Emg,
+        Some("SEEG") => ChannelKind::Seeg,
+        Some("ECOG") => ChannelKind::Ecog,
+        Some("DBS") => ChannelKind::Dbs,
+        Some("RESP") => ChannelKind::Resp,
+        Some("BIO" | "SAO2") => ChannelKind::Bio,
+        Some("STIM") => ChannelKind::Stim,
+        Some("TEMP" | "MISC") => ChannelKind::Misc,
         _ => ChannelKind::Eeg,
     }
 }

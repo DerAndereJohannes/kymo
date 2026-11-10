@@ -16,18 +16,25 @@ pub fn type_color(kind: ChannelKind, picked: &TypeColors, visuals: &Visuals) -> 
     picked[kind_index(kind)].unwrap_or_else(|| trace_color(kind, visuals))
 }
 
-/// The default color of a channel type's traces and names: EEG, EMG and misc in the
-/// theme's text color, EOG blue, ECG magenta and stim amber. Dark themes get lighter
+/// The default color of a channel type's traces and names, close to MNE's: EOG blue, ECG
+/// magenta, stim amber, magnetometers teal, MEG references steel blue, sEEG brown and DBS
+/// green; the rest in the theme's text color. (MNE draws magnetometers dark blue and
+/// gradiometers blue, which kymo's blue EOG would be mistaken for.) Dark themes get lighter
 /// variants.
 pub fn trace_color(kind: ChannelKind, visuals: &Visuals) -> Color32 {
     let dark = visuals.dark_mode;
+    let rgb = |light: (u8, u8, u8), lighter: (u8, u8, u8)| {
+        let (r, g, b) = if dark { lighter } else { light };
+        Color32::from_rgb(r, g, b)
+    };
     match kind {
-        ChannelKind::Eog if dark => Color32::from_rgb(110, 155, 255),
-        ChannelKind::Eog => Color32::from_rgb(0, 60, 220),
-        ChannelKind::Ecg if dark => Color32::from_rgb(230, 115, 230),
-        ChannelKind::Ecg => Color32::from_rgb(185, 0, 185),
-        ChannelKind::Stim if dark => Color32::from_rgb(240, 160, 50),
-        ChannelKind::Stim => Color32::from_rgb(200, 100, 0),
+        ChannelKind::Eog => rgb((0, 60, 220), (110, 155, 255)),
+        ChannelKind::Ecg => rgb((185, 0, 185), (230, 115, 230)),
+        ChannelKind::Stim => rgb((200, 100, 0), (240, 160, 50)),
+        ChannelKind::Mag => rgb((0, 120, 130), (70, 200, 210)),
+        ChannelKind::RefMeg => rgb((70, 130, 180), (100, 170, 220)),
+        ChannelKind::Seeg => rgb((139, 69, 19), (210, 145, 90)),
+        ChannelKind::Dbs => rgb((30, 140, 80), (110, 210, 150)),
         _ => visuals.text_color(),
     }
 }

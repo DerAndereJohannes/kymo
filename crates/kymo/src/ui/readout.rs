@@ -5,7 +5,7 @@ use kymo_core::tile::{
     CHANNEL_BLOCK, ChannelBlock, Level, Tile, TileCache, TileData, TileKey, View, level_for,
     max_level,
 };
-use kymo_core::{ChannelId, Grid, Recording};
+use kymo_core::{Channel, ChannelId, ChannelKind, Grid, Quantity, Recording};
 
 /// What a channel shows at one time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -18,6 +18,17 @@ pub enum Reading {
 
 impl Reading {
     /// The reading measured from `baseline`, as the trace is drawn with DC removal.
+    /// The reading times `factor`, e.g. to another unit.
+    pub fn scaled(self, factor: f64) -> Reading {
+        match self {
+            Reading::Value(v) => Reading::Value(v * factor),
+            Reading::Range { min, max } => Reading::Range {
+                min: min * factor,
+                max: max * factor,
+            },
+        }
+    }
+
     pub fn relative_to(self, baseline: f64) -> Reading {
         match self {
             Reading::Value(v) => Reading::Value(v - baseline),
@@ -33,6 +44,37 @@ impl Reading {
 /// if the view draws samples, else the envelope of the bucket holding `time`. Read from
 /// the view's tile or, as the trace area does, its nearest cached coarser tile. `None` in
 /// gaps, for NaN, outside the recording, or when no tile is cached.
+/// The unit a channel's readings are shown in, and the factor from the channel's own unit
+/// to it. As MNE shows them: fT for magnetic fields, fT/cm for field gradients, mV for
+/// sEEG and µV for the other voltage types, whatever the file stores (teslas, volts, ...).
+/// Channels of other types and units the type has no unit for keep their own unit.
+pub fn display_unit(channel: &Channel) -> (String, f64) {
+    let own = (channel.tile_unit().to_owned(), 1.0);
+    if channel.kind == ChannelKind::Stim {
+        return own;
+    }
+    let (Some(quantity), Some(to_si)) = (channel.unit.quantity(), channel.unit.to_si) else {
+        return own;
+    };
+    let target = match (quantity, channel.kind) {
+        (Quantity::MagneticField, _) => ("fT", 1e-15),
+        (Quantity::FieldGradient, _) => ("fT/cm", 1e-13),
+        (Quantity::Voltage, ChannelKind::Seeg) => ("mV", 1e-3),
+        (
+            Quantity::Voltage,
+            ChannelKind::Eeg
+            | ChannelKind::Eog
+            | ChannelKind::Ecg
+            | ChannelKind::Emg
+            | ChannelKind::Ecog
+            | ChannelKind::Dbs
+            | ChannelKind::Bio,
+        ) => ("\u{b5}V", 1e-6),
+        _ => return own,
+    };
+    (target.0.to_owned(), to_si / target.1)
+}
+
 pub fn read(
     recording: &Recording,
     cache: &TileCache,

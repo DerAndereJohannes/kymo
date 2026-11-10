@@ -300,11 +300,13 @@ fn channel_lines_give_names_units_scaling_and_kinds() {
                     Ch8=EOG,,1,AU\r\n\
                     Ch9=B2A,,1.0,\u{3bc}V\r\n\
                     Ch10=,,1,V\r\n\
-                    Ch11=Out,,1,V\r\n";
-    let common = COMMON.replace("NumberOfChannels=2", "NumberOfChannels=11");
+                    Ch11=Out,,1,V\r\n\
+                    Ch12=MEG 0111,,1,fT\r\n\
+                    Ch13=MEG 0112,,1,fT/cm\r\n";
+    let common = COMMON.replace("NumberOfChannels=2", "NumberOfChannels=13");
     let vhdr = header(&common, "INT_16", channels)
         + "\r\n[Coordinates]\r\nCh1=1,-90,-72\r\nCh11=0,0,0\r\n";
-    let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 22]), None);
+    let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 26]), None);
     let (rec, _) = written.open().unwrap();
     let got: Vec<(&str, ChannelKind, &str, Option<f64>, f64)> = rec
         .channels()
@@ -338,6 +340,9 @@ fn channel_lines_give_names_units_scaling_and_kinds() {
             ("Ch10", Eeg, "V", Some(1.0), 1.0),
             // Placed at the origin by the montage: not on the scalp.
             ("Out", Misc, "V", Some(1.0), 1.0),
+            // A magnetic unit makes a MEG channel.
+            ("MEG 0111", Mag, "fT", Some(1e-15), 1.0),
+            ("MEG 0112", Grad, "fT/cm", Some(1e-13), 1.0),
         ]
     );
     assert!(rec.channels().iter().all(|c| c.offset == 0.0));

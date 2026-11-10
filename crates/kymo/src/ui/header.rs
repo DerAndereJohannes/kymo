@@ -513,7 +513,14 @@ pub fn kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Ecg => "ECG",
         ChannelKind::Emg => "EMG",
         ChannelKind::Stim => "Stim",
-        ChannelKind::Misc => "Misc",
-        _ => "Other",
+        ChannelKind::Mag => "MEG mag",
+        ChannelKind::Grad => "MEG grad",
+        ChannelKind::RefMeg => "MEG ref",
+        ChannelKind::Seeg => "sEEG",
+        ChannelKind::Ecog => "ECoG",
+        ChannelKind::Dbs => "DBS",
+        ChannelKind::Resp => "Resp",
+        ChannelKind::Bio => "Bio",
+        _ => "Misc",
     }
 }

@@ -16,10 +16,18 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
         .open(open)
         .collapsible(false)
         .resizable(false)
+        // The window's width counts its frame too.
+        .min_width(
+            content_width(ctx)
+                + egui::Frame::window(&ctx.global_style())
+                    .total_margin()
+                    .sum()
+                    .x,
+        )
         .show(ctx, |ui| {
             egui::Grid::new("settings")
                 .num_columns(2)
-                .spacing([12.0, 6.0])
+                .spacing([GAP, 6.0])
                 .show(ui, |ui| {
                     row(
                         ui,
@@ -89,31 +97,85 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
     *settings != before
 }
 
+/// Space between the label and value columns, and between color cells.
+const GAP: f32 = 12.0;
+
+/// The settings' row labels, in the first column.
+const LABELS: [&str; 7] = [
+    "Tile cache",
+    "GPU memory",
+    "Traces",
+    "Scale",
+    "Theme",
+    "Colors",
+    "Default window",
+];
+
+fn text_width(ctx: &egui::Context, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(&ctx.global_style());
+    ctx.fonts_mut(|f| {
+        f.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    })
+}
+
+/// The size of one color cell: a swatch and the widest type name.
+fn color_cell(ctx: &egui::Context) -> egui::Vec2 {
+    // A square swatch as tall as a line of text, as `Ui::text_style_height` gives.
+    let font = egui::TextStyle::Body.resolve(&ctx.global_style());
+    let side = ctx.fonts_mut(|f| f.row_height(&font));
+    let widest = KINDS
+        .iter()
+        .map(|&kind| text_width(ctx, kind_name(kind)))
+        .fold(0.0, f32::max);
+    egui::vec2(side + SWATCH_GAP + widest, side)
+}
+
+/// Space between a swatch and its type name.
+const SWATCH_GAP: f32 = 4.0;
+
+/// The width of the window's content: the widest label, then three color cells, which are
+/// wider than the other values. Set from the first frame, as egui sizes a window from a
+/// first pass that gives the values column less room than the color rows take, and would
+/// widen the window a frame later (moving its close button).
+fn content_width(ctx: &egui::Context) -> f32 {
+    let labels = LABELS
+        .iter()
+        .map(|label| text_width(ctx, label))
+        .fold(0.0, f32::max);
+    labels + GAP + 3.0 * color_cell(ctx).x + 2.0 * GAP
+}
+
 /// A swatch and name per channel type, three to a row; a click on a swatch picks its color
 /// or resets it.
 fn type_colors(ui: &mut Ui, settings: &mut Settings) {
-    let side = ui.text_style_height(&egui::TextStyle::Body);
-    egui::Grid::new("type colors")
-        .num_columns(3)
-        .spacing([12.0, 4.0])
-        .show(ui, |ui| {
-            for (i, kind) in KINDS.into_iter().enumerate() {
-                ui.horizontal(|ui| {
-                    let color = type_color(kind, &settings.type_colors, ui.visuals());
-                    let picked = settings.type_colors[i].is_some();
-                    let label = format!("Color of {}", kind_name(kind));
-                    match swatch(ui, &label, color, picked, egui::vec2(side, side)) {
-                        Some(Choice::Picked(c)) => settings.type_colors[i] = Some(c),
-                        Some(Choice::Reset) => settings.type_colors[i] = None,
-                        None => {}
-                    }
-                    ui.label(kind_name(kind));
-                });
-                if i % 3 == 2 {
-                    ui.end_row();
+    let cell = color_cell(ui.ctx());
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);
+        for (r, row) in KINDS.chunks(3).enumerate() {
+            ui.horizontal(|ui| {
+                for (k, &kind) in row.iter().enumerate() {
+                    let i = 3 * r + k;
+                    let layout = egui::Layout::left_to_right(egui::Align::Center);
+                    ui.allocate_ui_with_layout(cell, layout, |ui| {
+                        ui.set_min_size(cell);
+                        ui.spacing_mut().item_spacing.x = SWATCH_GAP;
+                        let color = type_color(kind, &settings.type_colors, ui.visuals());
+                        let picked = settings.type_colors[i].is_some();
+                        let label = format!("Color of {}", kind_name(kind));
+                        let size = egui::vec2(cell.y, cell.y);
+                        match swatch(ui, &label, color, picked, size) {
+                            Some(Choice::Picked(c)) => settings.type_colors[i] = Some(c),
+                            Some(Choice::Reset) => settings.type_colors[i] = None,
+                            None => {}
+                        }
+                        ui.label(kind_name(kind));
+                    });
                 }
-            }
-        });
+            });
+        }
+    });
 }
 
 /// A label, its value, and a hint below in the value's column.

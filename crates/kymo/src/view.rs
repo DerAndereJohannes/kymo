@@ -31,23 +31,36 @@ pub struct Area {
     pub height: f64,
 }
 
-/// Default amplitude per channel spacing in SI units, as MNE's `scalings`.
+/// Default amplitude per channel spacing in SI units, as MNE's `scalings` for `raw.plot`.
 fn default_amplitude(kind: ChannelKind) -> f64 {
     match kind {
         ChannelKind::Eeg => 20e-6,
         ChannelKind::Eog => 150e-6,
-        ChannelKind::Ecg => 5e-3,
+        ChannelKind::Ecg => 5e-4,
         ChannelKind::Emg => 1e-3,
+        ChannelKind::Mag | ChannelKind::RefMeg => 1e-12,
+        ChannelKind::Grad => 4e-11,
+        ChannelKind::Seeg | ChannelKind::Ecog | ChannelKind::Dbs => 1e-4,
+        ChannelKind::Bio => 1e-6,
         _ => 1.0,
     }
 }
 
-/// The channel types, in the order the sidebar lists them.
-pub const KINDS: [ChannelKind; 6] = [
+/// The channel types, in the order the sidebar lists them: brain signals, other body
+/// signals, then MEG references, stim and misc.
+pub const KINDS: [ChannelKind; 14] = [
+    ChannelKind::Mag,
+    ChannelKind::Grad,
     ChannelKind::Eeg,
+    ChannelKind::Seeg,
+    ChannelKind::Ecog,
+    ChannelKind::Dbs,
     ChannelKind::Eog,
     ChannelKind::Ecg,
     ChannelKind::Emg,
+    ChannelKind::Resp,
+    ChannelKind::Bio,
+    ChannelKind::RefMeg,
     ChannelKind::Stim,
     ChannelKind::Misc,
 ];

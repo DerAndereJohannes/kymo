@@ -427,7 +427,8 @@ fn presets_stay_within_their_amplitude() {
             if channel.trigger || (c >= 8 && c + 1 < spec.channels.len()) {
                 continue;
             }
-            if channel.dimension == "uV" {
+            // EEG within MNE's EEG scale; edf+c-kinds scales each type to its own.
+            if channel.dimension == "uV" && name != "edf+c-kinds" {
                 assert_eq!(channel.amplitude, kymo_testgen::EEG_AMPLITUDE, "{name} {c}");
             }
             let mid = (f64::from(channel.digital_min) + f64::from(channel.digital_max)) / 2.0;

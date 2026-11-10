@@ -6,7 +6,8 @@ use crate::GridId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChannelId(pub u32);
 
-/// Channel type.
+/// Channel type: MNE's types that it scales or draws differently. MNE's other types
+/// (chpi, fNIRS, temperature, ...) are `Misc`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ChannelKind {
@@ -16,6 +17,102 @@ pub enum ChannelKind {
     Emg,
     Stim,
     Misc,
+    /// MEG magnetometer.
+    Mag,
+    /// MEG planar gradiometer.
+    Grad,
+    /// MEG reference sensor (magnetometer or gradiometer).
+    RefMeg,
+    /// Stereo-EEG (depth electrodes).
+    Seeg,
+    /// Electrocorticography.
+    Ecog,
+    /// Deep brain stimulation electrodes.
+    Dbs,
+    /// Respiration.
+    Resp,
+    /// Other biological signals (MNE's "bio": oximetry, plethysmography, ...).
+    Bio,
+}
+
+/// MNE's channel types that are `Misc` in kymo.
+const MNE_MISC: [&str; 22] = [
+    "chpi",
+    "csd",
+    "dipole",
+    "exci",
+    "eyegaze",
+    "fnirs_cw_amplitude",
+    "fnirs_fd_ac_amplitude",
+    "fnirs_fd_phase",
+    "fnirs_od",
+    "fnirs_td_gated_amplitude",
+    "fnirs_td_moments_intensity",
+    "fnirs_td_moments_mean",
+    "fnirs_td_moments_variance",
+    "gof",
+    "gsr",
+    "hbo",
+    "hbr",
+    "ias",
+    "pupil",
+    "syst",
+    "temperature",
+    "whitened",
+];
+
+impl ChannelKind {
+    pub const ALL: [ChannelKind; 14] = [
+        ChannelKind::Eeg,
+        ChannelKind::Eog,
+        ChannelKind::Ecg,
+        ChannelKind::Emg,
+        ChannelKind::Stim,
+        ChannelKind::Misc,
+        ChannelKind::Mag,
+        ChannelKind::Grad,
+        ChannelKind::RefMeg,
+        ChannelKind::Seeg,
+        ChannelKind::Ecog,
+        ChannelKind::Dbs,
+        ChannelKind::Resp,
+        ChannelKind::Bio,
+    ];
+
+    /// MNE's name of this type, e.g. `"ref_meg"`.
+    pub fn mne_name(self) -> &'static str {
+        match self {
+            ChannelKind::Eeg => "eeg",
+            ChannelKind::Eog => "eog",
+            ChannelKind::Ecg => "ecg",
+            ChannelKind::Emg => "emg",
+            ChannelKind::Stim => "stim",
+            ChannelKind::Misc => "misc",
+            ChannelKind::Mag => "mag",
+            ChannelKind::Grad => "grad",
+            ChannelKind::RefMeg => "ref_meg",
+            ChannelKind::Seeg => "seeg",
+            ChannelKind::Ecog => "ecog",
+            ChannelKind::Dbs => "dbs",
+            ChannelKind::Resp => "resp",
+            ChannelKind::Bio => "bio",
+        }
+    }
+
+    /// The kind of an MNE channel type name (as EEGLAB's `chanlocs.type` and XDF's channel
+    /// types use them), ignoring case and surrounding whitespace. MNE's types without a kind
+    /// of their own are `Misc`; `None` if the name is not an MNE type.
+    pub fn from_mne(name: &str) -> Option<ChannelKind> {
+        let name = name.trim().to_ascii_lowercase();
+        ChannelKind::ALL
+            .into_iter()
+            .find(|k| k.mne_name() == name)
+            .or_else(|| {
+                MNE_MISC
+                    .contains(&name.as_str())
+                    .then_some(ChannelKind::Misc)
+            })
+    }
 }
 
 /// Physical unit of a channel.
@@ -27,27 +124,80 @@ pub struct Unit {
     pub to_si: Option<f64>,
 }
 
+/// What a unit measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Quantity {
+    /// V.
+    Voltage,
+    /// S.
+    Conductance,
+    /// T.
+    MagneticField,
+    /// T/m.
+    FieldGradient,
+}
+
+impl Quantity {
+    /// The SI unit's symbol.
+    pub fn si_label(self) -> &'static str {
+        match self {
+            Quantity::Voltage => "V",
+            Quantity::Conductance => "S",
+            Quantity::MagneticField => "T",
+            Quantity::FieldGradient => "T/m",
+        }
+    }
+}
+
+/// The factor to SI and the quantity of a unit label, if it is a known unit.
+fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
+    let label = label.trim();
+    // Seen in EDF files.
+    if matches!(label, "UV" | "uv") {
+        return Some((1e-6, Quantity::Voltage));
+    }
+    let (numerator, per) = match label.split_once('/') {
+        Some((n, "m")) => (n, 1.0),
+        Some((n, "cm")) => (n, 1e-2),
+        Some((n, "mm")) => (n, 1e-3),
+        Some(_) => return None,
+        None => (label, 0.0),
+    };
+    let base = numerator.chars().last()?;
+    let prefix = &numerator[..numerator.len() - base.len_utf8()];
+    let factor = match prefix {
+        "" => 1.0,
+        "m" => 1e-3,
+        "\u{b5}" | "\u{3bc}" | "u" => 1e-6,
+        "n" => 1e-9,
+        "p" => 1e-12,
+        "f" => 1e-15,
+        _ => return None,
+    };
+    match (base, per) {
+        ('V', 0.0) if prefix != "p" && prefix != "f" => Some((factor, Quantity::Voltage)),
+        ('S', 0.0) if prefix != "p" && prefix != "f" => Some((factor, Quantity::Conductance)),
+        ('T', 0.0) => Some((factor, Quantity::MagneticField)),
+        ('T', per) if per > 0.0 => Some((factor / per, Quantity::FieldGradient)),
+        _ => None,
+    }
+}
+
 impl Unit {
-    /// The unit of `label`, with its SI factor if it is a known unit: volts and siemens,
-    /// plain or with the prefix m, µ or n. The micro prefix may be the micro sign (U+00B5),
+    /// The unit of `label`, with its SI factor if it is a known unit: volts and siemens
+    /// (plain or with the prefix m, µ or n), teslas (also p and f) and teslas per meter,
+    /// centimeter or millimeter ("fT/cm"). The micro prefix may be the micro sign (U+00B5),
     /// the Greek mu (U+03BC, which looks the same) or "u". Surrounding whitespace is ignored.
     pub fn from_label(label: impl Into<String>) -> Unit {
         let label = label.into();
-        let to_si = match label.trim() {
-            "V" | "S" => Some(1.0),
-            "mV" | "mS" => Some(1e-3),
-            "\u{b5}V" | "\u{3bc}V" | "uV" | "UV" | "uv" | "\u{b5}S" | "\u{3bc}S" | "uS" => {
-                Some(1e-6)
-            }
-            "nV" | "nS" => Some(1e-9),
-            _ => None,
-        };
+        let to_si = parse_unit(&label).map(|(factor, _)| factor);
         Unit { label, to_si }
     }
 
-    /// Whether this is a known voltage unit (V with or without a prefix).
-    pub fn is_voltage(&self) -> bool {
-        self.to_si.is_some() && self.label.trim().ends_with(['V', 'v'])
+    /// What the unit measures, if its label is a known unit.
+    pub fn quantity(&self) -> Option<Quantity> {
+        parse_unit(&self.label).map(|(_, quantity)| quantity)
     }
 }
 

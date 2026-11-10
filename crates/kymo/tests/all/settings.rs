@@ -7,7 +7,9 @@ use eframe::egui::Color32;
 use kymo::annotations::AnnotationColors;
 use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use kymo::settings::{load_annotation_colors, save_annotation_colors};
-use kymo::view::KINDS;
+use kymo::ui::palette::TypeColors;
+use kymo::view::{KINDS, kind_index};
+use kymo_core::ChannelKind;
 use proptest::prelude::*;
 
 /// Storage in memory.
@@ -43,6 +45,15 @@ fn defaults_without_storage_or_values() {
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
 }
 
+/// Type colors with `picked` set and the others default.
+fn colors(picked: &[(ChannelKind, Color32)]) -> TypeColors {
+    let mut colors = [None; KINDS.len()];
+    for &(kind, color) in picked {
+        colors[kind_index(kind)] = Some(color);
+    }
+    colors
+}
+
 #[test]
 fn saved_settings_read_back() {
     let settings = Settings {
@@ -51,19 +62,20 @@ fn saved_settings_read_back() {
         default_window_s: 7.5,
         antialias: true,
         auto_scale_on_open: true,
-        type_colors: [
-            None,
-            Some(Color32::from_rgb(10, 200, 30)),
-            None,
-            None,
-            None,
-            Some(Color32::from_rgb(0, 0, 0)),
-        ],
+        type_colors: colors(&[
+            (ChannelKind::Eog, Color32::from_rgb(10, 200, 30)),
+            (ChannelKind::Misc, Color32::from_rgb(0, 0, 0)),
+            (ChannelKind::RefMeg, Color32::from_rgb(1, 2, 3)),
+        ]),
         theme: Theme::Dark,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
     assert_eq!(Settings::load(Some(&storage)), settings);
+    // Keyed by MNE's names of the types.
+    for key in ["kymo.color.eog", "kymo.color.misc", "kymo.color.ref_meg"] {
+        assert!(storage.0.contains_key(key), "{key}");
+    }
     for theme in Theme::ALL {
         Settings { theme, ..settings }.save(&mut storage);
         assert_eq!(Settings::load(Some(&storage)).theme, theme);
@@ -80,14 +92,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         default_window_s: 5.0,
         antialias: true,
         auto_scale_on_open: true,
-        type_colors: [
-            None,
-            Some(Color32::from_rgb(255, 0, 128)),
-            None,
-            None,
-            None,
-            None,
-        ],
+        type_colors: colors(&[(ChannelKind::Grad, Color32::from_rgb(255, 0, 128))]),
         theme: Theme::Light,
     };
     let defaults = Settings::default();
@@ -128,7 +133,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
             },
         ),
         (
-            "kymo.color.eog",
+            "kymo.color.grad",
             Settings {
                 type_colors: defaults.type_colors,
                 ..saved

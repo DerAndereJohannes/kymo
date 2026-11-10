@@ -343,3 +343,45 @@ fn bad_and_hidden_channels_are_left_out() {
     }
     assert_eq!(amplitude(&fitted(&fx, &view, 1000), ChannelKind::Eeg), None);
 }
+
+/// MEG types fit in their SI units like any other: a magnetometer in fT, a gradiometer in
+/// fT/cm and a reference magnetometer in T, each scaled to its own type.
+#[test]
+fn meg_types_fit_in_their_si_units() {
+    let rows = vec![sine(600.0, 30), sine(300.0, 30), sine(900.0, 30)];
+    let channels = vec![
+        typed(
+            channel("MEG 0111", 0, 1.0, 0.0),
+            ChannelKind::Mag,
+            "fT",
+            Some(1e-15),
+        ),
+        typed(
+            channel("MEG 0112", 0, 1.0, 0.0),
+            ChannelKind::Grad,
+            "fT/cm",
+            Some(1e-13),
+        ),
+        typed(
+            channel("REF 1", 0, 1e-15, 0.0),
+            ChannelKind::RefMeg,
+            "T",
+            Some(1.0),
+        ),
+    ];
+    let fx = Fixture::new(
+        channels,
+        vec![grid(1000.0, 30_000, vec![0..30_000], SampleType::I16, 0..3)],
+        vec![i16_rows(rows)],
+    );
+    let fitted = fitted(&fx, &ViewState::new(&fx.recording), 1000);
+    for (kind, expected) in [
+        (ChannelKind::Mag, 600e-15),
+        (ChannelKind::Grad, 300e-13),
+        (ChannelKind::RefMeg, 900e-15),
+    ] {
+        let got = amplitude(&fitted, kind).unwrap();
+        assert!((got - expected).abs() <= 0.05 * expected, "{kind:?}: {got}");
+    }
+    assert_eq!(amplitude(&fitted, ChannelKind::Eeg), None);
+}

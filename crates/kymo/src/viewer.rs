@@ -766,8 +766,10 @@ impl Viewer {
                 let channel = self.hover.channel.map(|id| {
                     let info = rec.channel(id);
                     let view = self.view.tile_view(self.width_px.max(1));
+                    let (unit, factor) = readout::display_unit(info);
                     let reading = readout::read(rec, service.cache(), &view, id, time).map(|r| {
-                        status::reading_text(r.relative_to(self.baseline(id)), info.tile_unit())
+                        let r = r.relative_to(self.baseline(id)).scaled(factor);
+                        status::reading_text(r, &unit)
                     });
                     (info.name.as_str(), reading)
                 });

@@ -3,7 +3,7 @@
 use super::BrainVisionError;
 use super::text::{Ini, unescape};
 use crate::decode::Encoding;
-use crate::{Channel, ChannelKind, GridId, Unit};
+use crate::{Channel, ChannelKind, GridId, Quantity, Unit};
 
 /// How samples are ordered in the data file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,14 +233,15 @@ fn channels(
             u => u.replace("\u{c2}\u{b5}", "\u{b5}"),
         };
         let unit = Unit::from_label(unit);
-        let kind = if !unit.is_voltage() {
-            ChannelKind::Misc
-        } else {
-            match kind_from_name(&name) {
+        let kind = match unit.quantity() {
+            Some(Quantity::Voltage) => match kind_from_name(&name) {
                 // A scalp channel the montage places nowhere is not on the scalp.
                 ChannelKind::Eeg if coordinates[i] == Some(0.0) => ChannelKind::Misc,
                 kind => kind,
-            }
+            },
+            Some(Quantity::MagneticField) => ChannelKind::Mag,
+            Some(Quantity::FieldGradient) => ChannelKind::Grad,
+            _ => ChannelKind::Misc,
         };
         channels.push(Channel {
             kind,

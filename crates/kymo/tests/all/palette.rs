@@ -27,10 +27,11 @@ fn types_are_told_apart_in_both_themes() {
     for visuals in [Visuals::light(), Visuals::dark()] {
         let background = visuals.extreme_bg_color;
         let text = visuals.text_color();
-        for kind in [ChannelKind::Eeg, ChannelKind::Emg, ChannelKind::Misc] {
+        use ChannelKind::*;
+        for kind in [Eeg, Emg, Misc, Grad, Ecog, Resp, Bio] {
             assert_eq!(trace_color(kind, &visuals), text, "{kind:?}");
         }
-        let colored = [ChannelKind::Eog, ChannelKind::Ecg, ChannelKind::Stim];
+        let colored = [Eog, Ecg, Stim, Mag, RefMeg, Seeg, Dbs];
         let bad = over(bad_color(&visuals), background);
         for (i, &kind) in colored.iter().enumerate() {
             let color = trace_color(kind, &visuals);

@@ -27,17 +27,10 @@ const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
 const THEME_KEY: &str = "kymo.theme";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
 
-/// The key of a channel type's color, e.g. `kymo.color.eeg`.
+/// The key of a channel type's color, by MNE's name of the type, e.g. `kymo.color.eeg` or
+/// `kymo.color.ref_meg`.
 fn type_color_key(kind: ChannelKind) -> String {
-    let name = match kind {
-        ChannelKind::Eeg => "eeg",
-        ChannelKind::Eog => "eog",
-        ChannelKind::Ecg => "ecg",
-        ChannelKind::Emg => "emg",
-        ChannelKind::Stim => "stim",
-        _ => "misc",
-    };
-    format!("kymo.color.{name}")
+    format!("kymo.color.{}", kind.mne_name())
 }
 
 /// Light or dark: the system's choice, or one of them whatever the system uses. On
