@@ -3,6 +3,7 @@
 use eframe::egui::{self, DragValue, Label, RichText, Ui};
 
 use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
+use crate::ui::Overlay;
 use crate::ui::color::{Choice, swatch};
 use crate::ui::header::kind_name;
 use crate::ui::palette::type_color;
@@ -13,6 +14,7 @@ use crate::view::KINDS;
 pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Settings) -> bool {
     let before = *settings;
     egui::Window::new("Settings")
+        .id(Overlay::Settings.id())
         .open(open)
         .collapsible(false)
         .resizable(false)

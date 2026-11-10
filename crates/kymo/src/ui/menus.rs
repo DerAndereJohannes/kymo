@@ -11,6 +11,7 @@ use crate::action::Action;
 use crate::keymap::Platform;
 use crate::menu::{Item, SystemItem, menu_bar};
 use crate::shortcuts::overview;
+use crate::ui::Overlay;
 
 /// What a menu shows for an action: whether it can run now, and its checkmark if it has
 /// one.
@@ -161,6 +162,7 @@ fn check_item(
 /// The shortcut overview, while `open`.
 pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform) {
     egui::Window::new(Action::Shortcuts.label())
+        .id(Overlay::Shortcuts.id())
         .open(open)
         .collapsible(false)
         .default_height(480.0)
@@ -190,6 +192,7 @@ pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform
 /// The About window (Windows and Linux; macOS uses the system's About panel).
 pub fn about_window(ctx: &egui::Context, open: &mut bool) {
     egui::Window::new(Action::About.label())
+        .id(Overlay::About.id())
         .open(open)
         .collapsible(false)
         .resizable(false)

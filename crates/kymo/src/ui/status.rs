@@ -1,4 +1,4 @@
-//! The texts of the status line: build progress, memory, and the reading under the pointer.
+//! The texts of the status line: build progress and the reading under the pointer.
 
 use std::collections::HashMap;
 
@@ -21,15 +21,6 @@ pub fn build_text(progress: &BuildProgress) -> Option<String> {
     // Floored, so 100% only shows when complete.
     let percent = (progress.fraction() * 100.0).floor().clamp(0.0, 99.0);
     Some(format!("Building overview {percent:.0}%"))
-}
-
-/// Memory of the tile cache and, if there is a GPU, of its tile copies.
-pub fn memory_text(cache_bytes: usize, gpu_bytes: Option<usize>) -> String {
-    let mb = |bytes: usize| format!("{} MB", (bytes as f64 / f64::from(1 << 20)).round());
-    match gpu_bytes {
-        Some(gpu) => format!("Tiles {} · GPU {}", mb(cache_bytes), mb(gpu)),
-        None => format!("Tiles {}", mb(cache_bytes)),
-    }
 }
 
 /// `value` with [`DIGITS`] significant digits (whole numbers in full), and its unit.

@@ -7,8 +7,7 @@ use kymo::ui::axis::Clock;
 use kymo::ui::readout::Reading;
 use kymo::ui::scrollbar::{MIN_THUMB, start_at, thumb};
 use kymo::ui::status::{
-    annotations_text, build_text, format_value, memory_text, pointer_text, reading_text,
-    time_decimals,
+    annotations_text, build_text, format_value, pointer_text, reading_text, time_decimals,
 };
 use kymo_core::service::BuildProgress;
 use proptest::prelude::*;
@@ -150,6 +149,4 @@ fn build_progress_and_memory() {
     let text = build_text(&failed).unwrap();
     assert!(text.starts_with("Overview stopped: "), "{text}");
     assert!(text.contains("disk full"), "{text}");
-    assert_eq!(memory_text(3 << 20, Some(5 << 19)), "Tiles 3 MB · GPU 3 MB");
-    assert_eq!(memory_text(0, None), "Tiles 0 MB");
 }

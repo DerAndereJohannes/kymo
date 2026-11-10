@@ -138,6 +138,7 @@ pub struct StatusLine {
     /// its description.
     pub swatch: Option<AnnotationColor>,
     pub left: String,
+    /// The overview's build progress, or its error.
     pub right: String,
 }
 
@@ -729,7 +730,7 @@ impl Viewer {
 
         // The status line was laid out before the traces moved; show the new texts in the
         // next frame, and only ask for one if they changed.
-        let status = self.status_line(gpu);
+        let status = self.status_line();
         if status != self.status {
             self.status = status;
             ui.ctx().request_repaint();
@@ -759,7 +760,7 @@ impl Viewer {
         }
     }
 
-    fn status_line(&self, gpu: &Gpu) -> StatusLine {
+    fn status_line(&self) -> StatusLine {
         let service = self.service();
         let rec = &self.document.recording;
         let left = self
@@ -806,10 +807,8 @@ impl Viewer {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
-        let mut right = status::memory_text(service.cache().bytes(), gpu.bytes());
-        if let Some(build) = status::build_text(&service.progress()) {
-            right = format!("{build} · {right}");
-        }
+        // The overview's build while it runs, or why it stopped; nothing once it is done.
+        let right = status::build_text(&service.progress()).unwrap_or_default();
         StatusLine {
             swatch,
             left,

@@ -131,11 +131,8 @@ fn opens_a_recording_and_builds_its_overview() {
     ready(&mut harness);
     let viewer = harness.state().viewer().unwrap();
     assert_eq!(viewer.view().time(), 0.0..20.0);
-    assert!(
-        viewer.status().right.starts_with("Tiles "),
-        "{:?}",
-        viewer.status()
-    );
+    // Once the overview is built, the status line's right side is empty.
+    assert_eq!(viewer.status().right, "", "{:?}", viewer.status());
     harness.get_by_label("A1");
 }
 
@@ -1090,8 +1087,12 @@ fn the_legend_shows_and_hides_annotations() {
     assert!(top(&harness, "EEG") < channels[0], "{channels:?}");
     assert!(channels[0] < legend, "{channels:?} {legend}");
     let row = harness.ctx.global_style().spacing.interact_size.y;
+    // The reading under the pointer marks the status line.
+    let traces = viewer(&harness).layout().unwrap().traces;
+    hover(&mut harness, traces.center());
+    harness.step();
     let status = harness
-        .get_by_label(&viewer(&harness).status().right)
+        .get_by_label(&viewer(&harness).status().left)
         .rect()
         .top();
     assert!(
@@ -1900,6 +1901,48 @@ fn the_shortcut_overview_and_about_open() {
     choose(&mut harness, "Help", "About Kymo");
     assert!(harness.state().about_open());
     harness.get_by_label(kymo::ui::menus::ABOUT);
+}
+
+#[test]
+fn esc_and_close_close_the_window_in_front() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let open = |h: &Harness<'_, KymoApp>| (h.state().settings_open(), h.state().shortcuts_open());
+    let press = |h: &mut Harness<'_, KymoApp>, modifiers, key| {
+        h.key_press_modifiers(modifiers, key);
+        h.run_steps(2);
+    };
+
+    // The one opened last is in front.
+    press(&mut harness, command(), Key::Comma);
+    press(&mut harness, command(), Key::Slash);
+    assert_eq!(open(&harness), (true, true));
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(open(&harness), (true, false));
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(open(&harness), (false, false));
+
+    // A click brings one to the front.
+    press(&mut harness, command(), Key::Slash);
+    press(&mut harness, command(), Key::Comma);
+    harness.get_by_label("Pinch").click();
+    harness.run_steps(2);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert_eq!(open(&harness), (true, false));
+
+    // ⌘W closes the window in front, and with none the recording.
+    press(&mut harness, command(), Key::W);
+    assert_eq!(open(&harness), (false, false));
+    assert!(harness.state().viewer().is_some());
+    press(&mut harness, command(), Key::W);
+    assert!(harness.state().viewer().is_none());
+
+    // Without a recording, ⌘W still closes Settings.
+    press(&mut harness, command(), Key::Comma);
+    assert!(harness.state().settings_open());
+    press(&mut harness, command(), Key::W);
+    assert!(!harness.state().settings_open());
 }
 
 /// The point in the traces at time `t`, `dy` points below their top.
@@ -3787,7 +3830,7 @@ fn saved_annotations_load_into_another_window() {
     harness
         .state_mut()
         .answer_file_dialogs([Some(dir.path().join("saved"))]);
-    press(&mut harness, command() | Modifiers::SHIFT, Key::S);
+    press(&mut harness, command(), Key::S);
     let saved = dir.path().join("saved.tsv");
     let text = std::fs::read_to_string(&saved).unwrap();
     assert_eq!(text.lines().next(), Some("onset\tduration\ttrial_type"));

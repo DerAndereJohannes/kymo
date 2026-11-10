@@ -61,14 +61,6 @@ impl Gpu {
         self.error.as_deref()
     }
 
-    /// GPU memory held by tiles.
-    pub fn bytes(&self) -> Option<usize> {
-        let state = self.state.as_ref()?;
-        let renderer = state.renderer.read();
-        let resources = renderer.callback_resources.get::<Resources>()?;
-        Some(resources.renderer.gpu_bytes())
-    }
-
     /// The budget for tiles on the GPU.
     pub fn budget(&self) -> Option<usize> {
         let state = self.state.as_ref()?;

@@ -19,6 +19,7 @@ use crate::document::{self, Document, Loading, error_text, file_name, plural};
 use crate::keymap::{Keymap, Platform};
 use crate::native_menu::NativeMenu;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
+use crate::ui::Overlay;
 use crate::ui::gpu::Gpu;
 use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
@@ -278,6 +279,7 @@ impl KymoApp {
         let viewer = self.viewer();
         AppMenuState {
             ready: matches!(self.state, State::Ready(_)),
+            overlay: !self.open_overlays().is_empty(),
             typing: ctx.egui_wants_keyboard_input(),
             editing: viewer.is_some_and(Viewer::editing),
             selected: viewer.is_some_and(|v| v.selected().is_some()),
@@ -293,6 +295,26 @@ impl KymoApp {
             // Not looked for during a drag, which changes the store every frame.
             mergeable: viewer.is_some_and(|v| !v.dragging() && v.can_merge()),
             stim_options: self.stim_options,
+        }
+    }
+
+    /// Settings, Keyboard Shortcuts and About, those that are open.
+    fn open_overlays(&self) -> Vec<Overlay> {
+        Overlay::ALL
+            .into_iter()
+            .filter(|&overlay| match overlay {
+                Overlay::Settings => self.settings_open,
+                Overlay::Shortcuts => self.shortcuts_open,
+                Overlay::About => self.about_open,
+            })
+            .collect()
+    }
+
+    fn overlay_open(&mut self, overlay: Overlay) -> &mut bool {
+        match overlay {
+            Overlay::Settings => &mut self.settings_open,
+            Overlay::Shortcuts => &mut self.shortcuts_open,
+            Overlay::About => &mut self.about_open,
         }
     }
 
@@ -460,6 +482,13 @@ impl KymoApp {
 
     /// Carries out `action`, unless it is disabled now.
     pub fn perform(&mut self, ctx: &egui::Context, action: Action) {
+        // Esc and ⌘W close the window in front first; Esc takes back a drag before that.
+        let dragging = self.viewer().is_some_and(Viewer::dragging);
+        let closes = action == Action::Close || action == Action::Deselect && !dragging;
+        if closes && let Some(front) = Overlay::front(ctx, self.open_overlays()) {
+            *self.overlay_open(front) = false;
+            return;
+        }
         let state = self.menu_state(ctx);
         if !state.enabled(action) {
             return;
@@ -860,6 +889,8 @@ impl eframe::App for KymoApp {
 /// What the menus show: whether a recording is open, what it has, and the toggles' states.
 struct AppMenuState {
     ready: bool,
+    /// Whether Settings, Keyboard Shortcuts or About is open, for Close to close it.
+    overlay: bool,
     /// Whether a text field has the keyboard, for Undo and Redo to act on.
     typing: bool,
     /// Whether annotation mode is on, and an annotation selected.
@@ -886,8 +917,10 @@ struct AppMenuState {
 
 impl MenuState for AppMenuState {
     fn enabled(&self, action: Action) -> bool {
-        // Toggle Bad needs a channel to act on.
         let now = match action {
+            // Closes the window in front, without a recording too.
+            Action::Close if self.overlay => return true,
+            // Toggle Bad needs a channel to act on.
             Action::ToggleBad => self.channel,
             Action::Undo => self.can_undo && !self.dragging || self.typing,
             Action::Redo => self.can_redo && !self.dragging || self.typing,
