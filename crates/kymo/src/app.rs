@@ -288,7 +288,6 @@ impl KymoApp {
             can_redo: viewer.is_some_and(|v| v.history().can_redo()),
             sidebar: self.show_sidebar,
             antialias: self.options.settings.antialias,
-            channel: viewer.is_some_and(|v| v.hover().channel.is_some()),
             dc: viewer.is_some_and(|v| v.view().dc_removed()),
             stim: viewer.is_some_and(Viewer::has_stim),
             shown: viewer.is_some_and(|v| v.legend().shown_count().0 > 0),
@@ -903,8 +902,6 @@ struct AppMenuState {
     can_redo: bool,
     sidebar: bool,
     antialias: bool,
-    /// Whether the pointer is over a channel, which Toggle Bad acts on.
-    channel: bool,
     dc: bool,
     /// Whether the recording has stim channels, whose codes the rule annotates.
     stim: bool,
@@ -920,8 +917,6 @@ impl MenuState for AppMenuState {
         let now = match action {
             // Closes the window in front, without a recording too.
             Action::Close if self.overlay => return true,
-            // Toggle Bad needs a channel to act on.
-            Action::ToggleBad => self.channel,
             Action::Undo => self.can_undo && !self.dragging || self.typing,
             Action::Redo => self.can_redo && !self.dragging || self.typing,
             Action::DeleteAnnotation => self.selected && !self.dragging,

@@ -460,7 +460,7 @@ impl Viewer {
         self.service().mean(channel).map_or(0.0, |m| m.value)
     }
 
-    /// Applies a view action; [`Action::ToggleBad`] acts on the channel under the pointer.
+    /// Applies a view action.
     /// [`Action::AutoScale`] applies at the first frame that has all its tiles, as coarser
     /// stand-ins would draw too wide an envelope; any other scale action cancels it.
     pub fn apply(&mut self, action: Action) -> bool {
@@ -509,7 +509,7 @@ impl Viewer {
             Action::ScaleUp | Action::ScaleDown | Action::DefaultScale => self.auto_scale = false,
             _ => {}
         }
-        self.view.apply(action, self.hover.channel)
+        self.view.apply(action)
     }
 
     /// After an undo or redo that changed `changed` (`None` if there was nothing to do):
@@ -1130,7 +1130,8 @@ impl Viewer {
                 "Mark as bad"
             };
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            names_response.clone().on_hover_text(tip);
+            // At the pointer: the names' area is the whole column.
+            names_response.clone().on_hover_text_at_pointer(tip);
         }
         names_response.context_menu(|ui| match self.name_menu {
             Some(channel) => channel_menu(ui, &mut self.view, channel),

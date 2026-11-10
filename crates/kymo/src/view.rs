@@ -260,9 +260,9 @@ impl ViewState {
             })
     }
 
-    /// Applies a view action; `under_pointer` is the channel [`Action::ToggleBad`] acts
-    /// on. Returns `false` for actions outside the view (open, quit, ...).
-    pub fn apply(&mut self, action: Action, under_pointer: Option<ChannelId>) -> bool {
+    /// Applies a view action. Returns `false` for actions outside the view (open, quit,
+    /// ...).
+    pub fn apply(&mut self, action: Action) -> bool {
         let rows = self.rows() as f64;
         match action {
             Action::PanLeft => self.pan(-self.span / 4.0),
@@ -303,11 +303,6 @@ impl ViewState {
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
             Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
             Action::ToggleDc => self.dc = !self.dc,
-            Action::ToggleBad => {
-                if let Some(channel) = under_pointer {
-                    self.toggle_bad(channel);
-                }
-            }
             Action::Open
             | Action::Close
             | Action::Quit

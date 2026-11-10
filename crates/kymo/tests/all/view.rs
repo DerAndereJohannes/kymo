@@ -102,7 +102,7 @@ fn assert_time(view: &ViewState, time: Range<f64>) {
 }
 
 fn act(view: &mut ViewState, action: Action) {
-    assert!(view.apply(action, None), "{action:?}");
+    assert!(view.apply(action), "{action:?}");
 }
 
 #[test]
@@ -329,14 +329,9 @@ fn toggles_dc_removal_and_bad_channels() {
     act(&mut view, Action::ToggleDc);
     assert!(!view.dc_removed());
 
-    let height = 400.0;
-    let under = view.channel_at(45.0, height); // third row
-    assert_eq!(under, Some(ChannelId(2)));
-    assert!(view.apply(Action::ToggleBad, under));
-    assert!(view.is_bad(ChannelId(2)));
-    assert!(view.apply(Action::ToggleBad, None));
+    view.toggle_bad(ChannelId(2));
     assert_eq!(view.bad_channels().collect::<Vec<_>>(), [ChannelId(2)]);
-    assert!(view.apply(Action::ToggleBad, under));
+    view.toggle_bad(ChannelId(2));
     assert!(!view.is_bad(ChannelId(2)));
     view.toggle_bad(ChannelId(99));
     assert_eq!(view.bad_channels().count(), 0, "not a channel");
@@ -398,7 +393,7 @@ fn types_are_shown_and_hidden_together() {
     assert!(view.visible_channels().is_empty());
     assert_eq!(view.channel_at(10.0, 400.0), None);
     for action in Action::ALL {
-        view.apply(action, None);
+        view.apply(action);
     }
     assert!(view.visible_channels().is_empty());
 
@@ -489,7 +484,7 @@ fn leaves_other_actions_to_the_app() {
         Action::Shortcuts,
         Action::About,
     ] {
-        assert!(!view.apply(action, None), "{action:?}");
+        assert!(!view.apply(action), "{action:?}");
     }
     assert_time(&view, 0.0..20.0);
 }
@@ -631,7 +626,7 @@ proptest! {
         for step in steps {
             match step {
                 Step::Act(action) => {
-                    view.apply(action, view.channel_at(10.0, area.height));
+                    view.apply(action);
                 }
                 Step::Gesture(gesture, x) => view.gesture(gesture, area, x),
                 Step::Pan(seconds) => view.pan(seconds),

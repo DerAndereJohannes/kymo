@@ -50,8 +50,6 @@ pub enum Action {
     /// The amplitudes a recording opens with, per type.
     DefaultScale,
     ToggleDc,
-    /// Toggles bad for the channel under the pointer.
-    ToggleBad,
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
     /// Turns anti-aliased traces on or off (a setting, off by default).
@@ -80,7 +78,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 45] = [
+    pub const ALL: [Action; 44] = [
         Action::Open,
         Action::Close,
         Action::Quit,
@@ -113,7 +111,6 @@ impl Action {
         Action::AutoScale,
         Action::DefaultScale,
         Action::ToggleDc,
-        Action::ToggleBad,
         Action::ToggleSidebar,
         Action::ToggleAntialias,
         Action::StimEveryChange,
@@ -163,7 +160,6 @@ impl Action {
             Action::AutoScale => "Auto Scale",
             Action::DefaultScale => "Default Scale",
             Action::ToggleDc => "Remove DC",
-            Action::ToggleBad => "Toggle Bad Channel",
             Action::ToggleSidebar => "Show Sidebar",
             Action::ToggleAntialias => "Anti-aliasing",
             Action::StimEveryChange => "Every Change",

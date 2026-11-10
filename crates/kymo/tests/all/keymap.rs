@@ -67,7 +67,6 @@ fn looks_up_the_tables_bindings() {
             (Key::Equals, true, true, false, Action::ScaleUp),
             (Key::Minus, true, true, false, Action::ScaleDown),
             (Key::D, true, false, false, Action::ToggleDc),
-            (Key::B, true, false, false, Action::ToggleBad),
             (Key::W, true, false, false, Action::Close),
             (Key::S, true, false, false, Action::SaveAnnotations),
             (Key::Q, true, false, false, Action::Quit),

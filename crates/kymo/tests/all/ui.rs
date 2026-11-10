@@ -287,7 +287,7 @@ fn dragging_the_traces_pans() {
 }
 
 #[test]
-fn names_and_b_toggle_bad_channels() {
+fn clicking_a_name_toggles_bad() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -301,15 +301,7 @@ fn names_and_b_toggle_bad_channels() {
     let name = egui::pos2(layout.names.center().x, row_y(1.0));
     click(&mut harness, name);
     assert!(viewer(&harness).view().is_bad(a2));
-
-    // B toggles the channel under the pointer, over the traces too.
-    hover(
-        &mut harness,
-        egui::pos2(layout.traces.center().x, row_y(1.0)),
-    );
-    assert_eq!(viewer(&harness).hover().channel, Some(a2));
-    harness.key_press_modifiers(command(), Key::B);
-    harness.step();
+    click(&mut harness, name);
     assert!(!viewer(&harness).view().is_bad(a2));
 }
 

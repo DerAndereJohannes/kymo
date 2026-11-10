@@ -370,7 +370,7 @@ fn the_scene_follows_the_view() {
     let fx = fixture();
     let mut state = ViewState::new(&fx.recording);
     state.set_rows(4);
-    state.apply(kymo::action::Action::ChannelDown, None);
+    state.apply(kymo::action::Action::ChannelDown);
     let scene = Scene::from_view(&state, [800, 400], [1.0, 0.5, 0.0, 1.0]);
     assert_eq!(scene.time, 0.0..20.0);
     let channels: Vec<_> = scene.rows.iter().map(|r| r.channel.0).collect();
@@ -412,7 +412,7 @@ fn stim_rows_clip_and_draw_codes() {
         if zoom_out {
             // Ten minutes: buckets from the pyramid instead of samples.
             for _ in 0..10 {
-                state.apply(kymo::action::Action::ZoomOut, None);
+                state.apply(kymo::action::Action::ZoomOut);
             }
         }
         let scene = Scene::from_view(&state, [800, 400], [1.0; 4]);
