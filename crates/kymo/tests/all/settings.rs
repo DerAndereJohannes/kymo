@@ -246,3 +246,56 @@ fn awkward_descriptions_read_back() {
     save_annotation_colors(&colors, &mut storage);
     assert_eq!(load_annotation_colors(Some(&storage)), colors);
 }
+
+#[test]
+fn recent_recordings_are_newest_first_each_once_and_capped() {
+    use kymo::recent::Recent;
+    use std::path::{Path, PathBuf};
+    let mut recent = Recent::default();
+    for k in 0..12 {
+        recent.add(Path::new(&format!("/data/r{k}.edf")));
+    }
+    assert_eq!(recent.paths().len(), Recent::MAX);
+    assert_eq!(recent.get(0), Some(Path::new("/data/r11.edf")));
+    assert_eq!(recent.get(9), Some(Path::new("/data/r2.edf")));
+    // Opened again, it moves to the top rather than showing twice.
+    recent.add(Path::new("/data/r5.edf"));
+    assert_eq!(recent.get(0), Some(Path::new("/data/r5.edf")));
+    assert_eq!(recent.paths().len(), Recent::MAX);
+    recent.remove(Path::new("/data/r5.edf"));
+    assert!(!recent.paths().contains(&PathBuf::from("/data/r5.edf")));
+    // Relative paths are kept as absolute ones.
+    recent.add(Path::new("relative.edf"));
+    assert!(recent.get(0).unwrap().is_absolute());
+    recent.clear();
+    assert!(recent.paths().is_empty());
+}
+
+#[test]
+fn recent_labels_name_the_folder_only_for_names_shared() {
+    use kymo::recent::Recent;
+    use std::path::Path;
+    let mut recent = Recent::default();
+    recent.add(Path::new("/data/day1/sleep.edf"));
+    recent.add(Path::new("/data/other.bdf"));
+    recent.add(Path::new("/data/day2/sleep.edf"));
+    assert_eq!(
+        recent.labels(),
+        ["sleep.edf — day2", "other.bdf", "sleep.edf — day1"]
+    );
+}
+
+#[test]
+fn recent_recordings_are_kept_in_storage() {
+    use kymo::recent::Recent;
+    use std::path::Path;
+    let mut recent = Recent::default();
+    recent.add(Path::new("/data/a.edf"));
+    recent.add(Path::new("/data/with\nbreak and \\ backslash.bdf"));
+    let mut storage = Memory::default();
+    recent.save(&mut storage);
+    assert_eq!(Recent::load(Some(&storage)), recent);
+    assert_eq!(Recent::load(None), Recent::default());
+    storage.set_string("kymo.recent", "\n/x.edf\n/x.edf\n".into());
+    assert_eq!(Recent::load(Some(&storage)).paths().len(), 1);
+}

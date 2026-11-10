@@ -44,6 +44,7 @@ fn options() -> Options {
         menus: Menus::Egui(Platform::Linux),
         settings: Settings::default(),
         annotation_colors: Default::default(),
+        recent: Default::default(),
     }
 }
 
@@ -4238,4 +4239,79 @@ fn dropped_files_open_or_load_their_annotations() {
     harness.run_steps(2);
     ready(&mut harness);
     assert_eq!(viewer(&harness).document().path, other.path());
+}
+
+/// Opens File → Open Recent and clicks `item` in it.
+fn choose_recent(harness: &mut Harness<'_, KymoApp>, item: &str) {
+    harness.get_by_label("File").click();
+    harness.run_steps(2);
+    harness.get_by_label("Open Recent").click();
+    harness.run_steps(2);
+    harness.get_by_label(item).click();
+    harness.run_steps(2);
+}
+
+#[test]
+fn open_recent_reopens_recordings_and_forgets_missing_ones() {
+    let first = without_triggers("bdf+c-small");
+    let second = TempFile::preset("bdf+c-small");
+    let name = |file: &TempFile| {
+        file.path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (first_name, second_name) = (name(&first), name(&second));
+    let mut harness = window(first.path());
+    ready(&mut harness);
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(second.path().to_owned())]);
+    harness.key_press_modifiers(command(), Key::O);
+    // Until the press is handled, the first recording is still the one ready.
+    harness.run_steps(2);
+    ready(&mut harness);
+    assert_eq!(
+        harness.state().recent().paths(),
+        [second.path(), first.path()]
+    );
+
+    // Chosen from the menu, it opens and moves to the top.
+    choose_recent(&mut harness, &first_name);
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).document().path, first.path());
+    assert_eq!(
+        harness.state().recent().labels(),
+        [first_name.clone(), second_name.clone()]
+    );
+
+    // One that has gone shows the error and leaves the list.
+    let gone = second.path().to_owned();
+    drop(second);
+    choose_recent(&mut harness, &second_name);
+    step_until(&mut harness, "the error", |app| app.error().is_some());
+    assert_eq!(harness.state().recent().paths(), [first.path()]);
+
+    // Kept for the next run.
+    let mut storage = Memory::default();
+    eframe::App::save(harness.state_mut(), &mut storage);
+    let kept = kymo::recent::Recent::load(Some(&storage));
+    assert_eq!(kept.paths(), [first.path()]);
+    assert!(!kept.paths().contains(&gone));
+
+    // Clear Menu empties it, and is disabled then.
+    choose_recent(&mut harness, "Clear Menu");
+    assert!(harness.state().recent().paths().is_empty());
+    harness.get_by_label("File").click();
+    harness.run_steps(2);
+    harness.get_by_label("Open Recent").click();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .get_by_label("Clear Menu")
+            .accesskit_node()
+            .is_disabled()
+    );
 }

@@ -237,14 +237,14 @@ fn parse_rgb(text: &str) -> Option<Rgb> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
 }
 
 /// The inverse of [`escape`]; `None` for a backslash before anything else.
-fn unescape(text: &str) -> Option<String> {
+pub(crate) fn unescape(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {

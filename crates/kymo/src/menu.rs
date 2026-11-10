@@ -59,6 +59,9 @@ pub enum Item {
     },
     System(SystemItem),
     Separator,
+    /// File → Open Recent: a submenu of the recordings opened last, from the menu state,
+    /// and Clear Menu.
+    Recent,
     Submenu {
         title: &'static str,
         items: Vec<Item>,
@@ -149,6 +152,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
     }
     let mut file = vec![
         a(Action::Open),
+        Item::Recent,
         a(Action::Close),
         Item::Separator,
         a(Action::LoadAnnotations),

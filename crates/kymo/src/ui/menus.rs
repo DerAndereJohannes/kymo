@@ -19,6 +19,8 @@ pub trait MenuState {
     fn enabled(&self, action: Action) -> bool;
     /// `Some(on)` for checkable items.
     fn checked(&self, action: Action) -> Option<bool>;
+    /// The labels of File → Open Recent, newest first (see [`crate::recent::Recent::labels`]).
+    fn recent(&self) -> Vec<String>;
 }
 
 /// The menu bar of `platform` drawn by egui. Returns the action of a clicked item.
@@ -80,6 +82,28 @@ fn menu_items(
             }
             Item::Submenu { title, items } => {
                 ui.menu_button(*title, |ui| menu_items(ui, items, platform, state, clicked));
+            }
+            Item::Recent => {
+                ui.menu_button(RECENT_TITLE, |ui| {
+                    let labels = state.recent();
+                    for (index, label) in labels.iter().enumerate() {
+                        if ui.button(label).clicked() {
+                            *clicked = Some(Action::OpenRecent(index as u8));
+                            ui.close();
+                        }
+                    }
+                    if !labels.is_empty() {
+                        ui.separator();
+                    }
+                    let clear = Action::ClearRecent;
+                    if ui
+                        .add_enabled(state.enabled(clear), Button::new(clear.label()))
+                        .clicked()
+                    {
+                        *clicked = Some(clear);
+                        ui.close();
+                    }
+                });
             }
         }
     }
@@ -263,6 +287,9 @@ pub fn add_symbol_font(ctx: &egui::Context) {
     #[cfg(not(target_os = "macos"))]
     let _ = ctx;
 }
+
+/// The title of File → Open Recent.
+pub const RECENT_TITLE: &str = "Open Recent";
 
 /// What Kymo is, for About windows and panels.
 pub const ABOUT: &str = "A viewer for large EEG and MEG recordings.";

@@ -20,8 +20,9 @@ use muda::{
 use crate::action::Action;
 use crate::keymap::{Chord, Platform};
 use crate::menu::{Item, Role, SystemItem, menu_bar};
+use crate::recent::Recent;
 use crate::settings::Theme;
-use crate::ui::menus::{ABOUT, LICENSE, MenuState};
+use crate::ui::menus::{ABOUT, LICENSE, MenuState, RECENT_TITLE};
 
 /// The menu bar and its action items.
 pub struct NativeMenu {
@@ -34,6 +35,9 @@ pub struct NativeMenu {
     events: Receiver<MenuId>,
     /// What each item showed at the last [`update`](Self::update).
     shown: HashMap<Action, (bool, Option<bool>)>,
+    /// File → Open Recent, and the labels it shows (`None` until first filled).
+    recent: Option<Submenu>,
+    recent_shown: Option<Vec<String>>,
     /// The window the menu bar is attached to.
     #[cfg(windows)]
     hwnd: Option<isize>,
@@ -111,9 +115,16 @@ impl NativeMenu {
 
         let menu = Menu::new();
         let mut items = Vec::new();
+        let mut recent = None;
         for description in menu_bar(platform) {
             let submenu = Submenu::new(description.title, true);
-            append(&submenu, &description.items, platform, &mut items)?;
+            append(
+                &submenu,
+                &description.items,
+                platform,
+                &mut items,
+                &mut recent,
+            )?;
             menu.append(&submenu)?;
             #[cfg(target_os = "macos")]
             match description.role {
@@ -124,9 +135,15 @@ impl NativeMenu {
             #[cfg(not(target_os = "macos"))]
             let _: Role = description.role;
         }
+        // Open Recent's items come and go with the list.
+        let recent_actions = (0..Recent::MAX as u8)
+            .map(Action::OpenRecent)
+            .chain([Action::ClearRecent]);
         let actions = items
             .iter()
-            .map(|(action, _)| (action_id(*action), *action))
+            .map(|(action, _)| *action)
+            .chain(recent_actions)
+            .map(|action| (action_id(action), action))
             .collect();
         Ok(NativeMenu {
             menu: ManuallyDrop::new(menu),
@@ -134,6 +151,8 @@ impl NativeMenu {
             actions,
             events,
             shown: HashMap::new(),
+            recent,
+            recent_shown: None,
             #[cfg(windows)]
             hwnd: None,
         })
@@ -227,15 +246,45 @@ impl NativeMenu {
             }
             self.shown.insert(*action, now);
         }
+        let labels = state.recent();
+        if self.recent_shown.as_ref() != Some(&labels) {
+            if let Some(submenu) = &self.recent {
+                // A failed item leaves it out; the menu stays usable.
+                let _ = fill_recent(submenu, &labels);
+            }
+            self.recent_shown = Some(labels);
+        }
     }
 }
 
-/// Appends `items` to `submenu`, and their action items to `entries`.
+/// Puts the recordings `labels` names into Open Recent, then Clear Menu (disabled without
+/// any), in place of what it showed.
+fn fill_recent(submenu: &Submenu, labels: &[String]) -> muda::Result<()> {
+    while submenu.remove_at(0).is_some() {}
+    for (index, label) in labels.iter().enumerate() {
+        let action = Action::OpenRecent(index as u8);
+        submenu.append(&MenuItem::with_id(action_id(action), label, true, None))?;
+    }
+    if !labels.is_empty() {
+        submenu.append(&PredefinedMenuItem::separator())?;
+    }
+    let clear = Action::ClearRecent;
+    submenu.append(&MenuItem::with_id(
+        action_id(clear),
+        clear.label(),
+        !labels.is_empty(),
+        None,
+    ))
+}
+
+/// Appends `items` to `submenu`, their action items to `entries`, and Open Recent (empty,
+/// filled by [`NativeMenu::update`]) to `recent`.
 fn append(
     submenu: &Submenu,
     items: &[Item],
     platform: Platform,
     entries: &mut Vec<(Action, Entry)>,
+    recent: &mut Option<Submenu>,
 ) -> muda::Result<()> {
     for item in items {
         match item {
@@ -270,8 +319,13 @@ fn append(
             Item::Separator => submenu.append(&PredefinedMenuItem::separator())?,
             Item::Submenu { title, items } => {
                 let inner = Submenu::new(*title, true);
-                append(&inner, items, platform, entries)?;
+                append(&inner, items, platform, entries, recent)?;
                 submenu.append(&inner)?;
+            }
+            Item::Recent => {
+                let inner = Submenu::new(RECENT_TITLE, true);
+                submenu.append(&inner)?;
+                *recent = Some(inner);
             }
         }
     }

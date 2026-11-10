@@ -150,7 +150,33 @@ fn every_action_is_reachable() {
         let in_menu = Platform::ALL
             .iter()
             .any(|&p| menu_actions(p).contains(&action));
-        assert!(bound || in_menu, "{action:?}");
+        // Open Recent's items come from the list of recordings.
+        let recent = matches!(action, Action::OpenRecent(_) | Action::ClearRecent);
+        assert!(bound || in_menu || recent, "{action:?}");
+    }
+}
+
+#[test]
+fn open_recent_follows_open_in_the_file_menu() {
+    for platform in Platform::ALL {
+        let file = menu_bar(platform)
+            .into_iter()
+            .find(|m| m.title == "File")
+            .unwrap();
+        let open = file
+            .items
+            .iter()
+            .position(|i| {
+                matches!(
+                    i,
+                    Item::Action {
+                        action: Action::Open,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert_eq!(file.items[open + 1], Item::Recent, "{platform:?}");
     }
 }
 

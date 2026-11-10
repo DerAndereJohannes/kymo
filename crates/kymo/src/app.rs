@@ -18,6 +18,7 @@ use crate::app_mode::AppMode;
 use crate::document::{self, Document, Loading, error_text, file_name, plural};
 use crate::keymap::{Keymap, Platform};
 use crate::native_menu::NativeMenu;
+use crate::recent::Recent;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::Overlay;
 use crate::ui::gpu::Gpu;
@@ -36,6 +37,8 @@ pub struct Options {
     pub settings: Settings,
     /// Colors picked for annotation descriptions, as remembered from earlier runs.
     pub annotation_colors: AnnotationColors,
+    /// The recordings opened last, for File → Open Recent, as remembered from earlier runs.
+    pub recent: Recent,
 }
 
 /// Where the menu bar comes from.
@@ -49,7 +52,7 @@ pub enum Menus {
 
 impl Default for Options {
     /// Sidecars in the user's cache directory; native menus where the platform has them;
-    /// default settings, no annotation colors picked.
+    /// default settings, no annotation colors picked, no recent recordings.
     fn default() -> Self {
         let platform = Platform::current();
         Options {
@@ -61,6 +64,7 @@ impl Default for Options {
             },
             settings: Settings::default(),
             annotation_colors: AnnotationColors::new(),
+            recent: Recent::default(),
         }
     }
 }
@@ -297,6 +301,7 @@ impl KymoApp {
             // Not looked for during a drag, which changes the store every frame.
             mergeable: viewer.is_some_and(|v| !v.dragging() && v.can_merge()),
             stim_options: self.stim_options,
+            recent: self.options.recent.labels(),
         }
     }
 
@@ -506,6 +511,12 @@ impl KymoApp {
                 }
             }
             Action::Open => self.leave(ctx, Leave::Open),
+            Action::OpenRecent(index) => {
+                if let Some(path) = self.options.recent.get(usize::from(index)) {
+                    self.leave(ctx, Leave::OpenPath(path.to_owned()));
+                }
+            }
+            Action::ClearRecent => self.options.recent.clear(),
             Action::Close => self.leave(ctx, Leave::Close),
             Action::SaveAnnotations => {
                 self.save_annotations();
@@ -722,6 +733,11 @@ impl KymoApp {
         }
     }
 
+    /// The recordings in File → Open Recent.
+    pub fn recent(&self) -> &Recent {
+        &self.options.recent
+    }
+
     /// What waits for the answer to "Save the changes?", while it is asked.
     pub fn leaving(&self) -> Option<Leave> {
         self.leaving.clone()
@@ -919,6 +935,12 @@ impl KymoApp {
         let Some(result) = loading.poll() else {
             return;
         };
+        // Recordings that open go first in Open Recent; ones that don't (moved, deleted,
+        // not a recording) leave it.
+        match &result {
+            Ok(_) => self.options.recent.add(loading.path()),
+            Err(_) => self.options.recent.remove(loading.path()),
+        }
         self.state = match result {
             Ok((document, service)) => {
                 let mut viewer = Viewer::new(
@@ -947,10 +969,12 @@ impl eframe::App for KymoApp {
         self.frame(ui);
     }
 
-    /// Keeps the settings and the annotation colors for the next run.
+    /// Keeps the settings, the annotation colors and the recent recordings for the next
+    /// run.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.options.settings.save(storage);
         save_annotation_colors(&self.options.annotation_colors, storage);
+        self.options.recent.save(storage);
     }
 }
 
@@ -961,6 +985,8 @@ struct AppMenuState {
     overlay: bool,
     /// Whether a text field has the keyboard, for Undo and Redo to act on.
     typing: bool,
+    /// The labels of File → Open Recent.
+    recent: Vec<String>,
     /// Whether annotation mode is on, and an annotation selected.
     editing: bool,
     selected: bool,
@@ -992,6 +1018,8 @@ impl MenuState for AppMenuState {
             Action::MergeAnnotations => self.mergeable && !self.dragging,
             Action::Deselect => self.selected || self.dragging,
             Action::ExportShownAnnotations => self.shown,
+            Action::OpenRecent(index) => usize::from(index) < self.recent.len(),
+            Action::ClearRecent => !self.recent.is_empty(),
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,
             _ => true,
         };
@@ -1006,6 +1034,10 @@ impl MenuState for AppMenuState {
             Action::ToggleEditing => Some(self.editing),
             _ => action.stim_checked(self.stim_options),
         }
+    }
+
+    fn recent(&self) -> Vec<String> {
+        self.recent.clone()
     }
 }
 
@@ -1101,6 +1133,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             let options = Options {
                 settings: Settings::load(cc.storage),
                 annotation_colors: load_annotation_colors(cc.storage),
+                recent: Recent::load(cc.storage),
                 ..Options::default()
             };
             let native = options.menus == Menus::Native;

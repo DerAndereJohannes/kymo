@@ -7,6 +7,10 @@ use kymo_core::stim::{EventOptions, EventRule};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
     Open,
+    /// Opens the recording at this index in File → Open Recent (see [`crate::recent`]).
+    OpenRecent(u8),
+    /// Empties File → Open Recent.
+    ClearRecent,
     Close,
     Quit,
     /// Adds the annotations of a file (an events table or MNE's CSV).
@@ -78,8 +82,10 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 44] = [
+    pub const ALL: [Action; 46] = [
         Action::Open,
+        Action::OpenRecent(0),
+        Action::ClearRecent,
         Action::Close,
         Action::Quit,
         Action::LoadAnnotations,
@@ -129,6 +135,9 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Action::Open => "Open…",
+            // Menus show the recording's name instead.
+            Action::OpenRecent(_) => "Open Recent",
+            Action::ClearRecent => "Clear Menu",
             Action::Close => "Close",
             Action::Quit => "Quit",
             Action::LoadAnnotations => "Load Annotations…",
@@ -235,6 +244,8 @@ impl Action {
         !matches!(
             self,
             Action::Open
+                | Action::OpenRecent(_)
+                | Action::ClearRecent
                 | Action::Quit
                 | Action::Settings
                 | Action::Shortcuts
