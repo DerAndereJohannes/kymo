@@ -50,6 +50,10 @@ const BAND_ALPHA: f32 = 0.2;
 /// Room left of an annotation label, and between labels, in points.
 const ANNOTATION_LABEL_PAD: f32 = 3.0;
 const ANNOTATION_LABEL_GAP: f32 = 8.0;
+/// The plate behind an annotation label: its room beside the text, in points (less than
+/// [`ANNOTATION_LABEL_PAD`], so the onset's line shows), and its opacity.
+const LABEL_PLATE_MARGIN: f32 = 2.0;
+const LABEL_PLATE_ALPHA: f32 = 0.85;
 /// How near an annotation's mark the pointer must be, in points, for the status line to
 /// name it; 1-pixel lines are hard to hit exactly.
 const POINTER_SLACK: f32 = 2.0;
@@ -1024,17 +1028,20 @@ impl Viewer {
             painter.galley(pos, galley, visuals.error_fg_color);
         }
 
+        // Each on a plate of the traces' background, so dense traces don't hide it; the
+        // plates are narrower than the gap between labels and leave the onset's line free.
+        let plate = visuals.extreme_bg_color.gamma_multiply(LABEL_PLATE_ALPHA);
         for label in &self.marks.labels {
-            overlay.text(
-                pos2(
-                    traces.left() + label.x as f32 / ppp + ANNOTATION_LABEL_PAD,
-                    traces.top() + 1.0,
-                ),
-                Align2::LEFT_TOP,
-                &label.text,
-                small.clone(),
-                annotation_color(label.color, visuals),
+            let color = annotation_text_color(annotation_color(label.color, visuals), visuals);
+            let galley = painter.layout_no_wrap(label.text.clone(), small.clone(), color);
+            let pos = pos2(
+                traces.left() + label.x as f32 / ppp + ANNOTATION_LABEL_PAD,
+                traces.top() + 1.0,
             );
+            let rect =
+                Rect::from_min_size(pos, galley.size()).expand2(vec2(LABEL_PLATE_MARGIN, 0.0));
+            overlay.rect_filled(rect, 2.0, plate);
+            overlay.galley(pos, galley, color);
         }
 
         // Channel names, centered on their rows.
@@ -1335,4 +1342,15 @@ fn live(service: &Option<TileService>) -> &TileService {
 /// An egui color as the renderer's premultiplied RGBA.
 fn rgba(color: Color32) -> [f32; 4] {
     color.to_normalized_gamma_f32()
+}
+
+/// An annotation label's text color: its annotation's, darker on light themes, where thin
+/// text in the lighter palette colors (pink, green) reads poorly on its plate; dark themes
+/// lighten the palette already.
+fn annotation_text_color(color: Color32, visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        color
+    } else {
+        color.lerp_to_gamma(Color32::BLACK, 0.4)
+    }
 }
