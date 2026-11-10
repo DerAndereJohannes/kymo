@@ -2,15 +2,16 @@
 
 use std::fs::File;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use memmap2::Mmap;
 
 use super::header::{self, Orientation};
 use super::text::{Ini, decode};
 use super::{BrainVisionError, markers};
-use crate::decode::{ByteOrder, Decoder};
+use crate::decode::{ByteOrder, Decoder, frames};
 use crate::mapped::{self, map_read_only};
+use crate::open::companion;
 use crate::{
     BlockReader, ChannelId, Grid, GridId, Header, OpenError, Opened, ReadError, Sample, SamplesMut,
     Timebase,
@@ -124,31 +125,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     })
 }
 
-/// The file `name` (as the header writes it) in `dir`; failing that, its last path
-/// component there (headers written on another machine may hold absolute paths), then
-/// `{base}.{extension}`, with a warning. `None` if none of them exists.
-fn companion(
-    dir: &Path,
-    base: &str,
-    name: &str,
-    extension: &str,
-    what: &str,
-    warnings: &mut Vec<String>,
-) -> Option<PathBuf> {
-    let named = dir.join(name);
-    if named.is_file() {
-        return Some(named);
-    }
-    let last = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    let candidates = [dir.join(last), dir.join(format!("{base}.{extension}"))];
-    let found = candidates.into_iter().find(|p| p.is_file())?;
-    warnings.push(format!(
-        "{what} file {name:?} not found; using {:?}",
-        found.file_name().unwrap_or_default()
-    ));
-    Some(found)
-}
-
 /// Samples per channel in a data file of `len` bytes.
 ///
 /// Multiplexed files hold whole frames (one sample of every channel); bytes after the last
@@ -226,10 +202,6 @@ fn samples(
     }
 }
 
-/// Bytes of a multiplexed file decoded per pass over the requested channels, so a pass's
-/// frames stay in the CPU cache while each channel is picked out of them.
-const PIECE_BYTES: usize = 256 << 10;
-
 impl BlockReader for BrainVisionReader {
     fn read(
         &self,
@@ -303,23 +275,11 @@ impl BrainVisionReader {
         let outside = || ReadError::Corrupt("samples beyond the end of the data file".into());
         match self.orientation {
             Orientation::Multiplexed => {
-                let frame = self.channels * size;
-                let piece = (PIECE_BYTES / frame).max(1);
-                let mut done = 0;
-                while done < n {
-                    let take = piece.min(n - done);
-                    let start = (range.start as usize + done) * frame;
-                    let bytes = self
-                        .map
-                        .get(start..start + take * frame)
-                        .ok_or_else(outside)?;
-                    for (k, channel) in channels.iter().enumerate() {
-                        let column = channel.0 as usize * size;
-                        let samples = &mut dst[k * n + done..][..take];
-                        self.decoder.decode(&bytes[column..], frame, samples)?;
-                    }
-                    done += take;
-                }
+                let columns: Vec<(usize, Decoder)> = channels
+                    .iter()
+                    .map(|c| (c.0 as usize * size, self.decoder))
+                    .collect();
+                frames(&self.map, self.channels * size, &columns, range, dst)?;
             }
             Orientation::Vectorized => {
                 for (k, channel) in channels.iter().enumerate() {

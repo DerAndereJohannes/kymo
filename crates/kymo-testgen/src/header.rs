@@ -56,6 +56,9 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
     if spec.format.is_brainvision() {
         return crate::brainvision::validate(spec);
     }
+    if spec.format.is_eeglab() {
+        return crate::eeglab::validate(spec);
+    }
     let format = spec.format;
     if spec.channels.is_empty() {
         return Err(invalid("at least one data channel is needed"));

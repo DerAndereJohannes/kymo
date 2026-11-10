@@ -1,4 +1,4 @@
-//! Command-line front end of the synthetic EDF/BDF and BrainVision generator.
+//! Command-line front end of the synthetic EDF/BDF, BrainVision and EEGLAB generator.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use kymo_testgen::{PRESETS, Spec};
 
 const HELP: &str = "\
-kymo-testgen: generate synthetic EDF/BDF and BrainVision files for tests and benchmarks
+kymo-testgen: generate synthetic EDF/BDF, BrainVision and EEGLAB files for tests and benchmarks
 
 Usage: kymo-testgen <PRESET> <OUTPUT> [OPTIONS]
        kymo-testgen --list
@@ -18,7 +18,8 @@ Options:
   -l, --list                List the presets
   -h, --help                Print this help
 
-BrainVision presets write OUTPUT (the .vhdr) and its .eeg and .vmrk beside it.";
+BrainVision presets write OUTPUT (the .vhdr) and its .eeg and .vmrk beside it.
+EEGLAB presets write OUTPUT (the .set), and its .fdt beside it for eeglab-fdt.";
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);

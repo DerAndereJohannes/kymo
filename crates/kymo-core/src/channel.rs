@@ -267,3 +267,20 @@ impl Channel {
         }
     }
 }
+
+/// The kind of a channel with a voltage unit, from its name (BrainVision's rule, also for
+/// EEGLAB channels without an MNE type): EOG for names starting with
+/// EOG, HEOG or VEOG, ECG for ECG or EKG, EMG for EMG; EEG otherwise.
+pub(crate) fn kind_from_name(name: &str) -> ChannelKind {
+    let upper = name.trim().to_ascii_uppercase();
+    let starts = |prefixes: &[&str]| prefixes.iter().any(|p| upper.starts_with(p));
+    if starts(&["EOG", "HEOG", "VEOG"]) {
+        ChannelKind::Eog
+    } else if starts(&["ECG", "EKG"]) {
+        ChannelKind::Ecg
+    } else if starts(&["EMG"]) {
+        ChannelKind::Emg
+    } else {
+        ChannelKind::Eeg
+    }
+}

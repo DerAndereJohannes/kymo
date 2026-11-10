@@ -2,6 +2,7 @@
 
 use super::BrainVisionError;
 use super::text::{Ini, Repairs, unescape};
+use crate::channel::kind_from_name;
 use crate::decode::Encoding;
 use crate::{Channel, ChannelKind, GridId, Quantity, Unit};
 
@@ -282,22 +283,6 @@ fn coordinates(ini: &Ini, n: usize) -> Vec<Option<f64>> {
         }
     }
     radii
-}
-
-/// The kind of a channel with a voltage unit, from its name: EOG for names starting with
-/// EOG, HEOG or VEOG, ECG for ECG or EKG, EMG for EMG; EEG otherwise.
-fn kind_from_name(name: &str) -> ChannelKind {
-    let upper = name.trim().to_ascii_uppercase();
-    let starts = |prefixes: &[&str]| prefixes.iter().any(|p| upper.starts_with(p));
-    if starts(&["EOG", "HEOG", "VEOG"]) {
-        ChannelKind::Eog
-    } else if starts(&["ECG", "EKG"]) {
-        ChannelKind::Ecg
-    } else if starts(&["EMG"]) {
-        ChannelKind::Emg
-    } else {
-        ChannelKind::Eeg
-    }
 }
 
 /// Each channel's filters, in EDF's notation ("HP:0.016Hz LP:140Hz N:50Hz"), from the

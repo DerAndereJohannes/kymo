@@ -330,3 +330,37 @@ fn u24(b: [u8; 3], little: bool) -> i32 {
         i32::from_be_bytes([0, b[0], b[1], b[2]])
     }
 }
+
+/// Bytes of sample-major data decoded per pass over the requested channels, so a pass's
+/// frames stay in the CPU cache while each channel is picked out of them.
+const PIECE_BYTES: usize = 256 << 10;
+
+/// Decodes `range` of sample-major data (frames of `frame` bytes, one sample of every
+/// channel each, starting at `data[0]`) into `dst`, channel-major: one `column` per
+/// requested channel, its byte offset within a frame and its decoder.
+pub(crate) fn frames<T: Sample>(
+    data: &[u8],
+    frame: usize,
+    columns: &[(usize, Decoder)],
+    range: std::ops::Range<u64>,
+    dst: &mut [T],
+) -> Result<(), ReadError> {
+    let n = (range.end - range.start) as usize;
+    if n == 0 || frame == 0 {
+        return Ok(());
+    }
+    let outside = || ReadError::Corrupt("samples beyond the end of the data".into());
+    let piece = (PIECE_BYTES / frame).max(1);
+    let mut done = 0;
+    while done < n {
+        let take = piece.min(n - done);
+        let start = (range.start as usize + done) * frame;
+        let bytes = data.get(start..start + take * frame).ok_or_else(outside)?;
+        for (k, (column, decoder)) in columns.iter().enumerate() {
+            let samples = &mut dst[k * n + done..][..take];
+            decoder.decode(bytes.get(*column..).ok_or_else(outside)?, frame, samples)?;
+        }
+        done += take;
+    }
+    Ok(())
+}

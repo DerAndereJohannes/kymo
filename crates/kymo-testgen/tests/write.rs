@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use kymo_testgen::{
-    Binary, ChannelSpec, Error, Format, GapSpec, Orientation, PRESETS, Spec, Tal, TempFile,
+    Binary, ChannelSpec, Error, Format, GapSpec, Layout, Orientation, PRESETS, Spec, Storage, Tal,
+    TempFile,
 };
 
 /// A small spec of `format` with mixed rates, scaling edge cases, and (where the format allows)
@@ -869,6 +870,107 @@ fn brainvision_specs_are_checked() {
     }
     // One stream can't hold three files, and there are no EDF records.
     let spec = brainvision(format);
+    assert!(kymo_testgen::write_to(&spec, &mut Vec::new()).is_err());
+    assert!(spec.record_bytes().is_err());
+}
+
+/// An EEGLAB spec of `format`: two channels, a numeric and a named event.
+fn eeglab(format: Format) -> Spec {
+    let channels = vec![
+        ChannelSpec {
+            kind: "EEG".into(),
+            ..ChannelSpec::eeg("Fz", 50, format)
+        },
+        ChannelSpec::eeg("HEOG", 50, format),
+    ];
+    let mut spec = Spec::new(format, channels, 0.5, 9);
+    spec.seed = 17;
+    spec.spike_every = 11;
+    spec.annotations = vec![
+        Tal {
+            onset: 0.2,
+            duration: None,
+            texts: vec!["12".into(), "square".into()],
+        },
+        Tal {
+            onset: 1.0,
+            duration: Some(0.5),
+            texts: vec!["boundary".into()],
+        },
+    ];
+    spec
+}
+
+#[test]
+fn eeglab_writes_a_mat_file_and_its_fdt() {
+    for format in Format::EEGLAB {
+        let Format::Eeglab(storage, _) = format else {
+            unreachable!()
+        };
+        let spec = eeglab(format);
+        let file = TempFile::written(&spec);
+        let set = std::fs::read(file.path()).unwrap();
+        assert!(set.starts_with(b"MATLAB 5.0 MAT-file"), "{format:?}");
+        assert_eq!(&set[126..128], b"IM");
+        // The .set holds the samples as float32 or float64, or names the .fdt.
+        for written in format.files(file.path()) {
+            assert!(written.is_file(), "{format:?}: {}", written.display());
+        }
+        if storage == Storage::Fdt {
+            let fdt = std::fs::read(file.companion("fdt")).unwrap();
+            assert_eq!(fdt.len() as u64, spec.file_size().unwrap());
+            for (k, b) in fdt.as_chunks::<4>().0.iter().enumerate() {
+                let (c, i) = (k % 2, (k / 2) as u64);
+                assert_eq!(
+                    f32::from_le_bytes(*b),
+                    spec.physical(c, i) as f32,
+                    "{c} {i}"
+                );
+            }
+        } else {
+            assert!(set.len() as u64 > spec.file_size().unwrap());
+        }
+    }
+}
+
+#[test]
+fn eeglab_specs_are_checked() {
+    let format = Format::Eeglab(Storage::Single, Layout::Struct);
+    let cases: Vec<(Spec, &str)> = vec![
+        (
+            {
+                let mut s = eeglab(format);
+                s.channels[1].samples_per_record = 25;
+                s
+            },
+            "one rate",
+        ),
+        (
+            {
+                let mut s = eeglab(format);
+                s.channels[0].physical_min += 1000.0;
+                s
+            },
+            "no offsets",
+        ),
+        (
+            {
+                let mut s = eeglab(format);
+                s.annotations[0].onset = -0.5;
+                s
+            },
+            "must be >= 0",
+        ),
+    ];
+    for (spec, message) in cases {
+        let path = temp_path("checked.set");
+        let error = kymo_testgen::write(&spec, &path).unwrap_err();
+        assert!(
+            matches!(&error, Error::Invalid(m) if m.contains(message)),
+            "expected {message:?}, got {error}"
+        );
+    }
+    let spec = eeglab(format);
     assert!(kymo_testgen::write_to(&spec, &mut Vec::new()).is_err());
     assert!(spec.record_bytes().is_err());
 }

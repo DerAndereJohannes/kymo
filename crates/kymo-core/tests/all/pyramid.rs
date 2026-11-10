@@ -297,7 +297,8 @@ fn pyramids_of_two_grids() {
 }
 
 /// Through the real readers: generated EDF+D (mixed rates, gaps, huge offset, negative
-/// gain), BDF+C and BrainVision files (both layouts; int16, int32 and float32).
+/// gain), BDF+C, BrainVision files (both layouts; int16, int32 and float32) and EEGLAB
+/// datasets (a .fdt, float32 and float64 inside the .set).
 #[test]
 fn pyramids_of_generated_files() {
     for preset in [
@@ -306,6 +307,9 @@ fn pyramids_of_generated_files() {
         "bv-int16-multiplexed",
         "bv-int32-vectorized",
         "bv-float32-multiplexed",
+        "eeglab-fdt",
+        "eeglab-set-single",
+        "eeglab-set-double",
     ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);

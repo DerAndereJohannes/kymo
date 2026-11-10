@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mne", "numpy", "pandas"]
 # ///
-"""Compare Kymo's reading of EDF/BDF and BrainVision files with MNE-Python's.
+"""Compare Kymo's reading of EDF/BDF, BrainVision and EEGLAB files with MNE-Python's.
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
@@ -16,8 +16,9 @@ through uv:
     uv run scripts/compare_mne.py ...
 
 For each file this runs `cargo run --release -p kymo-core --example dump`, reads the
-same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision (preload=False, so
-large files work; BrainVision files are given by their .vhdr),
+same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision/read_raw_eeglab
+(preload=False, so large files work; BrainVision files are given by their .vhdr, EEGLAB
+datasets by their .set),
 and compares channel names, sampling rate, start time, samples (in SI units, at float32
 precision) and annotations. It exits with status 1 if anything differs.
 
@@ -65,6 +66,25 @@ BrainVision, where Kymo deliberately differs from MNE:
   MNE keeps them as stored. MNE's names and descriptions are compared after the same
   repair.
 - Channel kinds and filters are not compared.
+
+EEGLAB, where Kymo deliberately differs from MNE:
+- Kymo refuses MAT v7.3 (HDF5) files, which MNE reads; they are skipped. Epoched datasets
+  are refused by both and skipped too.
+- MNE is given uint16_codec="utf-16-le": MATLAB stores characters as UTF-16, which Kymo
+  reads, and MNE's default turns non-ASCII text into U+FFFD ("µ" in an event type).
+- Stim channels hold codes in Kymo; MNE scales them by 1e-6 like every channel. MNE's
+  values are compared after scaling them back, and its find_events finds no codes on
+  them, so stim events are not compared.
+- Events whose duration isn't a number >= 0 are points in time in Kymo; MNE keeps NaN.
+  MNE's NaN durations are compared as 0.
+- Kymo leaves out events before the first sample (latency < 1); MNE keeps them. MNE's
+  annotations with negative onsets are left out.
+- Float64 samples are read relative to each channel's first sample (see "Readers" in
+  docs/design.md), so their float32 precision follows their distance from it, not their
+  size. Those channels may differ by float32 precision of that reference too.
+- Channel kinds are not compared: Kymo reads the kinds of channels without an MNE type
+  from their names, as for BrainVision (MNE makes them EEG), and the types mag, grad and
+  ref_meg as such (MNE makes them EEG too).
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -230,22 +250,31 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp):
 
 
 def compare(path, max_values=None, annotation_files=False):
-    """Returns a list of problems (empty if the readers agree) and prints a summary."""
+    """Returns a list of problems (empty if the readers agree), or None for a file
+    neither reader reads, and prints a summary."""
     problems, notes = [], []
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         try:
             dump(path, tmp, max_values)
         except subprocess.CalledProcessError as e:
+            if path.suffix.lower() == ".set" and refused_by_mne(path):
+                print(f"SKIPPED: {path}\n  neither Kymo nor MNE reads it")
+                return None
             return [f"Kymo could not read the file ({e})"]
         header = json.loads((tmp / "header.json").read_text())
         annotations = json.loads((tmp / "annotations.json").read_text())
         windows = json.loads((tmp / "windows.json").read_text())
 
         brainvision = header["format"] == "BrainVision"
+        eeglab = header["format"] == "EEGLAB"
         try:
             if brainvision:
                 raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
+            elif eeglab:
+                raw = mne.io.read_raw_eeglab(
+                    path, preload=False, verbose="error", uint16_codec="utf-16-le"
+                )
             else:
                 reader = (
                     mne.io.read_raw_bdf
@@ -308,13 +337,23 @@ def compare(path, max_values=None, annotation_files=False):
                 continue
             scale = np.array([channels[c]["to_si"] or 1.0 for c in ids])
             # Units Kymo scales and MNE doesn't: MNE's values are in the file's unit.
+            # MNE scales every EEGLAB channel.
             scaled = MNE_SCALED["BrainVision" if brainvision else "EDF"]
             unscaled = [
-                channels[c]["to_si"] is not None
+                not eeglab
+                and channels[c]["to_si"] is not None
                 and channels[c]["unit"].strip() not in scaled
                 for c in ids
             ]
             theirs_scale = np.where(unscaled, scale, 1.0)
+            if eeglab:
+                codes = [channels[c]["kind"] == "Stim" for c in ids]
+                theirs_scale = np.where(codes, 1e6, theirs_scale)
+                if any(codes):
+                    notes.append(
+                        "stim channel(s) compared as codes (MNE's values scaled by "
+                        "1e6): " + ", ".join(names[c] for c, k in zip(ids, codes) if k)
+                    )
             if any(unscaled):
                 notes.append(
                     "unit(s) MNE leaves unscaled, its values scaled as Kymo's: "
@@ -338,23 +377,47 @@ def compare(path, max_values=None, annotation_files=False):
                     "BDF stim channel(s) compared as digital & 0x1FFFF, as MNE reads "
                     "them: " + ", ".join(names[c] for c, s in zip(ids, stim) if s)
                 )
+            # The reference value of float64 samples, in SI units (0 for other formats).
+            reference = np.array(
+                [
+                    abs(channels[c]["offset"]) * (channels[c]["to_si"] or 1.0)
+                    if eeglab
+                    else 0.0
+                    for c in ids
+                ]
+            )
             p, w, n = compare_grid(
-                raw, tmp, g, grid, windows[g], ids, scale, theirs_scale, stim, names
+                raw,
+                tmp,
+                g,
+                grid,
+                windows[g],
+                ids,
+                scale,
+                theirs_scale,
+                stim,
+                names,
+                reference,
             )
             problems += p
             worst = max(worst, w)
             compared += n
 
         problems += compare_annotations(
-            raw, annotations, header["grids"][0]["start"], brainvision
+            raw, annotations, header["grids"][0]["start"], header["format"]
         )
         if annotation_files:
             problems += compare_annotation_files(
                 path, raw, annotations, header["grids"][0]["start"], tmp
             )
         events = json.loads((tmp / "events.json").read_text())
-        p, n = compare_events(raw, header, events, fmax, notes)
-        problems += p
+        if eeglab:
+            if events:
+                notes.append("stim events not compared (MNE scales the codes by 1e-6)")
+            n = sum(np.array(e["events"]).reshape(-1, 2).shape[0] for e in events)
+        else:
+            p, n = compare_events(raw, header, events, fmax, notes)
+            problems += p
 
     status = "OK" if not problems else "DIFFERS"
     print(f"{status}: {path}")
@@ -372,7 +435,9 @@ def compare(path, max_values=None, annotation_files=False):
     return problems
 
 
-def compare_grid(raw, tmp, g, grid, windows, ids, scale, theirs_scale, stim, names):
+def compare_grid(
+    raw, tmp, g, grid, windows, ids, scale, theirs_scale, stim, names, reference
+):
     problems, worst, compared = [], 0.0, 0
     data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
     if grid["sample_type"] != "F32":
@@ -413,7 +478,8 @@ def compare_grid(raw, tmp, g, grid, windows, ids, scale, theirs_scale, stim, nam
         if (np.isnan(ours) != np.isnan(theirs)).any():
             problems.append(f"window {a}..{b}: NaNs differ between Kymo and MNE")
         error = np.abs(np.nan_to_num(ours) - np.nan_to_num(theirs))
-        bad = error > RTOL * np.abs(np.nan_to_num(theirs)) + 1e-30
+        allowed = RTOL * (np.abs(np.nan_to_num(theirs)) + reference[:, None])
+        bad = error > allowed + 1e-30
         if bad.any():
             row, col = np.argwhere(bad)[0]
             problems.append(
@@ -498,12 +564,15 @@ def data_end(raw, first_onset):
     return first_onset + raw.n_times / raw.info["sfreq"]
 
 
-def compare_annotations(raw, annotations, first_onset, brainvision=False):
+def compare_annotations(raw, annotations, first_onset, format_name):
     ours = cropped(annotations, data_end(raw, first_onset))
     theirs = zip(
         raw.annotations.onset, raw.annotations.duration, raw.annotations.description
     )
-    if brainvision:
+    if format_name == "EEGLAB":
+        # Kymo's rules for events; see the docstring.
+        theirs = [(o, 0.0 if np.isnan(d) else d, s) for o, d, s in theirs if o >= 0]
+    if format_name == "BrainVision":
         # Kymo's own rules for markers; see the docstring.
         sample = 1 / raw.info["sfreq"]
         theirs = [
@@ -520,6 +589,19 @@ def compare_annotations(raw, annotations, first_onset, brainvision=False):
     return []
 
 
+def is_mat_v73(path):
+    with open(path, "rb") as f:
+        return f.read(19) == b"MATLAB 7.3 MAT-file"
+
+
+def refused_by_mne(path):
+    try:
+        mne.io.read_raw_eeglab(path, preload=False, verbose="error")
+    except Exception:  # noqa: BLE001 - any refusal counts
+        return True
+    return False
+
+
 def testgen_files(directory):
     """Writes files from the kymo-testgen presets (the large ones shortened)."""
     presets = [
@@ -531,6 +613,9 @@ def testgen_files(directory):
         ("bv-int16-multiplexed", "vhdr", []),
         ("bv-int32-vectorized", "vhdr", []),
         ("bv-float32-multiplexed", "vhdr", []),
+        ("eeglab-fdt", "set", []),
+        ("eeglab-set-single", "set", []),
+        ("eeglab-set-double", "set", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -557,7 +642,7 @@ def find_files(arguments):
             files += sorted(
                 p
                 for p in a.rglob("*")
-                if p.suffix.lower() in (".edf", ".bdf", ".vhdr")
+                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set")
             )
         else:
             files.append(a)
@@ -567,7 +652,9 @@ def find_files(arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "paths", nargs="*", help="EDF/BDF/BrainVision (.vhdr) files or directories"
+        "paths",
+        nargs="*",
+        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set) files or directories",
     )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
@@ -594,10 +681,23 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF, BDF or BrainVision files found")
+            sys.exit("no EDF, BDF, BrainVision or EEGLAB files found")
+        skipped = 0
         for path in files:
-            failed += bool(compare(path, args.max_values, args.annotations))
-    print(f"{len(files) - failed} of {len(files)} file(s) agree")
+            if path.suffix.lower() == ".set" and is_mat_v73(path):
+                print(f"SKIPPED: {path}\n  MAT v7.3 (HDF5), which Kymo doesn't read")
+                skipped += 1
+                continue
+            problems = compare(path, args.max_values, args.annotations)
+            if problems is None:
+                skipped += 1
+            else:
+                failed += bool(problems)
+    compared = len(files) - skipped
+    print(
+        f"{compared - failed} of {compared} file(s) agree"
+        + (f", {skipped} skipped" if skipped else "")
+    )
     sys.exit(1 if failed else 0)
 
 

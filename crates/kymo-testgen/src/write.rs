@@ -23,8 +23,11 @@ pub(crate) struct Layout {
 
 impl Layout {
     pub(crate) fn new(spec: &Spec) -> Result<Self, Error> {
-        if spec.format.is_brainvision() {
-            return Err(Error::Invalid("BrainVision has no data records".into()));
+        if !spec.format.is_edf() {
+            return Err(Error::Invalid(format!(
+                "{} has no data records",
+                spec.format.name()
+            )));
         }
         spec.validate()?;
         let bps = spec.format.bytes_per_sample();
@@ -101,17 +104,21 @@ pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
     if spec.format.is_brainvision() {
         return crate::brainvision::write(spec, path.as_ref());
     }
+    if spec.format.is_eeglab() {
+        return crate::eeglab::write(spec, path.as_ref());
+    }
     let file = File::create(path)?;
     write_to(spec, BufWriter::with_capacity(1 << 20, file))
 }
 
-/// Writes `spec` to `out`. EDF/BDF only: BrainVision needs [`write()`], as it writes
-/// three files.
+/// Writes `spec` to `out`. EDF/BDF only: BrainVision and EEGLAB need [`write()`], as they
+/// write several files.
 pub fn write_to<W: Write>(spec: &Spec, mut out: W) -> Result<(), Error> {
-    if spec.format.is_brainvision() {
-        return Err(Error::Invalid(
-            "BrainVision writes three files; use write() with a path".into(),
-        ));
+    if !spec.format.is_edf() {
+        return Err(Error::Invalid(format!(
+            "{} writes several files; use write() with a path",
+            spec.format.name()
+        )));
     }
     let layout = Layout::new(spec)?;
     out.write_all(&header::header(spec, layout.annotation_spr))?;

@@ -583,11 +583,12 @@ impl KymoApp {
                 // The first filter is the one selected when the dialog opens.
                 .add_filter(
                     "All supported file types",
-                    &["edf", "bdf", "vhdr", "EDF", "BDF", "VHDR"],
+                    &["edf", "bdf", "vhdr", "set", "EDF", "BDF", "VHDR", "SET"],
                 )
                 .add_filter("BDF", &["bdf", "BDF"])
                 .add_filter("BrainVision", &["vhdr", "VHDR"])
                 .add_filter("EDF", &["edf", "EDF"])
+                .add_filter("EEGLAB", &["set", "SET"])
                 .add_filter("All files", &["*"])
                 .pick_file(),
             Dialog::Save(suggested) => save(files, "Save annotations", &suggested),

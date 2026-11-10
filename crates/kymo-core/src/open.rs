@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::{OpenError, Opened, brainvision, edf};
+use crate::{OpenError, Opened, brainvision, edf, eeglab};
 
 /// Bytes read to recognize a format: enough for MATLAB's 116-byte text header.
 const HEAD: u64 = 128;
@@ -69,13 +69,18 @@ fn is_brainvision(head: &[u8]) -> bool {
 /// Why a recognized format can't be opened (yet).
 fn unsupported(format: Format) -> &'static str {
     match format {
-        Format::Edf | Format::BrainVision => unreachable!("EDF, BDF and BrainVision are read"),
+        Format::Edf | Format::BrainVision | Format::Mat => {
+            unreachable!("EDF, BDF, BrainVision and EEGLAB are read")
+        }
         Format::Gdf => "GDF files are not supported yet",
         Format::OtherGdf => "only GDF 1 and 2 files will be supported",
         Format::Fiff => "FIFF files are not supported yet",
         Format::Xdf => "XDF files are not supported yet",
-        Format::Mat => "MATLAB files (EEGLAB .set) are not supported yet",
-        Format::MatHdf5 => "MATLAB v7.3 (HDF5) files are not supported",
+        Format::MatHdf5 => {
+            "MATLAB v7.3 (HDF5) files are not supported; if this is an EEGLAB dataset, save it \
+             again from EEGLAB with \"Save as Matlab v6.5\" turned on in File > Preferences \
+             (option_saveversion6)"
+        }
     }
 }
 
@@ -123,7 +128,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 _ => {
                     return Err(OpenError::Unsupported {
                         path: path.to_owned(),
-                        reason: "not a supported file format (EDF, BDF and BrainVision are read)"
+                        reason: "not a supported file format (EDF, BDF, BrainVision and EEGLAB \
+                                 are read)"
                             .into(),
                     });
                 }
@@ -133,9 +139,35 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     match format {
         Format::Edf => edf::open(&path),
         Format::BrainVision => brainvision::open(&path),
+        Format::Mat => eeglab::open(&path),
         other => Err(OpenError::Unsupported {
             path,
             reason: unsupported(other).into(),
         }),
     }
+}
+
+/// The file `name` (as the header writes it) in `dir`; failing that, its last path
+/// component there (headers written on another machine may hold absolute paths), then
+/// `{base}.{extension}`, with a warning. `None` if none of them exists.
+pub(crate) fn companion(
+    dir: &Path,
+    base: &str,
+    name: &str,
+    extension: &str,
+    what: &str,
+    warnings: &mut Vec<String>,
+) -> Option<PathBuf> {
+    let named = dir.join(name);
+    if named.is_file() {
+        return Some(named);
+    }
+    let last = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let candidates = [dir.join(last), dir.join(format!("{base}.{extension}"))];
+    let found = candidates.into_iter().find(|p| p.is_file())?;
+    warnings.push(format!(
+        "{what} file {name:?} not found; using {:?}",
+        found.file_name().unwrap_or_default()
+    ));
+    Some(found)
 }

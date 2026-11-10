@@ -6,7 +6,8 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use kymo_core::{GridId, Recording};
+use kymo_core::eeglab::EeglabError;
+use kymo_core::{GridId, OpenError, Recording};
 
 fn recordings(dir: &Path, found: &mut Vec<PathBuf>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -18,7 +19,7 @@ fn recordings(dir: &Path, found: &mut Vec<PathBuf>) {
         if path.is_dir() {
             recordings(&path, found);
         } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            ["edf", "bdf", "vhdr"]
+            ["edf", "bdf", "vhdr", "set"]
                 .iter()
                 .any(|x| e.eq_ignore_ascii_case(x))
         }) {
@@ -45,17 +46,35 @@ fn windows(len: u64, rate: f64) -> Vec<Range<u64>> {
 #[ignore = "needs real recordings in KYMO_TEST_DATA"]
 fn real_recordings_open_and_read() {
     let dir = std::env::var_os("KYMO_TEST_DATA")
-        .expect("set KYMO_TEST_DATA to a directory of EDF, BDF and BrainVision recordings");
+        .expect("set KYMO_TEST_DATA to a directory of EDF, BDF, BrainVision and EEGLAB recordings");
     let mut files = Vec::new();
     recordings(Path::new(&dir), &mut files);
     assert!(
         !files.is_empty(),
-        "no .edf, .bdf or .vhdr files under {dir:?}"
+        "no .edf, .bdf, .vhdr or .set files under {dir:?}"
     );
 
     for path in &files {
-        let (rec, annotations) = Recording::new(kymo_core::open(path).unwrap())
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let opened = match kymo_core::open(path) {
+            Ok(opened) => opened,
+            // EEGLAB files kymo refuses by design (MNE's testing data has both).
+            Err(
+                e @ OpenError::Eeglab {
+                    source: EeglabError::Epoched(_),
+                    ..
+                },
+            ) => {
+                eprintln!("{e} (skipped)");
+                continue;
+            }
+            Err(e @ OpenError::Unsupported { .. }) if e.to_string().contains("v7.3") => {
+                eprintln!("{e} (skipped)");
+                continue;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        let (rec, annotations) =
+            Recording::new(opened).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         eprintln!(
             "{}: {}, {:.1} s, {} channels, {} grids, {} annotations",
             path.display(),

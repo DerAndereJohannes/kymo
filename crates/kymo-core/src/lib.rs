@@ -9,6 +9,7 @@ pub mod brainvision;
 mod channel;
 pub mod decode;
 pub mod edf;
+pub mod eeglab;
 mod error;
 mod grid;
 mod mapped;

@@ -1,9 +1,10 @@
-//! Synthetic EDF/BDF and BrainVision files for tests and benchmarks.
+//! Synthetic EDF/BDF, BrainVision and EEGLAB files for tests and benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
 //! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
-//! BrainVision). [`write()`] streams it to disk. Records are EDF's data records; formats
-//! without them (BrainVision) only take their length from them. The sample values come from a deterministic truth function, [`Spec::digital`], so tests
+//! BrainVision, events in EEGLAB). [`write()`] streams it to disk. Records are EDF's data
+//! records; formats without them (BrainVision, EEGLAB) only take their length from them.
+//! The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
 //! The truth function is a sine plus a sawtooth ramp plus seeded hash noise, together within
@@ -14,7 +15,9 @@
 //! ([`Spec::spike_every`]), so they don't cover the traces in a viewer.
 
 mod brainvision;
+mod eeglab;
 mod header;
+pub mod mat;
 mod signal;
 mod temp;
 mod write;
@@ -39,6 +42,32 @@ pub enum Format {
     /// markers (`.vmrk`) beside it. One rate, no offsets (physical = digital × resolution),
     /// no gaps; a "record" is only a unit of length.
     BrainVision(Orientation, Binary),
+    /// EEGLAB: a MATLAB v6 file (`.set`, the path written to) holding the `EEG` struct, its
+    /// samples in it or in a `.fdt` beside it. One rate, no offsets: the samples are stored
+    /// as physical values (µV), `digital × gain`; no gaps; a "record" is only a unit of
+    /// length. Annotations are events.
+    Eeglab(Storage, Layout),
+}
+
+/// Where and how an EEGLAB dataset stores its samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Storage {
+    /// float32 in a `.fdt` beside the `.set`.
+    Fdt,
+    /// float32 inside the `.set`.
+    Single,
+    /// float64 inside the `.set`; stored as integers if all values are whole numbers, as
+    /// MATLAB stores doubles.
+    Double,
+}
+
+/// How an EEGLAB dataset stores its fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Layout {
+    /// One `EEG` struct.
+    Struct,
+    /// Each field a variable of its own, as newer EEGLAB versions save.
+    Flat,
 }
 
 /// How a BrainVision data file orders its samples.
@@ -103,6 +132,16 @@ impl Format {
         Format::BrainVision(Orientation::Vectorized, Binary::Float32),
     ];
 
+    /// Every EEGLAB storage and layout.
+    pub const EEGLAB: [Format; 6] = [
+        Format::Eeglab(Storage::Fdt, Layout::Struct),
+        Format::Eeglab(Storage::Single, Layout::Struct),
+        Format::Eeglab(Storage::Double, Layout::Struct),
+        Format::Eeglab(Storage::Fdt, Layout::Flat),
+        Format::Eeglab(Storage::Single, Layout::Flat),
+        Format::Eeglab(Storage::Double, Layout::Flat),
+    ];
+
     /// The format's name as kymo reports it (`Recording::format`).
     pub fn name(self) -> &'static str {
         match self {
@@ -113,6 +152,7 @@ impl Format {
             Format::BdfPlusC => "BDF+C",
             Format::BdfPlusD => "BDF+D",
             Format::BrainVision(..) => "BrainVision",
+            Format::Eeglab(..) => "EEGLAB",
         }
     }
 
@@ -122,6 +162,15 @@ impl Format {
 
     pub fn is_brainvision(self) -> bool {
         matches!(self, Format::BrainVision(..))
+    }
+
+    pub fn is_eeglab(self) -> bool {
+        matches!(self, Format::Eeglab(..))
+    }
+
+    /// EDF or BDF, with or without +: has data records.
+    pub fn is_edf(self) -> bool {
+        !self.is_brainvision() && !self.is_eeglab()
     }
 
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
@@ -138,9 +187,9 @@ impl Format {
     }
 
     /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's
-    /// are `digital × gain`.
+    /// and EEGLAB's are `digital × gain`.
     pub fn has_offset(self) -> bool {
-        !self.is_brainvision()
+        self.is_edf()
     }
 
     /// Bytes per stored sample.
@@ -148,6 +197,8 @@ impl Format {
         match self {
             Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
             Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
+            Format::Eeglab(Storage::Double, _) => 8,
+            Format::Eeglab(..) => 4,
             f if f.is_bdf() => 3,
             _ => 2,
         }
@@ -161,22 +212,25 @@ impl Format {
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535),
             Format::BrainVision(_, Binary::Int32) => (i32::MIN, i32::MAX),
             Format::BrainVision(_, Binary::Float32) => (-16_777_216, 16_777_216),
+            // Stored as physical values, so any digital range.
+            Format::Eeglab(..) => (i32::MIN, i32::MAX),
             f if f.is_bdf() => (-8_388_608, 8_388_607),
             _ => (-32_768, 32_767),
         }
     }
 
-    /// Extension of the file written to: `"edf"`, `"bdf"` or `"vhdr"`.
+    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"` or `"set"`.
     pub fn extension(self) -> &'static str {
         match self {
             Format::BrainVision(..) => "vhdr",
+            Format::Eeglab(..) => "set",
             f if f.is_bdf() => "bdf",
             _ => "edf",
         }
     }
 
     /// Every file [`write()`] writes for `path`: `path` itself, plus BrainVision's data and
-    /// marker files beside it.
+    /// marker files or EEGLAB's `.fdt` beside it.
     pub fn files(self, path: &std::path::Path) -> Vec<std::path::PathBuf> {
         match self {
             Format::BrainVision(..) => vec![
@@ -184,6 +238,7 @@ impl Format {
                 path.with_extension("eeg"),
                 path.with_extension("vmrk"),
             ],
+            Format::Eeglab(Storage::Fdt, _) => vec![path.to_owned(), path.with_extension("fdt")],
             _ => vec![path.to_owned()],
         }
     }
@@ -219,6 +274,9 @@ pub struct ChannelSpec {
     /// range, in physical units; at most 60% of the half-range. Spikes still reach the
     /// digital limits. Unused for trigger channels.
     pub amplitude: f64,
+    /// The channel's type where the format stores one (EEGLAB's `chanlocs.type`, MNE's type
+    /// names); empty writes none.
+    pub kind: String,
 }
 
 impl ChannelSpec {
@@ -228,23 +286,21 @@ impl ChannelSpec {
     ///
     /// BrainVision channels get 0.1 µV per step and no offset: int16 over its whole range,
     /// uint16 from 0 (so its signal sits at 3276.75 µV), int32 and float32 over BDF's range.
+    /// EEGLAB channels too, stored as the physical values.
     pub fn eeg(label: impl Into<String>, samples_per_record: u32, format: Format) -> Self {
         let (digital_min, digital_max, physical_min, physical_max) = match format {
             Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
-            Format::BrainVision(..) => (-8_388_608, 8_388_607, -838_860.8, 838_860.7),
+            Format::BrainVision(..) | Format::Eeglab(..) => {
+                (-8_388_608, 8_388_607, -838_860.8, 838_860.7)
+            }
             f if f.is_bdf() => (-8_388_608, 8_388_607, -262_144.0, 262_143.0),
             _ => (-32_768, 32_767, -3276.8, 3276.7),
         };
         ChannelSpec {
             label: label.into(),
             transducer: "AgAgCl electrode".into(),
-            dimension: if format.is_brainvision() {
-                "\u{b5}V"
-            } else {
-                "uV"
-            }
-            .into(),
+            dimension: if !format.is_edf() { "\u{b5}V" } else { "uV" }.into(),
             physical_min,
             physical_max,
             digital_min,
@@ -253,6 +309,7 @@ impl ChannelSpec {
             samples_per_record,
             trigger: false,
             amplitude: EEG_AMPLITUDE,
+            kind: String::new(),
         }
     }
 
@@ -267,9 +324,10 @@ impl ChannelSpec {
     ///
     /// BrainVision has no trigger channels (its events are markers); there this is a channel
     /// of unit "Boolean" over codes 0 to 65535 (32767 for int16), which reads as misc.
+    /// EEGLAB stores the codes 0 to 65535 as they are, with the type "STIM".
     pub fn trigger(samples_per_record: u32, format: Format) -> Self {
         let (digital_min, digital_max) = match format.digital_limits() {
-            (lo, hi) if format.is_brainvision() => (lo.max(0), hi.min(65_535)),
+            (lo, hi) if !format.is_edf() => (lo.max(0), hi.min(65_535)),
             limits => limits,
         };
         ChannelSpec {
@@ -284,6 +342,7 @@ impl ChannelSpec {
             samples_per_record,
             trigger: true,
             amplitude: 0.0,
+            kind: if format.is_eeglab() { "STIM" } else { "" }.into(),
         }
     }
 
@@ -496,9 +555,9 @@ impl Spec {
         Ok(write::Layout::new(self)?.record_bytes as u64)
     }
 
-    /// Size of the file in bytes; for BrainVision, of the data file.
+    /// Size of the file in bytes; for BrainVision and EEGLAB, of the samples.
     pub fn file_size(&self) -> Result<u64, Error> {
-        if self.format.is_brainvision() {
+        if !self.format.is_edf() {
             self.validate()?;
             let samples = self.len(0) * self.channels.len() as u64;
             return Ok(samples * self.format.bytes_per_sample() as u64);
@@ -535,7 +594,10 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 }
 
 mod presets {
-    use super::{Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Orientation, Spec, Tal};
+    use super::{
+        Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, Layout, Orientation, Spec, Storage,
+        Tal,
+    };
 
     pub const LIST: &[(&str, &str)] = &[
         (
@@ -586,6 +648,21 @@ mod presets {
             "BrainVision, multiplexed float32, 4 channels at 256 Hz, 1 min, units with the \
              Greek mu, markers",
         ),
+        (
+            "eeglab-fdt",
+            "EEGLAB, samples in a .fdt, 8 channels at 256 Hz (types EEG, EOG, ECG, resp, one \
+             MNE lacks, one without), 1 min, string and numeric events, durations, a boundary",
+        ),
+        (
+            "eeglab-set-single",
+            "EEGLAB, float32 samples inside the .set, fields as variables, 4 channels at \
+             500 Hz, 1 min, events",
+        ),
+        (
+            "eeglab-set-double",
+            "EEGLAB, float64 samples inside the .set, 8 channels at 1000 Hz, 1 min, a 1 V DC \
+             channel and a stim channel, events",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -600,6 +677,9 @@ mod presets {
             "bv-int16-multiplexed" => bv_int16_multiplexed(),
             "bv-int32-vectorized" => bv_int32_vectorized(),
             "bv-float32-multiplexed" => bv_float32_multiplexed(),
+            "eeglab-fdt" => eeglab_fdt(),
+            "eeglab-set-single" => eeglab_set_single(),
+            "eeglab-set-double" => eeglab_set_double(),
             _ => return None,
         };
         Some(spec)
@@ -847,6 +927,102 @@ mod presets {
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = bv_markers(60, 256);
         spec.seed = 7;
+        spec
+    }
+
+    /// Events every 1.25 s as EEGLAB writes them: stimuli and responses by name, numeric
+    /// codes, some with a duration, some between samples.
+    fn eeglab_events(seconds: u32, rate: u32) -> Vec<Tal> {
+        (0..seconds * 4 / 5)
+            .map(|k| {
+                let sample = f64::from(k * 5 * rate / 4 + k % 7);
+                let (text, duration) = match k % 5 {
+                    0 => ("square".to_owned(), None),
+                    1 => ("rt".to_owned(), Some(0.25)),
+                    2 => (format!("{}", 10 + k % 3), None),
+                    3 => ("S  1".to_owned(), Some(0.0)),
+                    _ => ("blink µ".to_owned(), Some(0.5)),
+                };
+                // Every seventh between two samples, as resampled datasets have them.
+                let sample = if k % 7 == 3 { sample + 0.5 } else { sample };
+                Tal {
+                    onset: sample / f64::from(rate),
+                    duration,
+                    texts: vec![text],
+                }
+            })
+            .collect()
+    }
+
+    fn eeglab_fdt() -> Spec {
+        let f = Format::Eeglab(Storage::Fdt, Layout::Struct);
+        let typed = |label: &str, kind: &str, amplitude: f64| ChannelSpec {
+            label: label.into(),
+            kind: kind.into(),
+            amplitude,
+            ..ChannelSpec::eeg("", 256, f)
+        };
+        let channels = vec![
+            typed("Fz", "EEG", EEG_AMPLITUDE),
+            typed("Cz", "EEG", EEG_AMPLITUDE),
+            typed("Pz", "eeg", EEG_AMPLITUDE),
+            typed("Oz", "", EEG_AMPLITUDE),
+            // No type: EOG from the name, as kymo reads BrainVision.
+            typed("HEOG", "", 120.0),
+            typed("ECG", "ECG", 400.0),
+            typed("Resp", "RESP", 1e5),
+            // A type MNE doesn't have: EEG, from the name.
+            typed("Light", "LIGHT", EEG_AMPLITUDE),
+        ];
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = eeglab_events(60, 256);
+        // A boundary, where EEGLAB removed data.
+        spec.annotations.insert(
+            0,
+            Tal {
+                onset: 0.0,
+                duration: Some(2.0),
+                texts: vec!["boundary".into()],
+            },
+        );
+        spec.seed = 9;
+        spec
+    }
+
+    fn eeglab_set_single() -> Spec {
+        let f = Format::Eeglab(Storage::Single, Layout::Flat);
+        let channels = ["C3", "C4", "VEOG", "EMG chin"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 500, f))
+            .collect();
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = eeglab_events(60, 500);
+        spec.seed = 10;
+        spec
+    }
+
+    fn eeglab_set_double() -> Spec {
+        let f = Format::Eeglab(Storage::Double, Layout::Struct);
+        let mut channels: Vec<ChannelSpec> = (1..=6)
+            .map(|i| ChannelSpec::eeg(format!("E{i}"), 1000, f))
+            .collect();
+        channels.push(ChannelSpec {
+            // A large DC offset, 1 V at 0.1 µV per step, as DC amplifiers record; float64
+            // keeps it, and kymo keeps it through the channel's reference value.
+            label: "DC".into(),
+            digital_min: 9_995_000,
+            digital_max: 10_005_000,
+            physical_min: 999_500.0,
+            physical_max: 1_000_500.0,
+            ..ChannelSpec::eeg("", 1000, f)
+        });
+        channels.push(ChannelSpec {
+            label: "Trigger".into(),
+            ..ChannelSpec::trigger(1000, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = eeglab_events(60, 1000);
+        spec.seed = 11;
         spec
     }
 }
