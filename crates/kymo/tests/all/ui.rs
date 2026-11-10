@@ -919,6 +919,43 @@ fn the_channel_list_right_aligns_rates() {
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
+/// A rate that isn't round shows two decimals in the channel list and the summary; hovering
+/// the summary's shows it exactly.
+#[test]
+fn rates_are_rounded_with_the_exact_one_on_hover() {
+    use egui::accesskit::Role;
+    // As MNELAB exported a recording: 500.0065 Hz.
+    let mut spec = kymo_testgen::Spec::preset("bv-int16-multiplexed").unwrap();
+    let spr = spec.channels[0].samples_per_record;
+    spec.record_duration = f64::from(spr) / 500.006_492_535_299_46;
+    // Its markers sit on samples at 500 Hz, not at this rate.
+    spec.annotations.clear();
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let rate = viewer(&harness).document().recording.grids()[0].rate();
+    assert_eq!(format!("{rate:.4}"), "500.0065");
+    // Every channel's row and the summary's Sampling row.
+    let rounded = harness
+        .query_all_by_role_and_label(Role::Label, "500.01 Hz")
+        .count();
+    assert_eq!(rounded, spec.channels.len() + 1);
+    let exact = format!("Exactly {rate} Hz");
+    assert!(harness.query_by_label(&exact).is_none());
+    let sampling = harness
+        .query_all_by_role_and_label(Role::Label, "500.01 Hz")
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .unwrap();
+    // Tooltips wait for the pointer to rest.
+    hover(&mut harness, sampling.center());
+    let shown = Instant::now() + Duration::from_secs(2);
+    while harness.query_by_label(&exact).is_none() && Instant::now() < shown {
+        harness.step();
+    }
+    harness.get_by_label(&exact);
+}
+
 /// The legend lists every description with its count; its checkboxes show and hide
 /// annotations by description, or all at once.
 #[test]

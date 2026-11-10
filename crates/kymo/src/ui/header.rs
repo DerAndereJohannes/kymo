@@ -7,7 +7,7 @@ use eframe::egui::{
 use kymo_core::{ChannelId, ChannelKind};
 
 use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
-use crate::document::{Document, Summary, plural};
+use crate::document::{Document, Summary, format_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::view::{KINDS, ViewState};
@@ -109,13 +109,13 @@ pub fn header_panel(
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
             // Keys at their full width; values, in the last column, shorten to what is left.
-            let row = |ui: &mut Ui, key: &str, value: String| {
-                ui.add(Label::new(RichText::new(key).weak()).extend());
-                ui.add(Label::new(value).truncate());
+            for row in summary.sidebar_rows() {
+                ui.add(Label::new(RichText::new(row.key).weak()).extend());
+                let value = ui.add(Label::new(row.value).truncate());
+                if let Some(hover) = row.hover {
+                    value.on_hover_text(hover);
+                }
                 ui.end_row();
-            };
-            for (key, value) in summary.sidebar_rows() {
-                row(ui, &key, value);
             }
         });
 
@@ -387,7 +387,11 @@ impl Columns {
             name: widest(&mut channels.iter().map(|c| c.name.clone())),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
             unit: widest(&mut channels.iter().map(|c| c.tile_unit().to_owned())),
-            rate: widest(&mut channels.iter().map(|c| rate_text(rec.grid(c.grid).rate()))),
+            rate: widest(
+                &mut channels
+                    .iter()
+                    .map(|c| format_rate(rec.grid(c.grid).rate())),
+            ),
         };
         ui.data_mut(|d| {
             d.insert_temp(
@@ -401,10 +405,6 @@ impl Columns {
         });
         columns
     }
-}
-
-fn rate_text(rate: f64) -> String {
-    format!("{rate} Hz")
 }
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
@@ -494,7 +494,7 @@ fn channel_list(ui: &mut Ui, document: &Document, view: &mut ViewState, type_col
                 cell(ui, columns.unit, left, weak(channel.tile_unit().to_owned()));
                 let rate = rec.grid(channel.grid).rate();
                 let right = Layout::right_to_left(Align::Center);
-                cell(ui, columns.rate, right, weak(rate_text(rate)));
+                cell(ui, columns.rate, right, weak(format_rate(rate)));
             }
         },
     );

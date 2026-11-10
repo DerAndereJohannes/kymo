@@ -95,15 +95,15 @@ pub struct GridSummary {
 }
 
 impl GridSummary {
-    /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels".
+    /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels", with
+    /// the exact rate.
     pub fn describe(&self) -> String {
-        self.text(true)
+        self.text(true, exact_rate(self.rate))
     }
 
-    /// The rate, with the samples and channels if `sizes`, and the segments if more than
-    /// one.
-    fn text(&self, sizes: bool) -> String {
-        let mut s = format!("{} Hz", self.rate);
+    /// `rate`, with the samples and channels if `sizes`, and the segments if more than one.
+    fn text(&self, sizes: bool, rate: String) -> String {
+        let mut s = rate;
         if sizes {
             let n = self.channels.len();
             s += &format!(", {} samples, {n} channel{}", self.samples, plural(n));
@@ -121,19 +121,22 @@ impl Summary {
     /// samples and channels. No sample type: for EDF and BDF the format implies it, and
     /// ours is the type in memory (BDF's int24 is widened to int32), not the file's. No
     /// annotation count: the legend has it, with the stim channels' annotations.
-    pub fn sidebar_rows(&self) -> Vec<(String, String)> {
+    ///
+    /// Rates are rounded (see [`format_rate`]); a row whose rate that changes has the exact
+    /// one to show on hover.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
         let mut duration = format_duration(self.duration);
         if let [grid] = &self.grids[..] {
             duration += &format!(" ({} samples)", grid.samples);
         }
         let mut rows = vec![
-            ("Format".to_owned(), self.format.to_owned()),
-            (
-                "Start".to_owned(),
+            SidebarRow::new("Format", self.format.to_owned()),
+            SidebarRow::new(
+                "Start",
                 self.start.clone().unwrap_or_else(|| "unknown".into()),
             ),
-            ("Duration".to_owned(), duration),
-            ("Channels".to_owned(), self.channels.to_string()),
+            SidebarRow::new("Duration", duration),
+            SidebarRow::new("Channels", self.channels.to_string()),
         ];
         let single = self.grids.len() == 1;
         for (i, grid) in self.grids.iter().enumerate() {
@@ -142,7 +145,12 @@ impl Summary {
             } else {
                 format!("Grid {}", i + 1)
             };
-            rows.push((key, grid.text(!single)));
+            let (rounded, exact) = (format_rate(grid.rate), exact_rate(grid.rate));
+            rows.push(SidebarRow {
+                value: grid.text(!single, rounded.clone()),
+                hover: (rounded != exact).then(|| format!("Exactly {exact}")),
+                ..SidebarRow::new(&key, String::new())
+            });
         }
         rows
     }
@@ -172,6 +180,41 @@ impl fmt::Display for Summary {
 
 pub fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
+}
+
+/// One row of the sidebar's summary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidebarRow {
+    pub key: String,
+    pub value: String,
+    /// What hovering the value shows: the exact rate where the value rounds it.
+    pub hover: Option<String>,
+}
+
+impl SidebarRow {
+    fn new(key: &str, value: String) -> SidebarRow {
+        SidebarRow {
+            key: key.to_owned(),
+            value,
+            hover: None,
+        }
+    }
+}
+
+/// A rate as shown: at most two decimals, but at least three significant digits, trailing
+/// zeros dropped ("512 Hz", "500.01 Hz", "0.5 Hz", "0.0333 Hz").
+pub fn format_rate(rate: f64) -> String {
+    if !(rate.is_finite() && rate > 0.0) {
+        return exact_rate(rate);
+    }
+    let decimals = (2 - rate.log10().floor() as i32).max(2) as usize;
+    let text = format!("{rate:.decimals$}");
+    format!("{} Hz", text.trim_end_matches('0').trim_end_matches('.'))
+}
+
+/// A rate with every digit it has ("500.00649253529946 Hz").
+fn exact_rate(rate: f64) -> String {
+    format!("{rate} Hz")
 }
 
 /// Seconds as "12.500 s" below a minute, "1:02:03.500" (h:mm:ss) above.
@@ -315,10 +358,11 @@ mod tests {
 
         // Several grids: each row keeps its samples and channels, the duration none.
         let rows = summary.sidebar_rows();
-        let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
+        let value = |key: &str| &rows.iter().find(|r| r.key == key).unwrap().value;
         assert_eq!(value("Format"), "EDF+D");
         assert_eq!(*value("Duration"), format_duration(summary.duration));
-        assert!(!rows.iter().any(|(k, _)| k == "Sampling"));
+        assert!(!rows.iter().any(|r| r.key == "Sampling"));
+        assert!(rows.iter().all(|r| r.hover.is_none()));
         for (i, grid) in summary.grids.iter().enumerate() {
             let n = grid.channels.len();
             assert_eq!(
@@ -338,16 +382,84 @@ mod tests {
         let file = TempFile::preset("bdf+c-small");
         let summary = load(file.path()).unwrap().summary();
         let rows = summary.sidebar_rows();
-        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             keys,
             ["Format", "Start", "Duration", "Channels", "Sampling"]
         );
-        let value = |key: &str| &rows.iter().find(|(k, _)| k == key).unwrap().1;
+        let value = |key: &str| &rows.iter().find(|r| r.key == key).unwrap().value;
         assert_eq!(value("Format"), "BDF+C");
         assert_eq!(value("Duration"), "0:01:00.000 (30720 samples)");
         assert_eq!(value("Channels"), "5");
         assert_eq!(value("Sampling"), "512 Hz");
+    }
+
+    #[test]
+    fn rates_show_two_decimals_but_three_significant_digits() {
+        let cases = [
+            (512.0, "512 Hz"),
+            (500.006_492_535_299_46, "500.01 Hz"),
+            (600.614_990_234_375, "600.61 Hz"),
+            (2048.0, "2048 Hz"),
+            (999.999, "1000 Hz"),
+            (128.5, "128.5 Hz"),
+            (10.0, "10 Hz"),
+            (0.5, "0.5 Hz"),
+            // One sample per 30 s, as hypnogram channels in EDF have.
+            (1.0 / 30.0, "0.0333 Hz"),
+            (0.001_234_5, "0.00123 Hz"),
+        ];
+        for (rate, text) in cases {
+            assert_eq!(format_rate(rate), text, "{rate}");
+        }
+    }
+
+    /// The sidebar rounds a rate and shows the exact one on hover; `--info` prints it exactly.
+    #[test]
+    fn rounded_rates_keep_the_exact_one() {
+        let grid = |rate: f64| GridSummary {
+            rate,
+            samples: 1000,
+            segments: 1,
+            channels: vec!["Fz".into(), "Cz".into()],
+        };
+        let summary = |grids: Vec<GridSummary>| Summary {
+            format: "BrainVision",
+            start: None,
+            duration: 2.0,
+            channels: 2,
+            annotations: 0,
+            grids,
+            warnings: Vec::new(),
+        };
+        let exact = 500.006_492_535_299_46;
+        let one = summary(vec![grid(exact)]);
+        let rows = one.sidebar_rows();
+        let sampling = rows.iter().find(|r| r.key == "Sampling").unwrap();
+        assert_eq!(sampling.value, "500.01 Hz");
+        assert_eq!(
+            sampling.hover.as_deref(),
+            Some("Exactly 500.00649253529946 Hz")
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.key != "Sampling")
+                .all(|r| r.hover.is_none())
+        );
+        assert!(
+            one.to_string()
+                .contains("500.00649253529946 Hz, 1000 samples, 2 channels"),
+            "{one}"
+        );
+
+        let two = summary(vec![grid(exact), grid(250.0)]);
+        let rows = two.sidebar_rows();
+        let row = |key: &str| rows.iter().find(|r| r.key == key).unwrap();
+        assert_eq!(row("Grid 1").value, "500.01 Hz, 1000 samples, 2 channels");
+        assert!(row("Grid 1").hover.is_some());
+        // A rate that rounding doesn't change has nothing to add.
+        assert_eq!(row("Grid 2").value, "250 Hz, 1000 samples, 2 channels");
+        assert_eq!(row("Grid 2").hover, None);
     }
 
     #[test]
