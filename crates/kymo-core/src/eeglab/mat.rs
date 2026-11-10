@@ -371,7 +371,9 @@ impl<'a> Element<'a> {
             }
         };
         let rows = dims.first().copied().unwrap_or(1);
-        if rows <= 1 || chars.len() != count {
+        // An empty matrix has no lines, whatever rows it claims: a damaged `rows × 0` one
+        // would otherwise allocate a line per row. With characters, rows ≤ count.
+        if rows <= 1 || count == 0 || chars.len() != count {
             return Ok(chars.into_iter().collect());
         }
         let columns = count / rows;

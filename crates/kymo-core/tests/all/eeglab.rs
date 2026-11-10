@@ -156,7 +156,15 @@ proptest! {
         let (rec, _) = open(file.path());
         prop_assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
         let Format::Eeglab(storage, _) = case.spec.format else { unreachable!() };
-        let whole = case.spec.channels[0].gain() == 1.0;
+        // As MATLAB, the writer stores doubles that are all whole in an integer type, which
+        // a fractional gain can give too (a single sample of 0).
+        let spec = &case.spec;
+        let whole = (0..spec.channels.len()).all(|c| {
+            (0..spec.len(0)).all(|i| {
+                let v = spec.physical(c, i);
+                v.is_finite() && v.fract() == 0.0 && !(v == 0.0 && v.is_sign_negative())
+            })
+        });
         let expected_type = if storage == Storage::Double && whole {
             stored_type(&case.spec)
         } else {
@@ -979,4 +987,19 @@ proptest! {
             };
         }
     }
+}
+
+/// An empty char matrix claiming a billion rows (a damaged `0 × n` one) reads as empty,
+/// without allocating a line per row.
+#[test]
+fn empty_char_matrices_with_many_rows_read_as_empty() {
+    let mut fields = fields();
+    fields[0].1 = Value::Raw {
+        class: mat::MX_CHAR,
+        storage: mat::MI_UINT16,
+        dims: vec![1_000_000_000, 0],
+        bytes: Vec::new(),
+    };
+    let (rec, _) = Written::new(fields).open().unwrap();
+    assert!(rec.extra().iter().all(|(key, _)| key != "setname"));
 }
