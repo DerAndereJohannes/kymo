@@ -580,8 +580,14 @@ impl KymoApp {
         match dialog {
             Dialog::Open => files
                 .set_title("Open a recording")
-                .add_filter("EDF and BDF", &["edf", "bdf", "EDF", "BDF"])
+                // The first filter is the one selected when the dialog opens.
+                .add_filter(
+                    "All supported file types",
+                    &["edf", "bdf", "vhdr", "EDF", "BDF", "VHDR"],
+                )
+                .add_filter("BDF", &["bdf", "BDF"])
                 .add_filter("BrainVision", &["vhdr", "VHDR"])
+                .add_filter("EDF", &["edf", "EDF"])
                 .add_filter("All files", &["*"])
                 .pick_file(),
             Dialog::Save(suggested) => save(files, "Save annotations", &suggested),
