@@ -1,6 +1,6 @@
 //! The marker file (`.vmrk`): annotations and the recording's start time.
 
-use super::text::{Ini, unescape};
+use super::text::{Ini, Repairs, unescape};
 use crate::{AnnotationData, ChannelId, Origin};
 
 /// What a marker file holds.
@@ -32,6 +32,7 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
     }
     let mut markers = Markers::default();
     let (mut skipped, mut bad_channels) = (0usize, 0usize);
+    let mut repairs = Repairs::new("marker descriptions");
     for (key, value) in ini.section("Marker Infos") {
         if !key.get(..2).is_some_and(|k| k.eq_ignore_ascii_case("mk")) {
             continue;
@@ -75,6 +76,7 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
             (false, true) => kind,
             (true, _) => description,
         };
+        let description = repairs.apply(description);
         markers.annotations.push(AnnotationData {
             onset,
             duration: if size > 1 { size as f64 / rate } else { 0.0 },
@@ -88,6 +90,7 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
             "{skipped} markers without a valid position are ignored"
         ));
     }
+    repairs.warn(warnings);
     if bad_channels > 0 {
         warnings.push(format!(
             "{bad_channels} markers name a channel the header doesn't have; they apply to all \

@@ -1,7 +1,7 @@
 //! The header file (`.vhdr`): data layout, channels, and the amplifier's filters.
 
 use super::BrainVisionError;
-use super::text::{Ini, unescape};
+use super::text::{Ini, Repairs, unescape};
 use crate::decode::Encoding;
 use crate::{Channel, ChannelKind, GridId, Quantity, Unit};
 
@@ -200,12 +200,14 @@ fn channels(
     }
     let coordinates = coordinates(ini, n);
     let mut channels = Vec::with_capacity(n);
+    let mut names = Repairs::new("channel names");
+    let mut units = Repairs::new("channel units");
     for (i, line) in lines.into_iter().enumerate() {
         let Some(line) = line else {
             return Err(BrainVisionError::MissingChannel(i + 1));
         };
         let mut fields = line.split(',');
-        let name = unescape(fields.next().unwrap_or_default().trim());
+        let name = names.apply(unescape(fields.next().unwrap_or_default().trim()));
         let name = if name.is_empty() {
             format!("Ch{}", i + 1)
         } else {
@@ -227,10 +229,10 @@ fn channels(
                 })?
         };
         let unit = fields.next().unwrap_or_default().trim();
-        // The spec's default; "Âµ" is a UTF-8 micro sign read as Windows-1252.
+        // The spec's default.
         let unit = match unit {
             "" => "\u{b5}V".to_owned(),
-            u => u.replace("\u{c2}\u{b5}", "\u{b5}"),
+            u => units.apply(u.to_owned()),
         };
         let unit = Unit::from_label(unit);
         let kind = match unit.quantity() {
@@ -250,6 +252,8 @@ fn channels(
             ..Channel::new(name, GridId(0))
         });
     }
+    names.warn(warnings);
+    units.warn(warnings);
     let filters = filters(&ini.comment, &channels);
     for (channel, filter) in channels.iter_mut().zip(filters) {
         channel.prefilter = filter;

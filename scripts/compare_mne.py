@@ -60,6 +60,10 @@ BrainVision, where Kymo deliberately differs from MNE:
   alone ("New Segment", not "New Segment/"); MNE's are compared without the lone "/".
 - Kymo's start time is the New Segment date moved back to the first sample; MNE takes the
   date as it is. They agree for New Segments at position 1, as in every file seen so far.
+- Kymo repairs names, units and marker descriptions that hold UTF-8 text decoded as
+  Windows-1252 when written ("\u00cf\u2030X" for "\u03c9X", as EEGLAB's export writes);
+  MNE keeps them as stored. MNE's names and descriptions are compared after the same
+  repair.
 - Channel kinds and filters are not compared.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
@@ -91,6 +95,20 @@ MNE_SCALED = {
     "EDF": {"\u00b5V", "\u03bcV", "\x83\xcaV", "uV", "mV", "V"},
     "BrainVision": {"V", "\u00b5V", "uV", "mV", "nV", "\u00b5S", "uS", "S"},
 }
+
+
+def repair(text):
+    """Kymo's repair of UTF-8 text decoded as Windows-1252 or Latin-1 (and written out
+    again), as often as it was; the text as it is if it isn't such text."""
+    while not text.isascii():
+        try:
+            data = bytes(
+                ord(c) if ord(c) < 256 else c.encode("cp1252")[0] for c in text
+            )
+            text = data.decode("utf-8")
+        except (UnicodeError, ValueError):
+            break
+    return text
 
 
 def cargo(*args):
@@ -253,6 +271,9 @@ def compare(path, max_values=None, annotation_files=False):
         if brainvision and [n.strip() for n in theirs_names] != theirs_names:
             theirs_names = [n.strip() for n in theirs_names]
             notes.append("MNE's channel names compared trimmed")
+        if brainvision and [repair(n) for n in theirs_names] != theirs_names:
+            theirs_names = [repair(n) for n in theirs_names]
+            notes.append("MNE's channel names compared repaired")
         if theirs_names != mne_names:
             problems.append(
                 f"channel names differ:\n    Kymo {names}\n    MNE  {raw.ch_names}"
@@ -486,7 +507,7 @@ def compare_annotations(raw, annotations, first_onset, brainvision=False):
         # Kymo's own rules for markers; see the docstring.
         sample = 1 / raw.info["sfreq"]
         theirs = [
-            (o, 0.0 if abs(d - sample) < 1e-9 else d, s.strip("/"))
+            (o, 0.0 if abs(d - sample) < 1e-9 else d, repair(s.strip("/")))
             for o, d, s in theirs
             if not (s.startswith("New Segment/") and o == 0)
         ]

@@ -376,13 +376,14 @@ fn codepages_decode_names() {
         ("", windows_1252_name, "P\u{20ac}", "\u{b5}V", false),
         // UTF-8 said, but not UTF-8: Windows-1252 with a warning.
         ("UTF-8", windows_1252_name, "P\u{20ac}", "\u{b5}V", true),
-        // A UTF-8 micro sign read as Windows-1252 ("Âµ") is a micro sign.
+        // A UTF-8 micro sign read as Windows-1252 ("Âµ") is a micro sign, repaired with a
+        // warning.
         (
             "ANSI",
             b"Ch1=Pz,,1,\xc2\xb5V\r\nCh2=Oz\r\n",
             "Pz",
             "\u{b5}V",
-            false,
+            true,
         ),
     ];
     for (codepage, channels, name, unit, warned) in cases {
@@ -417,6 +418,66 @@ fn codepages_decode_names() {
     .concat();
     let (rec, _) = Written::new(&vhdr, &int16s(&[0; 4]), None).open().unwrap();
     assert_eq!(rec.channels()[0].name, "P\u{e4}");
+}
+
+#[test]
+fn utf8_decoded_as_windows_1252_is_repaired() {
+    // As EEGLAB's export writes "ωX": its UTF-8 bytes CF 89 read as Windows-1252 ("Ï‰")
+    // and written out again as UTF-8.
+    let channels = "Ch1=\u{cf}\u{2030}X\r\n\
+                    Ch2=\u{c3}\u{8f}\u{e2}\u{20ac}\u{b0}Y\r\n\
+                    Ch3=\u{cf}\u{89}Z\r\n\
+                    Ch4=P\u{e4},,1,\u{c2}\u{b5}V\r\n\
+                    Ch5=\u{3c9}X,,1,\u{b5}V\r\n\
+                    Ch6=\u{c3}\u{20ac}\u{c3}\r\n";
+    let common = with_markers().replace("NumberOfChannels=2", "NumberOfChannels=6");
+    let vhdr = header(&common, "INT_16", channels);
+    let vmrk = markers(
+        "Mk1=Stimulus,\u{cf}\u{2030}1,11,1,0\r\n\
+         Mk2=Stimulus,\u{3c9}2,21,1,0\r\n",
+    );
+    let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 12]), Some(vmrk.as_bytes()));
+    let (rec, annotations) = written.open().unwrap();
+    let names: Vec<&str> = rec.channels().iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            // Damaged once, damaged twice, and read as Latin-1 (U+0089 for 0x89).
+            "\u{3c9}X",
+            "\u{3c9}Y",
+            "\u{3c9}Z",
+            // Genuine text stays: "ä" alone isn't UTF-8, nor is "Ã€Ã" whole.
+            "P\u{e4}",
+            "\u{3c9}X",
+            "\u{c3}\u{20ac}\u{c3}",
+        ]
+    );
+    assert_eq!(rec.channels()[3].unit.label, "\u{b5}V");
+    assert_eq!(rec.channels()[3].unit.to_si, Some(1e-6));
+    let descriptions: Vec<&str> = annotations.iter().map(|a| a.description.as_str()).collect();
+    assert_eq!(descriptions, ["Stimulus/\u{3c9}1", "Stimulus/\u{3c9}2"]);
+    let warnings = rec.warnings().join("\n");
+    for expected in [
+        "channel names repaired: 3 held",
+        "channel units repaired: 1 held",
+        "marker descriptions repaired: 1 held",
+        "\"\u{cf}\u{2030}X\" is \"\u{3c9}X\"",
+    ] {
+        assert!(warnings.contains(expected), "{expected:?} in {warnings}");
+    }
+    assert_eq!(rec.warnings().len(), 3, "{warnings}");
+
+    // Clean text gives no warning.
+    let vhdr = header(
+        COMMON,
+        "INT_16",
+        "Ch1=\u{3c9}X,,1,\u{b5}V\r\nCh2=P\u{e4}\r\n",
+    );
+    let (rec, _) = Written::new(vhdr.as_bytes(), &int16s(&[0; 4]), None)
+        .open()
+        .unwrap();
+    assert_eq!(rec.channels()[0].name, "\u{3c9}X");
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
 }
 
 #[test]

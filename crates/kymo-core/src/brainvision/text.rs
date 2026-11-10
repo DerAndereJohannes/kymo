@@ -54,16 +54,17 @@ fn latin_1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| char::from(b)).collect()
 }
 
-/// Windows-1252: Latin-1 except for 0x80 to 0x9F. The five bytes it leaves undefined keep
-/// their Latin-1 meaning (as the WHATWG encoding standard has it).
+/// Windows-1252's characters for 0x80 to 0x9F. The five bytes it leaves undefined keep their
+/// Latin-1 meaning (as the WHATWG encoding standard has it).
+const HIGH: [char; 32] = [
+    '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}', '\u{8f}',
+    '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}', '\u{178}',
+];
+
+/// Windows-1252: Latin-1 except for 0x80 to 0x9F.
 fn windows_1252(bytes: &[u8]) -> String {
-    const HIGH: [char; 32] = [
-        '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}',
-        '\u{2021}', '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}',
-        '\u{8f}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}',
-        '\u{2014}', '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}',
-        '\u{178}',
-    ];
     bytes
         .iter()
         .map(|&b| match b {
@@ -71,6 +72,77 @@ fn windows_1252(bytes: &[u8]) -> String {
             _ => char::from(b),
         })
         .collect()
+}
+
+/// The byte `c` is in Windows-1252 or Latin-1, if either has it.
+fn byte(c: char) -> Option<u8> {
+    match u8::try_from(c) {
+        Ok(b) => Some(b),
+        Err(_) => HIGH.iter().position(|&h| h == c).map(|i| 0x80 + i as u8),
+    }
+}
+
+/// `text` repaired if it is UTF-8 that was read as Windows-1252 or Latin-1 (and maybe
+/// written out again), as some writers do: "Ï‰X" for "ωX", "Âµ" for "µ". `None` if it isn't:
+/// it must turn back into those bytes completely, and they must be valid UTF-8.
+///
+/// Genuine text would have to hold pairs such as "Ã©" to look like this, which names and
+/// markers don't. Text damaged more than once is repaired as often as it was.
+pub(super) fn repair(text: &str) -> Option<String> {
+    let mut current = text.to_owned();
+    while !current.is_ascii() {
+        let Some(bytes) = current.chars().map(byte).collect::<Option<Vec<u8>>>() else {
+            break;
+        };
+        match String::from_utf8(bytes) {
+            Ok(repaired) => current = repaired,
+            Err(_) => break,
+        }
+    }
+    (current != text).then_some(current)
+}
+
+/// Repairs texts of one kind (see [`repair`]), counting them for one warning.
+#[derive(Debug)]
+pub(super) struct Repairs {
+    /// What the texts are, plural ("channel names").
+    what: &'static str,
+    count: usize,
+    /// The first repair, before and after.
+    example: Option<(String, String)>,
+}
+
+impl Repairs {
+    pub(super) fn new(what: &'static str) -> Repairs {
+        Repairs {
+            what,
+            count: 0,
+            example: None,
+        }
+    }
+
+    /// `text`, repaired if it needs it.
+    pub(super) fn apply(&mut self, text: String) -> String {
+        match repair(&text) {
+            Some(repaired) => {
+                self.count += 1;
+                self.example.get_or_insert_with(|| (text, repaired.clone()));
+                repaired
+            }
+            None => text,
+        }
+    }
+
+    /// One warning for all repairs, if there were any.
+    pub(super) fn warn(self, warnings: &mut Vec<String>) {
+        if let Some((before, after)) = self.example {
+            warnings.push(format!(
+                "{} repaired: {} held UTF-8 text decoded as Windows-1252 when written \
+                 ({before:?} is {after:?})",
+                self.what, self.count
+            ));
+        }
+    }
 }
 
 /// Sections that end a `[Comment]` section, whose free text may hold anything else.
