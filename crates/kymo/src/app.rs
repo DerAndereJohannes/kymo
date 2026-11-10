@@ -100,10 +100,13 @@ pub struct KymoApp {
 }
 
 /// What the unsaved changes question holds up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Leave {
     Close,
+    /// Open a recording picked in the file dialog.
     Open,
+    /// Open this recording (dropped on the window).
+    OpenPath(PathBuf),
     Quit,
 }
 
@@ -418,6 +421,7 @@ impl KymoApp {
         for action in actions {
             self.perform(&ctx, action);
         }
+        self.take_dropped(&ctx);
         shortcuts_window(&ctx, &mut self.shortcuts_open, self.keymap.platform());
         about_window(&ctx, &mut self.about_open);
         let mut settings = self.options.settings;
@@ -470,6 +474,7 @@ impl KymoApp {
         if open_clicked {
             self.leave(&ctx, Leave::Open);
         }
+        self.drop_hint(&ctx);
         self.unsaved_question(&ctx);
         self.notice_window(&ctx);
         let title = self.title();
@@ -631,6 +636,69 @@ impl KymoApp {
         }
     }
 
+    /// Opens a file dropped on the window (the first, if several): an annotation file (by
+    /// its extension, as Load Annotations… takes them) is loaded into the open recording,
+    /// anything else opened as a recording, as if picked with Open…. Ignored while a
+    /// question or notice is shown.
+    fn take_dropped(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_owned()));
+        let Some(path) = dropped else {
+            return;
+        };
+        if self.leaving.is_some() || self.notice.is_some() {
+            return;
+        }
+        if Format::of(&path).is_none() {
+            self.leave(ctx, Leave::OpenPath(path));
+        } else if self.viewer().is_some() {
+            self.load_annotations_from(&path);
+        } else {
+            self.notice = Some((
+                "Could not load the annotations".to_owned(),
+                format!(
+                    "{} holds annotations. Open a recording first, then drop them on it.",
+                    file_name(&path)
+                ),
+            ));
+        }
+    }
+
+    /// While files are dragged over the window, dims it and says what dropping does.
+    fn drop_hint(&self, ctx: &egui::Context) {
+        let hovered = ctx.input(|i| {
+            (!i.raw.hovered_files.is_empty()).then(|| i.raw.hovered_files[0].path.clone())
+        });
+        let Some(path) = hovered else {
+            return;
+        };
+        let annotations = path.as_deref().is_some_and(|p| Format::of(p).is_some());
+        let text = if annotations && self.viewer().is_some() {
+            "Drop to load the annotations"
+        } else {
+            "Drop to open"
+        };
+        let screen = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("kymo drop hint"),
+        ));
+        let visuals = ctx.global_style().visuals.clone();
+        painter.rect_filled(screen, 0.0, visuals.extreme_bg_color.gamma_multiply(0.8));
+        painter.rect_stroke(
+            screen.shrink(12.0),
+            8.0,
+            egui::Stroke::new(2.0, visuals.selection.stroke.color),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            screen.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::TextStyle::Heading.resolve(&ctx.global_style()),
+            visuals.strong_text_color(),
+        );
+    }
+
     /// Closes the recording, opens another, or quits, after asking what to do with unsaved
     /// changes to the annotations.
     fn leave(&mut self, ctx: &egui::Context, leave: Leave) {
@@ -646,6 +714,7 @@ impl KymoApp {
         match leave {
             Leave::Close => self.state = State::Empty,
             Leave::Open => self.pick_and_open(ctx),
+            Leave::OpenPath(path) => self.open(ctx, path),
             Leave::Quit => {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -655,7 +724,7 @@ impl KymoApp {
 
     /// What waits for the answer to "Save the changes?", while it is asked.
     pub fn leaving(&self) -> Option<Leave> {
-        self.leaving
+        self.leaving.clone()
     }
 
     /// The message shown in a window, if there is one: its title and text.
@@ -671,7 +740,7 @@ impl KymoApp {
     /// Asks "Save the changes?" while something waits for the answer: Save… saves (and
     /// goes on unless the save dialog was canceled), Don't Save goes on, Cancel stays.
     fn unsaved_question(&mut self, ctx: &egui::Context) {
-        let Some(leave) = self.leaving else {
+        let Some(leave) = self.leaving.clone() else {
             return;
         };
         let name = self

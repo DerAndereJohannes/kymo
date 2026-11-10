@@ -4178,3 +4178,64 @@ fn the_channel_list_starts_at_the_top_for_each_recording() {
     ready(&mut harness);
     assert!(harness.query_by_label("A1 bad").is_some(), "still scrolled");
 }
+
+/// A file dropped on the window, as egui-winit hands it over.
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// Drops `paths` on the window.
+fn drop_files(harness: &mut Harness<'_, KymoApp>, paths: &[&Path]) {
+    harness.input_mut().dropped_files = paths
+        .iter()
+        .map(|p| std::sync::Arc::new(Dropped(p.to_path_buf())) as egui::DroppedFileHandle)
+        .collect();
+    harness.run_steps(2);
+}
+
+#[test]
+fn dropped_files_open_or_load_their_annotations() {
+    let missing = TempFile::new("bdf");
+    let file = without_triggers("bdf+c-small");
+    let other = without_triggers("bdf+c-small");
+    let dir = TempDir::new();
+    let events = dir.path().join("events.tsv");
+    std::fs::write(&events, "onset\tduration\ttrial_type\n1.5\t1\tdropped\n").unwrap();
+    let mut harness = window(missing.path());
+    step_until(&mut harness, "the error", |app| app.error().is_some());
+
+    // Annotations need a recording first; the notice says so.
+    drop_files(&mut harness, &[&events]);
+    let (_, text) = harness.state().notice().unwrap();
+    assert!(text.contains("Open a recording first"), "{text}");
+    harness.get_by_label("OK").click();
+    harness.run_steps(2);
+
+    // A recording opens; of several files, only the first is taken.
+    drop_files(&mut harness, &[file.path(), other.path()]);
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).document().path, file.path());
+    drop_files(&mut harness, &[&events]);
+    assert_eq!(viewer_spans(&harness), [(1.5, 2.5, "dropped".into())]);
+    assert!(harness.state().title().contains("(edited)"));
+
+    // With unsaved changes, another recording waits for the answer.
+    drop_files(&mut harness, &[other.path()]);
+    assert_eq!(
+        harness.state().leaving(),
+        Some(kymo::app::Leave::OpenPath(other.path().to_owned()))
+    );
+    harness.get_by_label("Don't Save").click();
+    harness.run_steps(2);
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).document().path, other.path());
+}
