@@ -1009,6 +1009,45 @@ fn the_shortcut_overview_scroll_bar_sits_at_the_border() {
     );
 }
 
+/// Each channel type on screen but stim has a scale bar at the traces' right edge,
+/// centered on its first row; View → Show Scale Bars hides them, and is remembered.
+#[test]
+fn scale_bars_show_beside_their_rows_and_hide() {
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // A1 and A2 (EEG), EOG L, ECG and Status.
+    let kinds = |h: &Harness<'_, KymoApp>| {
+        viewer(h)
+            .scale_bars()
+            .iter()
+            .map(|(b, _)| (b.kind, b.channel.0))
+            .collect::<Vec<_>>()
+    };
+    use kymo_core::ChannelKind::{Ecg, Eeg, Eog};
+    assert_eq!(kinds(&harness), [(Eeg, 0), (Eog, 2), (Ecg, 3)]);
+    let traces = viewer(&harness).layout().unwrap().traces;
+    let view = viewer(&harness).view();
+    let row_height = view.row_height(f64::from(traces.height())) as f32;
+    for (bar, rect) in viewer(&harness).scale_bars() {
+        let middle =
+            traces.top() + view.y_of_row(bar.row as f64 + 0.5, f64::from(traces.height())) as f32;
+        assert!(
+            (rect.center().y - middle).abs() < 0.01,
+            "{rect:?} vs {middle}"
+        );
+        assert!((rect.height() - bar.fraction as f32 * row_height).abs() < 0.01);
+        assert!(traces.right() - 20.0 < rect.left() && rect.right() < traces.right());
+    }
+    assert!(checked(&mut harness, "View", "Show Scale Bars"));
+    choose(&mut harness, "View", "Show Scale Bars");
+    assert!(viewer(&harness).scale_bars().is_empty());
+    assert!(!harness.state().settings().scale_bars);
+    assert!(!checked(&mut harness, "View", "Show Scale Bars"));
+    choose(&mut harness, "View", "Show Scale Bars");
+    assert_eq!(kinds(&harness).len(), 3);
+}
+
 /// The reader's warnings show as one line in the sidebar, "1 Warning", and in full, as
 /// sentences, only on hovering it.
 #[test]

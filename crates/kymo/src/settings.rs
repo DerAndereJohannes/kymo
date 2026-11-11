@@ -23,6 +23,7 @@ const TILE_CACHE_KEY: &str = "kymo.tile_cache_mb";
 const GPU_MEMORY_KEY: &str = "kymo.gpu_memory_mb";
 const DEFAULT_WINDOW_KEY: &str = "kymo.default_window_s";
 const ANTIALIAS_KEY: &str = "kymo.antialias";
+const SCALE_BARS_KEY: &str = "kymo.scale_bars";
 const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
 const THEME_KEY: &str = "kymo.theme";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
@@ -97,6 +98,8 @@ pub struct Settings {
     pub default_window_s: f64,
     /// Whether traces are anti-aliased.
     pub antialias: bool,
+    /// Whether each channel type on screen shows a scale bar.
+    pub scale_bars: bool,
     /// Whether a recording opens with Auto Scale instead of the default amplitudes.
     pub auto_scale_on_open: bool,
     /// Colors picked per channel type; the others keep their defaults.
@@ -111,6 +114,7 @@ impl Default for Settings {
             gpu_memory_mb: (DEFAULT_GPU_BUDGET >> 20) as u32,
             default_window_s: DEFAULT_SPAN,
             antialias: false,
+            scale_bars: true,
             auto_scale_on_open: true,
             type_colors: [None; KINDS.len()],
             theme: Theme::System,
@@ -137,6 +141,9 @@ impl Settings {
             antialias: get(ANTIALIAS_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.antialias),
+            scale_bars: get(SCALE_BARS_KEY)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(defaults.scale_bars),
             auto_scale_on_open: get(AUTO_SCALE_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.auto_scale_on_open),
@@ -158,6 +165,7 @@ impl Settings {
         storage.set_string(GPU_MEMORY_KEY, self.gpu_memory_mb.to_string());
         storage.set_string(DEFAULT_WINDOW_KEY, self.default_window_s.to_string());
         storage.set_string(ANTIALIAS_KEY, self.antialias.to_string());
+        storage.set_string(SCALE_BARS_KEY, self.scale_bars.to_string());
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
         storage.set_string(THEME_KEY, self.theme.key().to_owned());
         for (kind, color) in KINDS.into_iter().zip(self.type_colors) {
@@ -182,6 +190,7 @@ impl Settings {
             gpu_memory_mb: clamp(self.gpu_memory_mb, GPU_MEMORY_MB),
             default_window_s: seconds.clamp(*DEFAULT_WINDOW_S.start(), *DEFAULT_WINDOW_S.end()),
             antialias: self.antialias,
+            scale_bars: self.scale_bars,
             auto_scale_on_open: self.auto_scale_on_open,
             type_colors: self.type_colors,
             theme: self.theme,

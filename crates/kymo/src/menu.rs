@@ -188,6 +188,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         role: Role::Plain,
         items: vec![
             a(Action::ToggleSidebar),
+            a(Action::ToggleScaleBars),
             a(Action::ToggleAntialias),
             Item::Separator,
             a(Action::ZoomIn),

@@ -20,6 +20,7 @@ pub mod native_menu;
 pub mod recent;
 pub mod render;
 pub mod scale;
+pub mod scale_bar;
 pub mod settings;
 pub mod shortcuts;
 pub mod stim_annotations;

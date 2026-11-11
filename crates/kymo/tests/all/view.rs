@@ -28,7 +28,7 @@ impl BlockReader for NoReader {
 
 /// `eeg` EEG channels in µV at 1000 Hz, plus an EOG channel in mV and a stim channel at
 /// 250 Hz, over `seconds`.
-fn recording(eeg: u32, seconds: u64) -> Recording {
+pub fn recording(eeg: u32, seconds: u64) -> Recording {
     let mut channels: Vec<Channel> = (0..eeg)
         .map(|c| {
             let mut ch = Channel::new(format!("EEG {c}"), GridId(0));

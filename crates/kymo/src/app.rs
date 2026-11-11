@@ -236,6 +236,7 @@ impl KymoApp {
             viewer.cache().set_budget(settings.tile_cache_bytes());
             viewer.set_default_span(settings.default_window_s);
             viewer.set_antialias(settings.antialias);
+            viewer.set_scale_bars(settings.scale_bars);
             viewer.set_type_colors(settings.type_colors);
         }
     }
@@ -301,6 +302,7 @@ impl KymoApp {
             can_redo: viewer.is_some_and(|v| v.history().can_redo()),
             sidebar: self.show_sidebar,
             antialias: self.options.settings.antialias,
+            scale_bars: self.options.settings.scale_bars,
             dc: viewer.is_some_and(|v| v.view().dc_removed()),
             stim: viewer.is_some_and(Viewer::has_stim),
             shown: viewer.is_some_and(|v| v.legend().shown_count().0 > 0),
@@ -553,6 +555,10 @@ impl KymoApp {
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Action::ToggleScaleBars => self.set_settings(Settings {
+                scale_bars: !self.options.settings.scale_bars,
+                ..self.options.settings
+            }),
             Action::ToggleAntialias => self.set_settings(Settings {
                 antialias: !self.options.settings.antialias,
                 ..self.options.settings
@@ -977,6 +983,7 @@ impl KymoApp {
                     self.stim_options,
                 );
                 viewer.set_antialias(self.options.settings.antialias);
+                viewer.set_scale_bars(self.options.settings.scale_bars);
                 viewer.set_type_colors(self.options.settings.type_colors);
                 if self.options.settings.auto_scale_on_open {
                     viewer.apply(Action::AutoScale);
@@ -1023,6 +1030,7 @@ struct AppMenuState {
     can_undo: bool,
     can_redo: bool,
     sidebar: bool,
+    scale_bars: bool,
     antialias: bool,
     dc: bool,
     /// Whether the recording has stim channels, whose codes the rule annotates.
@@ -1056,6 +1064,7 @@ impl MenuState for AppMenuState {
     fn checked(&self, action: Action) -> Option<bool> {
         match action {
             Action::ToggleSidebar => Some(self.sidebar),
+            Action::ToggleScaleBars => Some(self.scale_bars),
             Action::ToggleAntialias => Some(self.antialias),
             Action::ToggleDc => Some(self.dc),
             Action::ToggleEditing => Some(self.editing),

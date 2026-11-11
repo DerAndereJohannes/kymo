@@ -19,6 +19,7 @@ mod palette;
 mod readout;
 mod render;
 mod scale;
+mod scale_bar;
 mod settings;
 mod shortcuts;
 mod stim_annotations;

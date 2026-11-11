@@ -58,6 +58,8 @@ pub enum Action {
     ToggleDc,
     /// Shows or hides the sidebar (file header and channel list).
     ToggleSidebar,
+    /// Shows or hides the scale bars beside the traces (a setting, on by default).
+    ToggleScaleBars,
     /// Turns anti-aliased traces on or off (a setting, off by default).
     ToggleAntialias,
     /// Stim events at every change to a non-zero code (see [`EventRule`]).
@@ -84,7 +86,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 47] = [
+    pub const ALL: [Action; 48] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -121,6 +123,7 @@ impl Action {
         Action::DefaultScale,
         Action::ToggleDc,
         Action::ToggleSidebar,
+        Action::ToggleScaleBars,
         Action::ToggleAntialias,
         Action::StimEveryChange,
         Action::StimFromZero,
@@ -174,6 +177,7 @@ impl Action {
             Action::DefaultScale => "Default Scale",
             Action::ToggleDc => "Remove DC",
             Action::ToggleSidebar => "Show Sidebar",
+            Action::ToggleScaleBars => "Show Scale Bars",
             Action::ToggleAntialias => "Anti-Aliasing",
             Action::StimEveryChange => "Every Change",
             Action::StimFromZero => "From Zero",
@@ -194,6 +198,7 @@ impl Action {
             self,
             Action::ToggleDc
                 | Action::ToggleSidebar
+                | Action::ToggleScaleBars
                 | Action::ToggleAntialias
                 | Action::StimEveryChange
                 | Action::StimFromZero
@@ -254,6 +259,7 @@ impl Action {
                 | Action::Settings
                 | Action::Shortcuts
                 | Action::About
+                | Action::ToggleScaleBars
                 | Action::ToggleAntialias
         )
     }

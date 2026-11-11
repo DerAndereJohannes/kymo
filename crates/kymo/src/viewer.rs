@@ -23,6 +23,7 @@ use crate::history::{self, Change, History};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
 use crate::scale;
+use crate::scale_bar::{ScaleBar, scale_bars};
 use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
@@ -54,6 +55,14 @@ const ANNOTATION_LABEL_GAP: f32 = 8.0;
 /// [`ANNOTATION_LABEL_PAD`], so the onset's line shows), and its opacity.
 const LABEL_PLATE_MARGIN: f32 = 2.0;
 const LABEL_PLATE_ALPHA: f32 = 0.85;
+/// A scale bar: its distance from the traces' right edge, its line's width, its end caps'
+/// width, the halo of the traces' background around it, and the gap to its label, in
+/// points.
+const SCALE_BAR_INSET: f32 = 10.0;
+const SCALE_BAR_WIDTH: f32 = 1.5;
+const SCALE_BAR_CAP: f32 = 6.0;
+const SCALE_BAR_HALO: f32 = 1.5;
+const SCALE_BAR_GAP: f32 = 4.0;
 /// How near an annotation's mark the pointer must be, in points, for the status line to
 /// name it; 1-pixel lines are hard to hit exactly.
 const POINTER_SLACK: f32 = 2.0;
@@ -171,6 +180,9 @@ pub struct Viewer {
     stim: Option<StimAnnotations>,
     /// Whether traces are anti-aliased.
     antialias: bool,
+    /// Whether scale bars are drawn, and those of the last frame with where they were.
+    show_scale_bars: bool,
+    scale_bars: Vec<(ScaleBar, Rect)>,
     /// Whether [`Action::AutoScale`] waits for a complete frame.
     auto_scale: bool,
     /// Colors picked per channel type.
@@ -230,6 +242,8 @@ impl Viewer {
             marks: Marks::default(),
             pointed: String::new(),
             antialias: false,
+            show_scale_bars: true,
+            scale_bars: Vec::new(),
             auto_scale: false,
             type_colors: TypeColors::default(),
             editing: false,
@@ -440,6 +454,17 @@ impl Viewer {
     /// Whether traces are anti-aliased from the next frame on.
     pub fn set_antialias(&mut self, on: bool) {
         self.antialias = on;
+    }
+
+    /// Whether scale bars are drawn from the next frame on.
+    pub fn set_scale_bars(&mut self, on: bool) {
+        self.show_scale_bars = on;
+    }
+
+    /// The scale bars of the last frame, each with the rectangle of its bar (not its
+    /// label), in points.
+    pub fn scale_bars(&self) -> &[(ScaleBar, Rect)] {
+        &self.scale_bars
     }
 
     /// Draws channel types in the colors picked for them, the others in their defaults.
@@ -855,6 +880,7 @@ impl Viewer {
         if size_px[0] == 0 || size_px[1] == 0 {
             self.hover = Hover::default();
             self.pointed.clear();
+            self.scale_bars.clear();
             return;
         }
         self.layout = Some(Layout {
@@ -1050,6 +1076,12 @@ impl Viewer {
             overlay.galley(pos, galley, color);
         }
 
+        let bars = if self.show_scale_bars {
+            self.draw_scale_bars(&overlay, traces, &small, visuals)
+        } else {
+            Vec::new()
+        };
+
         // Channel names, centered on their rows.
         let names_painter = painter.with_clip_rect(names);
         let height = area.height;
@@ -1068,6 +1100,58 @@ impl Viewer {
                 color,
             );
         }
+        self.scale_bars = bars;
+    }
+
+    /// The scale bars, at the right edge of `traces`, each centered on its row: a line in
+    /// its type's color with end caps, on a halo of the background so the traces under it
+    /// don't blur it, and its label to its left on a plate, as annotation labels have.
+    /// Rows lower than the label leave them out, as they would cover their neighbors.
+    /// Returns them, each with its bar's rectangle.
+    fn draw_scale_bars(
+        &self,
+        painter: &egui::Painter,
+        traces: Rect,
+        font: &FontId,
+        visuals: &egui::Visuals,
+    ) -> Vec<(ScaleBar, Rect)> {
+        let height = f64::from(traces.height());
+        let row_height = self.view.row_height(height) as f32;
+        if row_height < painter.ctx().fonts_mut(|f| f.row_height(font)) {
+            return Vec::new();
+        }
+        let mut drawn = Vec::new();
+        let ppp = painter.ctx().pixels_per_point();
+        let background = visuals.extreme_bg_color;
+        let plate = background.gamma_multiply(LABEL_PLATE_ALPHA);
+        // On a physical pixel's center, so the line is sharp.
+        let x = ((traces.right() - SCALE_BAR_INSET) * ppp).round() / ppp + 0.5 / ppp;
+        for bar in scale_bars(&self.document.recording, &self.view) {
+            let middle = traces.top() + self.view.y_of_row(bar.row as f64 + 0.5, height) as f32;
+            let half = bar.fraction as f32 * row_height / 2.0;
+            let rect = Rect::from_center_size(pos2(x, middle), vec2(SCALE_BAR_CAP, 2.0 * half));
+            let color = self.channel_color(bar.channel, visuals);
+            let shape = |width: f32, color: Color32| {
+                let stroke = Stroke::new(width, color);
+                let cap = |y: f32| [pos2(rect.left(), y), pos2(rect.right(), y)];
+                painter.line_segment(cap(rect.top()), stroke);
+                painter.line_segment(cap(rect.bottom()), stroke);
+                painter.line_segment([rect.center_top(), rect.center_bottom()], stroke);
+            };
+            shape(SCALE_BAR_WIDTH + 2.0 * SCALE_BAR_HALO, background);
+            shape(SCALE_BAR_WIDTH, color);
+            let galley = painter.layout_no_wrap(bar.label(), font.clone(), color);
+            let pos = pos2(
+                rect.left() - SCALE_BAR_GAP - galley.size().x,
+                middle - galley.size().y / 2.0,
+            );
+            let label =
+                Rect::from_min_size(pos, galley.size()).expand2(vec2(LABEL_PLATE_MARGIN, 0.0));
+            painter.rect_filled(label, 2.0, plate);
+            painter.galley(pos, galley, color);
+            drawn.push((bar, rect));
+        }
+        drawn
     }
 
     /// The color of a channel's trace and name: its type's, or grayed out if it is bad.

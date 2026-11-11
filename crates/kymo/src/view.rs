@@ -313,6 +313,7 @@ impl ViewState {
             | Action::Shortcuts
             | Action::About
             | Action::ToggleSidebar
+            | Action::ToggleScaleBars
             | Action::ToggleAntialias
             | Action::AutoScale
             | Action::StimEveryChange
