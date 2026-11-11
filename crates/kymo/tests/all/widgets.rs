@@ -7,8 +7,8 @@ use kymo::ui::axis::Clock;
 use kymo::ui::readout::Reading;
 use kymo::ui::scrollbar::{MIN_THUMB, start_at, thumb};
 use kymo::ui::status::{
-    annotations_text, build_text, format_value, pointer_text, reading_text, selection_text,
-    time_decimals,
+    annotations_text, build_text, format_value, pointer_text, range_decimals, range_text,
+    reading_text, selection_text, time_decimals,
 };
 use kymo_core::service::BuildProgress;
 use proptest::prelude::*;
@@ -83,6 +83,21 @@ fn values_keep_four_significant_digits() {
         ),
         "−20.10 … 15.27 uV"
     );
+}
+
+#[test]
+fn the_range_text_shows_the_window_to_a_hundredth_of_its_span() {
+    assert_eq!(range_decimals(20.0), 1);
+    assert_eq!(range_decimals(10.0), 1);
+    assert_eq!(range_decimals(5.0), 2);
+    assert_eq!(range_decimals(100.0), 0);
+    assert_eq!(range_decimals(3600.0), 0);
+    assert_eq!(range_text(12.5, 32.5, 1, Clock::Minutes), "0:12.5 – 0:32.5");
+    assert_eq!(
+        range_text(3600.0, 3900.0, 0, Clock::Hours),
+        "1:00:00 – 1:05:00"
+    );
+    assert_eq!(range_text(0.0, 2.5, 2, Clock::Seconds), "0.00 s – 2.50 s");
 }
 
 #[test]

@@ -7,7 +7,7 @@ use eframe::egui::{Button, Color32, Response, RichText, TextStyle, Ui, vec2};
 
 use kymo_core::service::BuildProgress;
 
-use super::axis::{Clock, format_time};
+use super::axis::{Clock, decimals, format_time};
 use super::readout::Reading;
 
 /// A toggle chip: a pill with a short label, filled in the selection color while `on`,
@@ -91,6 +91,21 @@ pub fn time_decimals(rate: f64) -> usize {
     } else {
         0
     }
+}
+
+/// Decimals of the window's start and end in the status line, for a window `span` seconds
+/// long: tenths for 20 s, none from 100 s up, hundredths below 10 s.
+pub fn range_decimals(span: f64) -> usize {
+    decimals(span / 100.0)
+}
+
+/// The window from `start` to `end` on `clock`: "0:12.5 – 0:32.5".
+pub fn range_text(start: f64, end: f64, decimals: usize, clock: Clock) -> String {
+    format!(
+        "{} – {}",
+        format_time(start, decimals, clock),
+        format_time(end, decimals, clock)
+    )
 }
 
 /// "12.345 s · Fp1 −12.34 µV": the time under the pointer, and the channel's reading

@@ -720,6 +720,35 @@ fn the_dc_chip_shows_and_toggles_dc_removal() {
     harness.get_by_label_contains(tip);
 }
 
+/// The status line shows the window's start and end, which follow scrolling, and a click
+/// on them opens Go to Time.
+#[test]
+fn the_status_line_range_shows_the_window_and_opens_go_to_time() {
+    use egui::accesskit::Role;
+    // A minute, 20 s in view.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.get_by_role_and_label(Role::Button, "0:00.0 – 0:20.0");
+    harness.key_press_modifiers(command(), Key::G);
+    harness.run_steps(2);
+    harness.get_by_role(Role::TextInput).type_text("12.5");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert!(!harness.state().go_to_open());
+    harness
+        .get_by_role_and_label(Role::Button, "0:12.5 – 0:32.5")
+        .click();
+    harness.run_steps(2);
+    assert!(harness.state().go_to_open());
+    let field = harness
+        .get_by_role(Role::TextInput)
+        .value()
+        .unwrap_or_default();
+    assert_eq!(field, "12.5 s");
+}
+
 /// Remove DC is a setting, as the rule for settings has it: the chip and ⌘D change it,
 /// Settings shows it, and the recording opened next and the stored settings keep it.
 #[test]

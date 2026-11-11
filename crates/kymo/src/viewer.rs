@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
-    StrokeKind, TextStyle, Ui, pos2, vec2,
+    self, Align, Align2, Button, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense,
+    Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 use kymo_core::annotation_file;
 use kymo_core::service::TileService;
@@ -18,7 +18,7 @@ use kymo_core::{AnnotationData, AnnotationId, ChannelId, ChannelKind, GridId, Or
 use crate::action::Action;
 use crate::annotations::{self, Legend, Marks};
 use crate::annotations::{AnnotationColor, AnnotationColors};
-use crate::document::{Document, Summary};
+use crate::document::{Document, Summary, format_duration};
 use crate::history::{self, Change, History};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
@@ -151,6 +151,10 @@ pub struct StatusLine {
     pub left: String,
     /// The overview's build progress, or its error.
     pub right: String,
+    /// The window's start and end, a click away from Go to Time, and the same with both at
+    /// the recording's end: the widest it gets at these decimals, whose width it keeps.
+    pub range: String,
+    pub widest_range: String,
 }
 
 pub struct Viewer {
@@ -709,6 +713,7 @@ impl Viewer {
         }
         let mut relabel = None;
         let mut toggle_dc = false;
+        let mut go_to = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(color) = self.status.swatch {
@@ -728,6 +733,7 @@ impl Viewer {
                             "Remove DC{shortcut}: center each trace on its mean over the window"
                         ));
                     toggle_dc = dc.clicked();
+                    go_to = self.range_button(ui, keymap).clicked();
                     ui.label(&self.status.right);
                 });
             });
@@ -780,7 +786,36 @@ impl Viewer {
             self.status = status;
             ui.ctx().request_repaint();
         }
-        toggle_dc.then_some(Action::ToggleDc)
+        if go_to {
+            Some(Action::GoToTime)
+        } else {
+            toggle_dc.then_some(Action::ToggleDc)
+        }
+    }
+
+    /// The window's start and end in the status line: a button that looks like text until
+    /// hovered, as an unselected Bad in the channel list does, and opens Go to Time. It keeps
+    /// the width of the widest range at its decimals, so scrolling doesn't shift its
+    /// neighbors (the digits are all one width).
+    fn range_button(&self, ui: &mut Ui, keymap: &Keymap) -> egui::Response {
+        let font = TextStyle::Body.resolve(ui.style());
+        let color = ui.visuals().text_color();
+        let widest = ui
+            .painter()
+            .layout_no_wrap(self.status.widest_range.clone(), font, color)
+            .size()
+            .x;
+        let width = widest + 2.0 * ui.spacing().button_padding.x;
+        let shortcut = Keymap::chord(Action::GoToTime)
+            .map(|c| format!(" ({})", c.display(keymap.platform())))
+            .unwrap_or_default();
+        let span = format_duration(self.view.span());
+        ui.add(
+            Button::new(&self.status.range)
+                .frame_when_inactive(false)
+                .min_size(vec2(width, 0.0)),
+        )
+        .on_hover_text(format!("{span} shown. Go to Time…{shortcut}"))
     }
 
     /// Brings the stim annotations up to the build and the rule, and the legend with them.
@@ -854,10 +889,16 @@ impl Viewer {
             .join(" · ");
         // The overview's build while it runs, or why it stopped; nothing once it is done.
         let right = status::build_text(&service.progress()).unwrap_or_default();
+        let time = self.view.time();
+        let decimals = status::range_decimals(self.view.span());
+        let clock = Clock::for_end(self.view.duration());
+        let end = self.view.duration();
         StatusLine {
             swatch,
             left,
             right,
+            range: status::range_text(time.start, time.end, decimals, clock),
+            widest_range: status::range_text(end, end, decimals, clock),
         }
     }
 
