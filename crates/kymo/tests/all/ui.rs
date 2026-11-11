@@ -59,24 +59,29 @@ const SIZE: egui::Vec2 = egui::vec2(1200.0, 700.0);
 
 /// The window opening `path`, without a GPU: egui skips the trace renderer's callback.
 fn window(path: &Path) -> Harness<'static, KymoApp> {
-    window_from(Harness::builder(), path)
+    window_from(Harness::builder().with_size(SIZE), path)
 }
 
 /// [`window`], its screenshots rendered on the shared GPU (see [`shared_gpu`]) rather than
 /// on a device kittest creates for it; on kittest's where there is no shared one.
 fn screenshot_window(path: &Path) -> Harness<'static, KymoApp> {
+    screenshot_window_sized(path, SIZE)
+}
+
+/// [`screenshot_window`] of `size`.
+fn screenshot_window_sized(path: &Path, size: egui::Vec2) -> Harness<'static, KymoApp> {
     let mut builder = Harness::builder();
     if let Some(gpu) = shared_gpu() {
         builder = builder.wgpu_setup(egui_wgpu::WgpuSetup::Existing(gpu.clone()));
     }
-    window_from(builder, path)
+    window_from(builder.with_size(size), path)
 }
 
 fn window_from(
     builder: egui_kittest::HarnessBuilder<KymoApp>,
     path: &Path,
 ) -> Harness<'static, KymoApp> {
-    builder.with_size(SIZE).build_eframe(|cc| {
+    builder.build_eframe(|cc| {
         KymoApp::new(
             &cc.egui_ctx,
             Gpu::none("no GPU in this test"),
@@ -713,6 +718,52 @@ fn the_dc_chip_shows_and_toggles_dc_removal() {
         harness.step();
     }
     harness.get_by_label_contains(tip);
+}
+
+/// Remove DC is a setting, as the rule for settings has it: the chip and ⌘D change it,
+/// Settings shows it, and the recording opened next and the stored settings keep it.
+#[test]
+fn remove_dc_is_a_setting_kept_for_the_next_recording() {
+    use egui::accesskit::{Role, Toggled};
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert!(harness.state().settings().remove_dc);
+    harness
+        .get_by_role_and_label(Role::Button, kymo::viewer::DC_CHIP)
+        .click();
+    harness.run_steps(2);
+    assert!(!harness.state().settings().remove_dc);
+    assert!(!viewer(&harness).view().dc_removed());
+    // The next recording opens with it off.
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open(&ctx, file.path().to_owned());
+    ready(&mut harness);
+    assert!(!viewer(&harness).view().dc_removed());
+    // Settings shows it beside the other trace settings, and turns it back on.
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(2);
+    let checkbox = |h: &Harness<'_, KymoApp>, label: &str| {
+        let node = h.get_by_role_and_label(Role::CheckBox, label);
+        node.accesskit_node().toggled() == Some(Toggled::True)
+    };
+    assert!(!checkbox(&harness, "Remove DC"));
+    assert!(checkbox(&harness, "Scale Bars"));
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Remove DC")
+        .click();
+    harness.run_steps(2);
+    assert!(harness.state().settings().remove_dc);
+    assert!(viewer(&harness).view().dc_removed());
+    // ⌘D changes the setting too, which the stored settings keep.
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.key_press_modifiers(command(), Key::D);
+    harness.run_steps(2);
+    assert!(!harness.state().settings().remove_dc);
+    let mut storage = Memory::default();
+    eframe::App::save(harness.state_mut(), &mut storage);
+    assert!(!Settings::load(Some(&storage)).remove_dc);
 }
 
 /// Turns DC removal off, after checking that it is on, as recordings open.
@@ -2815,7 +2866,9 @@ fn the_theme_follows_the_setting_and_the_system() {
     use egui::accesskit::Role;
     use egui::{SystemTheme, Theme as Look};
     let file = without_triggers("edf+d-mixed");
-    let mut harness = screenshot_window(file.path());
+    // Tall enough for legend rows below the Settings window.
+    let size = egui::vec2(SIZE.x, 900.0);
+    let mut harness = screenshot_window_sized(file.path(), size);
     harness.input_mut().system_theme = Some(Look::Light);
     ready(&mut harness);
     // What the window shows: egui's theme, the trace area's background (its most common
@@ -2852,7 +2905,7 @@ fn the_theme_follows_the_setting_and_the_system() {
             .iter()
             .filter_map(|d| {
                 let rect = harness.query_by_label(&format!("Color of {d}"))?.rect();
-                (rect.top() > settings_bottom && rect.bottom() < SIZE.y - 60.0)
+                (rect.top() > settings_bottom && rect.bottom() < size.y - 60.0)
                     .then(|| (d.clone(), rect.center()))
             })
             .next()

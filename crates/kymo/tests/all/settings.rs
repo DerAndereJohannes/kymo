@@ -62,6 +62,7 @@ fn saved_settings_read_back() {
         default_window_s: 7.5,
         antialias: true,
         scale_bars: false,
+        remove_dc: false,
         auto_scale_on_open: true,
         type_colors: colors(&[
             (ChannelKind::Eog, Color32::from_rgb(10, 200, 30)),
@@ -93,6 +94,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         default_window_s: 5.0,
         antialias: true,
         scale_bars: false,
+        remove_dc: false,
         auto_scale_on_open: true,
         type_colors: colors(&[(ChannelKind::Grad, Color32::from_rgb(255, 0, 128))]),
         theme: Theme::Light,
@@ -131,6 +133,13 @@ fn unreadable_values_are_defaults_and_others_kept() {
             "kymo.scale_bars",
             Settings {
                 scale_bars: defaults.scale_bars,
+                ..saved
+            },
+        ),
+        (
+            "kymo.remove_dc",
+            Settings {
+                remove_dc: defaults.remove_dc,
                 ..saved
             },
         ),
@@ -177,6 +186,7 @@ fn values_out_of_range_are_clamped() {
         default_window_s: 1e9,
         antialias: false,
         scale_bars: true,
+        remove_dc: true,
         auto_scale_on_open: false,
         type_colors: [None; KINDS.len()],
         theme: Theme::System,

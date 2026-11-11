@@ -324,9 +324,12 @@ fn changes_the_number_of_rows_between_one_and_all() {
 #[test]
 fn toggles_dc_removal_and_bad_channels() {
     let (_, mut view) = state();
-    act(&mut view, Action::ToggleDc);
+    // The app's setting decides; the action changes the setting, not the view.
+    assert!(!view.apply(Action::ToggleDc));
+    assert!(view.dc_removed());
+    view.set_dc_removed(false);
     assert!(!view.dc_removed());
-    act(&mut view, Action::ToggleDc);
+    view.set_dc_removed(true);
     assert!(view.dc_removed());
 
     view.toggle_bad(ChannelId(2));
@@ -717,9 +720,9 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     assert!(windows.iter().all(|&(c, _)| c != status));
     assert_eq!(windows.len(), view.visible_channels().len() - 1);
     // Off and on again: asked for afresh.
-    act(&mut view, Action::ToggleDc);
+    view.set_dc_removed(false);
     assert_eq!(view.dc_request(&rec), None);
-    act(&mut view, Action::ToggleDc);
+    view.set_dc_removed(true);
     assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
 }
 

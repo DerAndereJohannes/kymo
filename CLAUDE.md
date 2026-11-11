@@ -40,7 +40,7 @@ docs/phase5-plan.md  plan for phase 5 (display filters)
 - Bucket boundaries are fixed in sample-index space (global tile grid), not relative to the view start.
 - The UI thread never blocks on disk or computation; missing tiles fall back to coarser ones.
 - Physical value = digital × gain + offset; EDF/BDF offsets can be huge.
-- DC removal is a toggle, on by default (off until Nov 11, 2026).
+- DC removal is a setting (in Settings, remembered), on by default (off until Nov 11, 2026).
 - Default initial view: ~20 s from the start of the recording.
 
 ## Conventions

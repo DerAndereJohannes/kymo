@@ -455,6 +455,11 @@ impl Viewer {
         self.antialias = on;
     }
 
+    /// Whether traces are centered on their window means (DC removal), from now on.
+    pub fn set_remove_dc(&mut self, on: bool) {
+        self.view.set_dc_removed(on);
+    }
+
     /// Whether scale bars are drawn from the next frame on.
     pub fn set_scale_bars(&mut self, on: bool) {
         self.show_scale_bars = on;
@@ -683,7 +688,10 @@ impl Viewer {
     }
 
     /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
-    /// colors picked in `annotation_colors` (which the legend changes).
+    /// colors picked in `annotation_colors` (which the legend changes). Returns an action
+    /// one of its controls asked for that the app performs, as it changes a setting: the
+    /// DC chip's [`Action::ToggleDc`].
+    #[must_use]
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -691,7 +699,7 @@ impl Viewer {
         keymap: &Keymap,
         sidebar: bool,
         annotation_colors: &mut AnnotationColors,
-    ) {
+    ) -> Option<Action> {
         self.sync_stim(ui.ctx());
         self.legend.apply_colors(annotation_colors);
         if let Some(id) = self.selected
@@ -762,9 +770,6 @@ impl Viewer {
                 self.relabel(id, description);
             }
         }
-        if toggle_dc {
-            self.apply(Action::ToggleDc);
-        }
         egui::CentralPanel::default().show(ui, |ui| self.trace_region(ui, gpu, keymap));
         self.sync_draft(ui.ctx());
 
@@ -775,6 +780,7 @@ impl Viewer {
             self.status = status;
             ui.ctx().request_repaint();
         }
+        toggle_dc.then_some(Action::ToggleDc)
     }
 
     /// Brings the stim annotations up to the build and the rule, and the legend with them.

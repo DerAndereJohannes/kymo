@@ -293,6 +293,7 @@ fn grays_out_what_needs_a_recording() {
             Action::Quit,
             Action::Settings,
             Action::Shortcuts,
+            Action::ToggleDc,
             Action::ToggleScaleBars,
             Action::ToggleAntialias,
         ]

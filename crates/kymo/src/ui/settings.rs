@@ -51,6 +51,14 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     ui.checkbox(&mut settings.antialias, "Anti-Aliased");
                     ui.end_row();
                     hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
+                    ui.label("");
+                    ui.checkbox(&mut settings.remove_dc, "Remove DC");
+                    ui.end_row();
+                    hint(ui, "Center each trace on its mean over the window.");
+                    ui.label("");
+                    ui.checkbox(&mut settings.scale_bars, "Scale Bars");
+                    ui.end_row();
+                    hint(ui, "A bar per channel type shows how much a row spans.");
                     row(
                         ui,
                         "Default Window",

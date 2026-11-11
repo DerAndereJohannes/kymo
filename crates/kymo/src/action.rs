@@ -259,6 +259,7 @@ impl Action {
                 | Action::Settings
                 | Action::Shortcuts
                 | Action::About
+                | Action::ToggleDc
                 | Action::ToggleScaleBars
                 | Action::ToggleAntialias
         )

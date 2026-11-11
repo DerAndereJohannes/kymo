@@ -236,6 +236,12 @@ impl ViewState {
         self.dc
     }
 
+    /// Turns DC removal on or off; the app's setting decides, as [`Action::ToggleDc`]
+    /// changes the setting, not the view.
+    pub fn set_dc_removed(&mut self, on: bool) {
+        self.dc = on;
+    }
+
     pub fn is_bad(&self, channel: ChannelId) -> bool {
         self.bad.contains(&channel)
     }
@@ -302,8 +308,8 @@ impl ViewState {
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
             Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
-            Action::ToggleDc => self.dc = !self.dc,
-            Action::Open
+            Action::ToggleDc
+            | Action::Open
             | Action::GoToTime
             | Action::OpenRecent(_)
             | Action::ClearRecent
