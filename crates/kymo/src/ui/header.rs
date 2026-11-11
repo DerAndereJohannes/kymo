@@ -511,14 +511,14 @@ fn channel_list(
                 if shown {
                     let response = response
                         .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_text("Show in traces");
+                        .on_hover_text("Show in Traces");
                     if response.clicked() {
                         view.scroll_to(id);
                     }
                 }
 
                 let response = ui.add(Button::selectable(bad, {
-                    let text = RichText::new("bad").small();
+                    let text = RichText::new("Bad").small();
                     if bad { text } else { text.weak() }
                 }));
                 accessible_label(ui, &response, format!("{name} bad"));
@@ -554,9 +554,9 @@ pub fn kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Ecg => "ECG",
         ChannelKind::Emg => "EMG",
         ChannelKind::Stim => "Stim",
-        ChannelKind::Mag => "MEG mag",
-        ChannelKind::Grad => "MEG grad",
-        ChannelKind::RefMeg => "MEG ref",
+        ChannelKind::Mag => "MEG Mag",
+        ChannelKind::Grad => "MEG Grad",
+        ChannelKind::RefMeg => "MEG Ref",
         ChannelKind::Seeg => "sEEG",
         ChannelKind::Ecog => "ECoG",
         ChannelKind::Dbs => "DBS",

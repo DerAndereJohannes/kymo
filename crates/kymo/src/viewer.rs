@@ -1127,9 +1127,9 @@ impl Viewer {
         }
         if let Some(channel) = hovered {
             let tip = if self.view.is_bad(channel) {
-                "Mark as good"
+                "Mark as Good"
             } else {
-                "Mark as bad"
+                "Mark as Bad"
             };
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             // At the pointer: the names' area is the whole column.

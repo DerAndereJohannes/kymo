@@ -45,7 +45,7 @@ pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField)
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
-            ui.label("Time from the start of the recording:");
+            ui.label("Time from the Start of the Recording:");
             let output = TextEdit::singleline(&mut field.text)
                 .hint_text(EXAMPLES)
                 .desired_width(220.0)

@@ -79,32 +79,32 @@ fn gestures(platform: Platform) -> Vec<Row> {
     let row = |action, keys: String| Row { keys, action };
     vec![
         row(
-            "Pan time",
+            "Pan Time",
             format!("Scroll sideways, {shift} + wheel, or drag the traces"),
         ),
-        row("Scroll channels", "Scroll up or down".into()),
+        row("Scroll Channels", "Scroll up or down".into()),
         row(
-            "Zoom time around the pointer",
+            "Zoom Time Around the Pointer",
             format!("Pinch or {command} + scroll"),
         ),
         row(
-            "Scale amplitudes",
+            "Scale Amplitudes",
             format!("{alt} + pinch or {alt} + scroll"),
         ),
         row(
-            "Create an annotation",
+            "Create an Annotation",
             "Drag the traces in annotation mode".into(),
         ),
-        row("Select an annotation", "Click it in annotation mode".into()),
-        row("Move the selected annotation", "Drag it".into()),
+        row("Select an Annotation", "Click it in annotation mode".into()),
+        row("Move the Selected Annotation", "Drag it".into()),
         row(
-            "Resize the selected annotation",
+            "Resize the Selected Annotation",
             "Drag one of its edges".into(),
         ),
         row(
-            "Mark a channel bad or good",
+            "Mark a Channel Bad or Good",
             "Click its name beside the traces".into(),
         ),
-        row("Go to a channel", "Click its name in the sidebar".into()),
+        row("Go to a Channel", "Click its name in the sidebar".into()),
     ]
 }

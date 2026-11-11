@@ -48,12 +48,12 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                         "Click a channel type's color to change it. Bad channels stay gray.",
                     );
                     ui.label("Traces");
-                    ui.checkbox(&mut settings.antialias, "Anti-aliased");
+                    ui.checkbox(&mut settings.antialias, "Anti-Aliased");
                     ui.end_row();
                     hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
                     row(
                         ui,
-                        "Default window",
+                        "Default Window",
                         "Seconds shown when a recording opens.",
                         DragValue::new(&mut settings.default_window_s)
                             .range(DEFAULT_WINDOW_S)
@@ -62,7 +62,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                             .suffix(" s"),
                     );
                     ui.label("Scale");
-                    ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on opening");
+                    ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on Opening");
                     ui.end_row();
                     hint(
                         ui,
@@ -70,7 +70,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     );
                     row(
                         ui,
-                        "Tile cache",
+                        "Tile Cache",
                         "Memory for tiles in RAM. A smaller cache frees memory at once.",
                         DragValue::new(&mut settings.tile_cache_mb)
                             .range(TILE_CACHE_MB)
@@ -79,7 +79,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     );
                     row(
                         ui,
-                        "GPU memory",
+                        "GPU Memory",
                         "Memory for tiles on the graphics card.",
                         DragValue::new(&mut settings.gpu_memory_mb)
                             .range(GPU_MEMORY_MB)
@@ -104,10 +104,10 @@ const LABELS: [&str; 7] = [
     "Theme",
     "Colors",
     "Traces",
-    "Default window",
+    "Default Window",
     "Scale",
-    "Tile cache",
-    "GPU memory",
+    "Tile Cache",
+    "GPU Memory",
 ];
 
 fn text_width(ctx: &egui::Context, text: &str) -> f32 {

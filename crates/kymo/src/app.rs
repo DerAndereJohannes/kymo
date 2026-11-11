@@ -634,7 +634,7 @@ impl KymoApp {
             files = files.set_directory(dir);
         }
         let save = |files: rfd::FileDialog, title: &str, suggested: &Path| {
-            let mut files = files.set_title(title).add_filter("Events table", &["tsv"]);
+            let mut files = files.set_title(title).add_filter("Events Table", &["tsv"]);
             if let Some(dir) = suggested.parent() {
                 files = files.set_directory(dir);
             }
@@ -645,10 +645,10 @@ impl KymoApp {
         };
         match dialog {
             Dialog::Open => files
-                .set_title("Open a recording")
+                .set_title("Open a Recording")
                 // The first filter is the one selected when the dialog opens.
                 .add_filter(
-                    "All supported file types",
+                    "All Supported File Types",
                     &[
                         "edf", "bdf", "vhdr", "set", "gdf", "EDF", "BDF", "VHDR", "SET", "GDF",
                     ],
@@ -658,13 +658,13 @@ impl KymoApp {
                 .add_filter("EDF", &["edf", "EDF"])
                 .add_filter("EEGLAB", &["set", "SET"])
                 .add_filter("GDF", &["gdf", "GDF"])
-                .add_filter("All files", &["*"])
+                .add_filter("All Files", &["*"])
                 .pick_file(),
-            Dialog::Save(suggested) => save(files, "Save annotations", &suggested),
-            Dialog::Export(suggested) => save(files, "Export shown annotations", &suggested),
+            Dialog::Save(suggested) => save(files, "Save Annotations", &suggested),
+            Dialog::Export(suggested) => save(files, "Export Shown Annotations", &suggested),
             Dialog::Load => files
-                .set_title("Load annotations")
-                .add_filter("Events table or MNE CSV", &["tsv", "csv", "TSV", "CSV"])
+                .set_title("Load Annotations")
+                .add_filter("Events Table or MNE CSV", &["tsv", "csv", "TSV", "CSV"])
                 .pick_file(),
         }
     }
@@ -687,7 +687,7 @@ impl KymoApp {
             self.load_annotations_from(&path);
         } else {
             self.notice = Some((
-                "Could not load the annotations".to_owned(),
+                "Could Not Load the Annotations".to_owned(),
                 format!(
                     "{} holds annotations. Open a recording first, then drop them on it.",
                     file_name(&path)
@@ -706,9 +706,9 @@ impl KymoApp {
         };
         let annotations = path.as_deref().is_some_and(|p| Format::of(p).is_some());
         let text = if annotations && self.viewer().is_some() {
-            "Drop to load the annotations"
+            "Drop to Load Annotations"
         } else {
-            "Drop to open"
+            "Drop to Open"
         };
         let screen = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -874,7 +874,7 @@ impl KymoApp {
             }
             Err(error) => {
                 self.notice = Some((
-                    "Could not save the annotations".into(),
+                    "Could Not Save the Annotations".into(),
                     format!("{}: {error}", path.display()),
                 ));
                 false
@@ -893,7 +893,7 @@ impl KymoApp {
             Ok(()) => true,
             Err(error) => {
                 self.notice = Some((
-                    "Could not export the annotations".into(),
+                    "Could Not Export the Annotations".into(),
                     format!("{}: {error}", path.display()),
                 ));
                 false
@@ -908,7 +908,7 @@ impl KymoApp {
             return false;
         };
         let name = file_name(path);
-        let fail = |text: String| Some(("Could not load the annotations".to_owned(), text));
+        let fail = |text: String| Some(("Could Not Load the Annotations".to_owned(), text));
         let Some(format) = Format::of(path) else {
             self.notice = fail(format!("{name} is not a .tsv or .csv file."));
             return false;
@@ -941,7 +941,7 @@ impl KymoApp {
             if !skipped.is_empty() {
                 text += &format!(" Skipped {}.", skipped.join(" and "));
             }
-            self.notice = Some(("Annotations loaded".into(), text));
+            self.notice = Some(("Annotations Loaded".into(), text));
         }
         true
     }

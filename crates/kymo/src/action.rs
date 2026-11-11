@@ -174,7 +174,7 @@ impl Action {
             Action::DefaultScale => "Default Scale",
             Action::ToggleDc => "Remove DC",
             Action::ToggleSidebar => "Show Sidebar",
-            Action::ToggleAntialias => "Anti-aliasing",
+            Action::ToggleAntialias => "Anti-Aliasing",
             Action::StimEveryChange => "Every Change",
             Action::StimFromZero => "From Zero",
             Action::StimIncreasing => "Increasing",

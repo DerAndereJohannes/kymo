@@ -466,7 +466,7 @@ fn menu_items_act_and_disabled_ones_dont() {
     assert!(viewer(&harness).view().dc_removed());
     choose(&mut harness, "Edit", "Settings");
     assert!(harness.state().settings_open());
-    harness.get_by_label("Tile cache");
+    harness.get_by_label("Tile Cache");
     // Its close button.
     harness.get_by_label("Close window").click();
     harness.run_steps(2);
@@ -497,7 +497,7 @@ fn checked(harness: &mut Harness<'_, KymoApp>, menu: &str, item: &str) -> bool {
 
 #[test]
 fn checkable_menu_items_show_a_checkbox_or_radio_button() {
-    // Show Sidebar on, Anti-aliasing off (the settings' default).
+    // Show Sidebar on, Anti-Aliasing off (the settings' default).
     let file = TempFile::preset("bdf+c-small");
     let mut harness = screenshot_window(file.path());
     ready(&mut harness);
@@ -513,7 +513,7 @@ fn checkable_menu_items_show_a_checkbox_or_radio_button() {
         )
     };
     let (sidebar_role, sidebar, sidebar_rect) = item(&harness, "Show Sidebar");
-    let (antialias_role, antialias, antialias_rect) = item(&harness, "Anti-aliasing");
+    let (antialias_role, antialias, antialias_rect) = item(&harness, "Anti-Aliasing");
     use egui::accesskit::{Role, Toggled};
     assert_eq!(
         (sidebar_role, sidebar),
@@ -1510,24 +1510,24 @@ fn settings_apply_at_once() {
     assert!(harness.state().settings_open());
 
     // The tile cache: the service's budget changes, and the cached tiles stay within it.
-    set_field(&mut harness, "Tile cache", 100.0);
+    set_field(&mut harness, "Tile Cache", 100.0);
     assert_eq!(harness.state().settings().tile_cache_mb, 100);
     let cache = viewer(&harness).cache();
     assert_eq!(cache.budget(), 100 << 20);
     assert!(cache.bytes() <= cache.budget());
     // Out of range: the nearest allowed value.
-    set_field(&mut harness, "Tile cache", 1.0);
+    set_field(&mut harness, "Tile Cache", 1.0);
     assert_eq!(viewer(&harness).cache().budget(), 64 << 20);
 
     // The default window: ⌘0 shows it from now on; the window on screen stays.
-    set_field(&mut harness, "Default window", 12.5);
+    set_field(&mut harness, "Default Window", 12.5);
     assert_eq!(viewer(&harness).view().time(), 0.0..20.0);
     harness.key_press(Key::ArrowRight);
     harness.key_press_modifiers(command(), Key::Num0);
     harness.step();
     assert_eq!(viewer(&harness).view().time(), 5.0..17.5);
 
-    set_field(&mut harness, "GPU memory", 512.0);
+    set_field(&mut harness, "GPU Memory", 512.0);
     assert_eq!(harness.state().settings().gpu_memory_mb, 512);
 
     // Restore Defaults, at once too.
@@ -1547,15 +1547,15 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     ready(&mut harness);
     // Off by default.
     assert!(!harness.state().settings().antialias);
-    assert!(!checked(&mut harness, "View", "Anti-aliasing"));
-    choose(&mut harness, "View", "Anti-aliasing");
+    assert!(!checked(&mut harness, "View", "Anti-Aliasing"));
+    choose(&mut harness, "View", "Anti-Aliasing");
     assert!(harness.state().settings().antialias);
-    assert!(checked(&mut harness, "View", "Anti-aliasing"));
+    assert!(checked(&mut harness, "View", "Anti-Aliasing"));
 
     // The Settings checkbox shows and changes the same setting.
     harness.key_press_modifiers(command(), Key::Comma);
     harness.step();
-    let checkbox = harness.get_by_label("Anti-aliased");
+    let checkbox = harness.get_by_label("Anti-Aliased");
     assert_eq!(
         checkbox.accesskit_node().toggled(),
         Some(egui::accesskit::Toggled::True)
@@ -1563,7 +1563,7 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     checkbox.click();
     harness.run_steps(2);
     assert!(!harness.state().settings().antialias);
-    assert!(!checked(&mut harness, "View", "Anti-aliasing"));
+    assert!(!checked(&mut harness, "View", "Anti-Aliasing"));
     harness.get_by_label("Close window").click();
     harness.run_steps(2);
 
@@ -1575,8 +1575,8 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     // A setting, so it can change without a recording.
     harness.key_press_modifiers(command(), Key::W);
     harness.step();
-    assert!(enabled(&mut harness, "View", "Anti-aliasing"));
-    choose(&mut harness, "View", "Anti-aliasing");
+    assert!(enabled(&mut harness, "View", "Anti-Aliasing"));
+    choose(&mut harness, "View", "Anti-Aliasing");
     assert!(!harness.state().settings().antialias);
 }
 
@@ -1652,7 +1652,7 @@ fn auto_scale_fits_the_window_from_the_menu_keys_and_setting() {
     // The Settings checkbox shows and changes it.
     harness.key_press_modifiers(command(), Key::Comma);
     harness.step();
-    harness.get_by_label("Automatic on opening").click();
+    harness.get_by_label("Automatic on Opening").click();
     harness.run_steps(2);
     assert!(!harness.state().settings().auto_scale_on_open);
 }
@@ -1876,8 +1876,8 @@ fn settings_are_kept_between_runs() {
         ready(&mut harness);
         harness.key_press_modifiers(command(), Key::Comma);
         harness.step();
-        set_field(&mut harness, "Default window", 8.0);
-        set_field(&mut harness, "Tile cache", 300.0);
+        set_field(&mut harness, "Default Window", 8.0);
+        set_field(&mut harness, "Tile Cache", 300.0);
         eframe::App::save(harness.state_mut(), &mut storage);
     }
 
@@ -1903,11 +1903,11 @@ fn the_shortcut_overview_and_about_open() {
     harness.step();
     assert!(harness.state().shortcuts_open());
     harness.get_by_label("Trackpad and Mouse");
-    harness.get_by_label("Scroll channels");
+    harness.get_by_label("Scroll Channels");
     harness.key_press_modifiers(command(), Key::Slash);
     harness.step();
     assert!(!harness.state().shortcuts_open());
-    assert!(harness.query_by_label("Scroll channels").is_none());
+    assert!(harness.query_by_label("Scroll Channels").is_none());
 
     choose(&mut harness, "Help", "About Kymo");
     assert!(harness.state().about_open());
@@ -1937,7 +1937,7 @@ fn esc_and_close_close_the_window_in_front() {
     // A click brings one to the front.
     press(&mut harness, command(), Key::Slash);
     press(&mut harness, command(), Key::Comma);
-    harness.get_by_label("Pan time").click();
+    harness.get_by_label("Pan Time").click();
     harness.run_steps(2);
     press(&mut harness, Modifiers::NONE, Key::Escape);
     assert_eq!(open(&harness), (true, false));
@@ -2634,7 +2634,7 @@ fn the_gpu_budget_follows_the_settings() {
     assert_eq!(gpu(&harness), Some(256 << 20));
     harness.key_press_modifiers(command(), Key::Comma);
     harness.step();
-    set_field(&mut harness, "GPU memory", 96.0);
+    set_field(&mut harness, "GPU Memory", 96.0);
     assert_eq!(gpu(&harness), Some(96 << 20));
     // The traces stay drawn.
     assert!(viewer(&harness).complete());
@@ -3895,7 +3895,7 @@ fn saved_annotations_load_into_another_window() {
     assert!(harness.state_mut().load_annotations_from(&csv));
     assert_eq!(viewer_spans(&harness), [(10.5, 11.5, "from MNE".into())]);
     let (title, text) = harness.state().notice().unwrap();
-    assert_eq!(title, "Annotations loaded");
+    assert_eq!(title, "Annotations Loaded");
     assert!(
         text.contains("Loaded 1 annotation from mne.csv. Skipped 1 outside"),
         "{text}"
@@ -4089,7 +4089,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
     // Top to bottom, the types of edf+c-kinds: brain signals, other body signals, stim;
     // none it lacks.
     let present = [
-        "MEG mag", "MEG grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
+        "MEG Mag", "MEG Grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
         "Stim",
     ];
     let tops: Vec<f32> = present
@@ -4102,7 +4102,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
         })
         .collect();
     assert!(tops.is_sorted_by(|a, b| a < b), "{tops:?}");
-    for absent in ["MEG ref", "Misc"] {
+    for absent in ["MEG Ref", "Misc"] {
         assert!(
             harness
                 .query_by_role_and_label(Role::CheckBox, absent)
@@ -4132,8 +4132,8 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
     harness.key_press_modifiers(command(), Key::Comma);
     harness.run_steps(2);
     let all = [
-        "MEG mag", "MEG grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
-        "MEG ref", "Stim", "Misc",
+        "MEG Mag", "MEG Grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
+        "MEG Ref", "Stim", "Misc",
     ];
     assert_eq!(all.len(), KINDS.len());
     let swatches: Vec<egui::Rect> = all
@@ -4170,10 +4170,10 @@ fn settings_put_appearance_first_and_memory_last() {
         "Theme",
         "Colors",
         "Traces",
-        "Default window",
+        "Default Window",
         "Scale",
-        "Tile cache",
-        "GPU memory",
+        "Tile Cache",
+        "GPU Memory",
     ]
     .iter()
     .map(|label| {
