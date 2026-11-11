@@ -35,8 +35,8 @@ const EXAMPLES: &str = "90, 1:30 or 1:02:03.5";
 const DESCRIPTION: &str =
     "Seconds (90 or 12.5), minutes:seconds (1:30), or hours:minutes:seconds (1:02:03.5).";
 
-/// Width of the field, and of the description below it.
-const WIDTH: f32 = 220.0;
+/// Width of the window's content: the field's, and the description's below it.
+const WIDTH: f32 = 300.0;
 
 /// The Go to Time window, while `open`. Returns the time asked for, in seconds from the
 /// start of the recording, once Enter or Go is pressed with a time in the field (which
@@ -44,6 +44,11 @@ const WIDTH: f32 = 220.0;
 pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField) -> Option<f64> {
     let mut asked = None;
     let mut close = false;
+    let width = WIDTH
+        + egui::Frame::window(&ctx.global_style())
+            .total_margin()
+            .sum()
+            .x;
     egui::Window::new(Action::GoToTime.label().trim_end_matches('…'))
         .id(Overlay::GoToTime.id())
         .open(open)
@@ -51,13 +56,16 @@ pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
+        // Exactly as wide as the content plus the frame; egui's default width is wider.
+        .default_width(width)
+        .min_width(width)
+        .max_width(width)
         .show(ctx, |ui| {
-            // The description wraps at the field's width rather than widening the window.
-            ui.set_max_width(WIDTH);
+            ui.set_width(WIDTH);
             ui.label("Time from the Start of the Recording:");
             let output = TextEdit::singleline(&mut field.text)
                 .hint_text(EXAMPLES)
-                .desired_width(WIDTH)
+                .desired_width(f32::INFINITY)
                 .show(ui);
             let response = output.response;
             if field.focus {
