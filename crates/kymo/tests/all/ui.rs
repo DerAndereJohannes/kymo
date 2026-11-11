@@ -982,6 +982,33 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     harness.get_by_label_contains(&exact);
 }
 
+/// The shortcut overview's rows end where its scroll bar starts, and the scroll bar sits at
+/// the window's right border, not inside it.
+#[test]
+fn the_shortcut_overview_scroll_bar_sits_at_the_border() {
+    let file = TempFile::new("bdf");
+    let mut harness = window(file.path());
+    step_until(&mut harness, "the error", |app| app.error().is_some());
+    harness.key_press_modifiers(command(), Key::Slash);
+    harness.step();
+    harness.step();
+    let window = harness
+        .ctx
+        .memory(|m| m.area_rect(kymo::ui::Overlay::Shortcuts.id()))
+        .unwrap();
+    // The keys are right-aligned in their rows, inset by the rows' padding of 6 points.
+    let keys = harness.get_by_label("Scroll up or down").rect();
+    let scroll = harness.ctx.global_style().spacing.scroll;
+    let room = scroll.bar_width + scroll.bar_inner_margin;
+    let stroke = harness.ctx.global_style().visuals.window_stroke.width;
+    let right = window.right() - stroke;
+    assert!(
+        (keys.right() + 6.0 + room - right).abs() <= 1.0,
+        "keys end at {}, the window at {right}, room {room}",
+        keys.right()
+    );
+}
+
 /// The reader's warnings show as one line in the sidebar, "1 Warning", and in full, as
 /// sentences, only on hovering it.
 #[test]

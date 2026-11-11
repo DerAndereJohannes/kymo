@@ -188,8 +188,13 @@ fn check_item(
 /// any section, so all sections line up.
 pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform) {
     let sections = overview(platform);
+    // No margin at the right, so the scroll bar sits at the window's border, not inside it.
+    let style = ctx.global_style();
+    let margin = style.spacing.window_margin;
+    let frame = egui::Frame::window(&style).inner_margin(egui::Margin { right: 0, ..margin });
     egui::Window::new(Action::Shortcuts.label())
         .id(Overlay::Shortcuts.id())
+        .frame(frame)
         .open(open)
         .collapsible(false)
         .resizable([false, true])
