@@ -1,11 +1,36 @@
-//! The texts of the status line: build progress and the reading under the pointer.
+//! The status line: its texts (build progress and the reading under the pointer), and the
+//! toggle chips at its right for what changes the traces.
 
 use std::collections::HashMap;
+
+use eframe::egui::{Button, Color32, Response, RichText, TextStyle, Ui, vec2};
 
 use kymo_core::service::BuildProgress;
 
 use super::axis::{Clock, format_time};
 use super::readout::Reading;
+
+/// A toggle chip: a pill with a short label, filled in the selection color while `on`,
+/// outlined while off, announced as a toggle to screen readers. Lower than the status
+/// line's text, so the line keeps its height.
+pub fn chip(ui: &mut Ui, on: bool, label: &str) -> Response {
+    let height = ui.text_style_height(&TextStyle::Small) + 4.0;
+    let mut button = Button::new(RichText::new(label).small())
+        .selected(on)
+        .corner_radius(height / 2.0)
+        .min_size(vec2(height * 2.0, height));
+    if !on {
+        let outline = ui.visuals().widgets.noninteractive.bg_stroke;
+        button = button.fill(Color32::TRANSPARENT).stroke(outline);
+    }
+    // Narrower padding than buttons have, as befits a pill this low.
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = vec2(height / 2.5, 0.0);
+        ui.spacing_mut().interact_size.y = height;
+        ui.add(button)
+    })
+    .inner
+}
 
 /// Significant digits of values under the pointer.
 const DIGITS: i32 = 4;

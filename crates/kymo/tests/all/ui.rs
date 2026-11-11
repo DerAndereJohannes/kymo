@@ -678,6 +678,43 @@ fn dc_removal_centers_each_trace_on_its_window_mean() {
     assert!(!checked(&mut harness, "View", "Remove DC"));
 }
 
+/// The status line's DC chip shows whether DC removal is on, toggles it with a click, as
+/// ⌘D and the menu item do, and says what it does on hover.
+#[test]
+fn the_dc_chip_shows_and_toggles_dc_removal() {
+    use egui::accesskit::{Role, Toggled};
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let chip = |h: &Harness<'_, KymoApp>| {
+        let node = h.get_by_role_and_label(Role::Button, kymo::viewer::DC_CHIP);
+        node.accesskit_node().toggled() == Some(Toggled::True)
+    };
+    assert!(chip(&harness));
+    harness
+        .get_by_role_and_label(Role::Button, kymo::viewer::DC_CHIP)
+        .click();
+    harness.run_steps(2);
+    assert!(!viewer(&harness).view().dc_removed());
+    assert!(!chip(&harness));
+    assert!(!checked(&mut harness, "View", "Remove DC"));
+    // ⌘D turns it back on, and the chip follows.
+    harness.key_press_modifiers(command(), Key::D);
+    harness.run_steps(2);
+    assert!(viewer(&harness).view().dc_removed());
+    assert!(chip(&harness));
+    let rect = harness
+        .get_by_role_and_label(Role::Button, kymo::viewer::DC_CHIP)
+        .rect();
+    hover(&mut harness, rect.center());
+    let tip = "Remove DC";
+    let shown = Instant::now() + Duration::from_secs(2);
+    while harness.query_by_label_contains(tip).is_none() && Instant::now() < shown {
+        harness.step();
+    }
+    harness.get_by_label_contains(tip);
+}
+
 /// Turns DC removal off, after checking that it is on, as recordings open.
 fn dc_off(harness: &mut Harness<'_, KymoApp>) {
     assert!(viewer(harness).view().dc_removed(), "on as recordings open");

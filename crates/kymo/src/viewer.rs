@@ -55,6 +55,8 @@ const ANNOTATION_LABEL_GAP: f32 = 8.0;
 /// [`ANNOTATION_LABEL_PAD`], so the onset's line shows), and its opacity.
 const LABEL_PLATE_MARGIN: f32 = 2.0;
 const LABEL_PLATE_ALPHA: f32 = 0.85;
+/// The label of the status line's DC removal chip.
+pub const DC_CHIP: &str = "DC";
 /// A scale bar: its distance from the traces' right edge, its end caps' width, and the gap
 /// to its label, in points.
 const SCALE_BAR_INSET: f32 = 10.0;
@@ -698,6 +700,7 @@ impl Viewer {
             self.selected = None;
         }
         let mut relabel = None;
+        let mut toggle_dc = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(color) = self.status.swatch {
@@ -708,6 +711,15 @@ impl Viewer {
                 }
                 ui.label(&self.status.left);
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    // What changes the traces, always in sight and a click away.
+                    let shortcut = Keymap::chord(Action::ToggleDc)
+                        .map(|c| format!(" ({})", c.display(keymap.platform())))
+                        .unwrap_or_default();
+                    let dc =
+                        status::chip(ui, self.view.dc_removed(), DC_CHIP).on_hover_text(format!(
+                            "Remove DC{shortcut}: center each trace on its mean over the window"
+                        ));
+                    toggle_dc = dc.clicked();
                     ui.label(&self.status.right);
                 });
             });
@@ -749,6 +761,9 @@ impl Viewer {
             {
                 self.relabel(id, description);
             }
+        }
+        if toggle_dc {
+            self.apply(Action::ToggleDc);
         }
         egui::CentralPanel::default().show(ui, |ui| self.trace_region(ui, gpu, keymap));
         self.sync_draft(ui.ctx());
