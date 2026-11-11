@@ -997,7 +997,7 @@ fn the_shortcut_overview_scroll_bar_sits_at_the_border() {
         .memory(|m| m.area_rect(kymo::ui::Overlay::Shortcuts.id()))
         .unwrap();
     // The keys are right-aligned in their rows, inset by the rows' padding of 6 points.
-    let keys = harness.get_by_label("Scroll up or down").rect();
+    let keys = harness.get_by_label("Scroll Up or Down").rect();
     let scroll = harness.ctx.global_style().spacing.scroll;
     let room = scroll.bar_width + scroll.bar_inner_margin;
     let stroke = harness.ctx.global_style().visuals.window_stroke.width;

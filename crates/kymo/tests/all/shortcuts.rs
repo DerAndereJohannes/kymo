@@ -89,15 +89,15 @@ fn gestures_use_the_platform_modifiers() {
     };
     assert_eq!(
         keys(&mac, "Zoom Time Around the Pointer"),
-        "Pinch or ⌘ + scroll"
+        "Pinch or ⌘ + Scroll"
     );
-    assert_eq!(keys(&mac, "Scale Amplitudes"), "⌥ + pinch or ⌥ + scroll");
+    assert_eq!(keys(&mac, "Scale Amplitudes"), "⌥ + Pinch or ⌥ + Scroll");
     let linux = gestures(Platform::Linux);
     assert_eq!(
         keys(&linux, "Zoom Time Around the Pointer"),
-        "Pinch or Ctrl + scroll"
+        "Pinch or Ctrl + Scroll"
     );
-    assert!(keys(&linux, "Pan Time").contains("Shift + wheel"));
+    assert!(keys(&linux, "Pan Time").contains("Shift + Wheel"));
     // A row per action.
     for section in [mac, linux] {
         let mut actions: Vec<_> = section.rows.iter().map(|r| r.action).collect();
