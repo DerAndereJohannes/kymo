@@ -1,7 +1,7 @@
 //! Go to Time…: a small window with a field for a time from the start of the recording.
 
 use eframe::egui::text::{CCursor, CCursorRange};
-use eframe::egui::{self, Align2, Key, Label, RichText, TextEdit};
+use eframe::egui::{self, Align2, Key, TextEdit};
 
 use super::Overlay;
 use super::axis::parse_time;
@@ -31,7 +31,7 @@ impl GoToField {
 /// How times can be written, for the field's hint.
 const EXAMPLES: &str = "90, 1:30 or 1:02:03.5";
 
-/// How times can be written, below the field, in the style of the settings' hints.
+/// How times can be written, in a hint below the field.
 const DESCRIPTION: &str =
     "Seconds (90 or 12.5), minutes:seconds (1:30), or hours:minutes:seconds (1:02:03.5).";
 
@@ -83,10 +83,10 @@ pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField)
             let (enter, escape) =
                 ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
             close = response.lost_focus() && escape;
-            ui.add(Label::new(RichText::new(DESCRIPTION).weak()).wrap());
+            ui.add(super::hint(DESCRIPTION));
             if field.invalid {
                 let color = ui.visuals().error_fg_color;
-                ui.label(RichText::new("Not a time.").color(color));
+                ui.label(super::hint_text("Not a time.").color(color));
             }
             ui.add_space(4.0);
             // At the right, in a row of its own height (a layout of its own would take the

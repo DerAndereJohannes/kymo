@@ -14,6 +14,24 @@ pub mod scrollbar;
 pub mod settings;
 pub mod status;
 
+use eframe::egui::{Label, RichText};
+
+/// Size of hints, in points: below the body text's 14, so a hint reads as secondary to the
+/// label above it, as macOS and Windows write such text in dialogs.
+pub const HINT_SIZE: f32 = 12.0;
+
+/// A description below a field or setting: dimmed, smaller than the body text, upright, and
+/// wrapped at the width it has. Settings and Go to Time write theirs with it.
+pub fn hint(text: &str) -> Label {
+    Label::new(hint_text(text).weak()).wrap()
+}
+
+/// `text` at the hints' size, for what sits with them in another color (an error below a
+/// field).
+pub fn hint_text(text: &str) -> RichText {
+    RichText::new(text).size(HINT_SIZE)
+}
+
 /// The windows over the recording, which Esc and ⌘W close, the one in front first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Overlay {

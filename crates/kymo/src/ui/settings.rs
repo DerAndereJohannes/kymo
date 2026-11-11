@@ -1,6 +1,6 @@
 //! The Settings window.
 
-use eframe::egui::{self, DragValue, Label, RichText, Ui};
+use eframe::egui::{self, DragValue, Ui};
 
 use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use crate::ui::Overlay;
@@ -199,6 +199,6 @@ fn row(ui: &mut Ui, label: &str, hint: &str, value: DragValue<'_>) {
 /// A hint below a row, in the value's column.
 fn hint(ui: &mut Ui, text: &str) {
     ui.label("");
-    ui.add(Label::new(RichText::new(text).weak()).wrap());
+    ui.add(super::hint(text));
     ui.end_row();
 }
