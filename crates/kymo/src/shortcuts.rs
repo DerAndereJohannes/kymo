@@ -80,31 +80,31 @@ fn gestures(platform: Platform) -> Vec<Row> {
     vec![
         row(
             "Pan Time",
-            format!("Scroll Sideways, {shift} + Wheel, or Drag the Traces"),
+            format!("Scroll sideways, {shift} + wheel, or drag the traces"),
         ),
-        row("Scroll Channels", "Scroll Up or Down".into()),
+        row("Scroll Channels", "Scroll up or down".into()),
         row(
             "Zoom Time Around the Pointer",
-            format!("Pinch or {command} + Scroll"),
+            format!("Pinch or {command} + scroll"),
         ),
         row(
             "Scale Amplitudes",
-            format!("{alt} + Pinch or {alt} + Scroll"),
+            format!("{alt} + pinch or {alt} + scroll"),
         ),
         row(
             "Create an Annotation",
-            "Drag the Traces in Annotation Mode".into(),
+            "Drag the traces in annotation mode".into(),
         ),
-        row("Select an Annotation", "Click It in Annotation Mode".into()),
-        row("Move the Selected Annotation", "Drag It".into()),
+        row("Select an Annotation", "Click it in annotation mode".into()),
+        row("Move the Selected Annotation", "Drag it".into()),
         row(
             "Resize the Selected Annotation",
-            "Drag One of Its Edges".into(),
+            "Drag one of its edges".into(),
         ),
         row(
             "Mark a Channel Bad or Good",
-            "Click Its Name Beside the Traces".into(),
+            "Click its name beside the traces".into(),
         ),
-        row("Go to a Channel", "Click Its Name in the Sidebar".into()),
+        row("Go to a Channel", "Click its name in the sidebar".into()),
     ]
 }
