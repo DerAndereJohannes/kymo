@@ -1,7 +1,7 @@
 //! Go to Time…: a small window with a field for a time from the start of the recording.
 
 use eframe::egui::text::{CCursor, CCursorRange};
-use eframe::egui::{self, Align2, Key, RichText, TextEdit};
+use eframe::egui::{self, Align2, Key, Label, RichText, TextEdit};
 
 use super::Overlay;
 use super::axis::parse_time;
@@ -28,8 +28,15 @@ impl GoToField {
     }
 }
 
-/// How times can be written, for the field's hint and its error.
+/// How times can be written, for the field's hint.
 const EXAMPLES: &str = "90, 1:30 or 1:02:03.5";
+
+/// How times can be written, below the field, in the style of the settings' hints.
+const DESCRIPTION: &str =
+    "Seconds (90 or 12.5), minutes:seconds (1:30), or hours:minutes:seconds (1:02:03.5).";
+
+/// Width of the field, and of the description below it.
+const WIDTH: f32 = 220.0;
 
 /// The Go to Time window, while `open`. Returns the time asked for, in seconds from the
 /// start of the recording, once Enter or Go is pressed with a time in the field (which
@@ -45,10 +52,12 @@ pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField)
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
+            // The description wraps at the field's width rather than widening the window.
+            ui.set_max_width(WIDTH);
             ui.label("Time from the Start of the Recording:");
             let output = TextEdit::singleline(&mut field.text)
                 .hint_text(EXAMPLES)
-                .desired_width(220.0)
+                .desired_width(WIDTH)
                 .show(ui);
             let response = output.response;
             if field.focus {
@@ -66,9 +75,10 @@ pub fn go_to_window(ctx: &egui::Context, open: &mut bool, field: &mut GoToField)
             let (enter, escape) =
                 ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
             close = response.lost_focus() && escape;
+            ui.add(Label::new(RichText::new(DESCRIPTION).weak()).wrap());
             if field.invalid {
                 let color = ui.visuals().error_fg_color;
-                ui.label(RichText::new(format!("Write a time as {EXAMPLES}.")).color(color));
+                ui.label(RichText::new("Not a time.").color(color));
             }
             ui.add_space(4.0);
             // At the right, in a row of its own height (a layout of its own would take the

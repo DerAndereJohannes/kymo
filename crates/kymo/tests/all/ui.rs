@@ -4549,14 +4549,16 @@ fn go_to_time_moves_the_window_there() {
     assert!(!harness.state().go_to_open());
     assert_eq!(viewer(&harness).view().start(), 25.0);
 
-    // Something that isn't a time says how to write one, and stays.
+    // How to write a time is described below the field; something that isn't a time says
+    // so, and stays.
     press(&mut harness, command(), Key::G);
+    harness.get_by_label_contains("minutes:seconds (1:30)");
     assert_eq!(field(&harness), "25 s");
     harness.get_by_role(Role::TextInput).type_text("soon");
     harness.run_steps(2);
     press(&mut harness, Modifiers::NONE, Key::Enter);
     assert!(harness.state().go_to_open());
-    harness.get_by_label_contains("Write a time as");
+    harness.get_by_label("Not a time.");
     // Past the end, the window ends with the recording.
     harness.get_by_role(Role::TextInput).type_text("1:00:00");
     harness.run_steps(2);
