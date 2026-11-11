@@ -147,7 +147,7 @@ fn a_missing_file_shows_the_error() {
         error.contains(&file.path().display().to_string()),
         "{error}"
     );
-    harness.get_by_label("Could not open the recording.");
+    harness.get_by_label("Could Not Open the Recording");
     harness.get_by_label(&error);
 }
 
@@ -170,7 +170,7 @@ fn keys_move_the_view() {
     harness.key_press_modifiers(cmd, Key::W);
     harness.step();
     assert!(harness.state().viewer().is_none());
-    harness.get_by_label("No recording open.");
+    harness.get_by_label("No Recording Open");
 }
 
 fn viewer<'h>(harness: &'h Harness<'_, KymoApp>) -> &'h Viewer {
@@ -476,7 +476,7 @@ fn menu_items_act_and_disabled_ones_dont() {
     assert!(harness.state().viewer().is_none());
     // Nothing to close now.
     choose(&mut harness, "File", "Close");
-    harness.get_by_label("No recording open.");
+    harness.get_by_label("No Recording Open");
     assert_eq!(harness.state().error(), None);
 }
 

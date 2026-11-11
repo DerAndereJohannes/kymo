@@ -472,7 +472,7 @@ impl KymoApp {
             }
             State::Empty => {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    open_clicked = centered_message(ui, "No recording open.", None);
+                    open_clicked = centered_message(ui, "No Recording Open", None);
                 });
             }
             State::Loading(loading) => {
@@ -490,7 +490,7 @@ impl KymoApp {
                 let color = ui.visuals().error_fg_color;
                 egui::CentralPanel::default().show(ui, |ui| {
                     open_clicked =
-                        centered_message(ui, "Could not open the recording.", Some((error, color)));
+                        centered_message(ui, "Could Not Open the Recording", Some((error, color)));
                 });
             }
         }
