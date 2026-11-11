@@ -11,22 +11,23 @@ use super::axis::{Clock, decimals, format_time};
 use super::readout::Reading;
 
 /// A toggle chip: a pill with a short label, filled in the selection color while `on`,
-/// outlined while off, announced as a toggle to screen readers. Lower than the status
-/// line's text, so the line keeps its height.
+/// outlined while off, announced as a toggle to screen readers. As tall as egui's other
+/// controls, the window range beside it included, so the line keeps its height.
 pub fn chip(ui: &mut Ui, on: bool, label: &str) -> Response {
-    let height = ui.text_style_height(&TextStyle::Small) + 4.0;
+    let height = ui.spacing().interact_size.y;
+    // As wide as a pill twice the small text's height, whatever the label.
+    let width = 2.0 * (ui.text_style_height(&TextStyle::Small) + 4.0);
     let mut button = Button::new(RichText::new(label).small())
         .selected(on)
         .corner_radius(height / 2.0)
-        .min_size(vec2(height * 2.0, height));
+        .min_size(vec2(width, height));
     if !on {
         let outline = ui.visuals().widgets.noninteractive.bg_stroke;
         button = button.fill(Color32::TRANSPARENT).stroke(outline);
     }
-    // Narrower padding than buttons have, as befits a pill this low.
+    // Wider padding than buttons have, as befits a pill.
     ui.scope(|ui| {
-        ui.spacing_mut().button_padding = vec2(height / 2.5, 0.0);
-        ui.spacing_mut().interact_size.y = height;
+        ui.spacing_mut().button_padding = vec2(width / 5.0, 0.0);
         ui.add(button)
     })
     .inner
@@ -99,10 +100,10 @@ pub fn range_decimals(span: f64) -> usize {
     decimals(span / 100.0)
 }
 
-/// The window from `start` to `end` on `clock`: "0:12.5 – 0:32.5".
+/// The window from `start` to `end` on `clock`: "0:12.5 to 0:32.5".
 pub fn range_text(start: f64, end: f64, decimals: usize, clock: Clock) -> String {
     format!(
-        "{} – {}",
+        "{} to {}",
         format_time(start, decimals, clock),
         format_time(end, decimals, clock)
     )

@@ -92,12 +92,15 @@ fn the_range_text_shows_the_window_to_a_hundredth_of_its_span() {
     assert_eq!(range_decimals(5.0), 2);
     assert_eq!(range_decimals(100.0), 0);
     assert_eq!(range_decimals(3600.0), 0);
-    assert_eq!(range_text(12.5, 32.5, 1, Clock::Minutes), "0:12.5 – 0:32.5");
+    assert_eq!(
+        range_text(12.5, 32.5, 1, Clock::Minutes),
+        "0:12.5 to 0:32.5"
+    );
     assert_eq!(
         range_text(3600.0, 3900.0, 0, Clock::Hours),
-        "1:00:00 – 1:05:00"
+        "1:00:00 to 1:05:00"
     );
-    assert_eq!(range_text(0.0, 2.5, 2, Clock::Seconds), "0.00 s – 2.50 s");
+    assert_eq!(range_text(0.0, 2.5, 2, Clock::Seconds), "0.00 s to 2.50 s");
 }
 
 #[test]

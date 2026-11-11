@@ -14,7 +14,22 @@ pub mod scrollbar;
 pub mod settings;
 pub mod status;
 
-use eframe::egui::{Label, RichText};
+use eframe::egui::{Button, IntoAtoms, Label, RichText};
+
+/// Corner radius of buttons in a line of text, as [`text_button`] makes them.
+pub const TEXT_BUTTON_RADIUS: f32 = 4.0;
+
+/// A button in a line of text, the status line's or a channel's: it reads as text until
+/// hovered, or for a toggle (`selected` is `Some`) until on, when it is filled in the
+/// selection color. As tall as egui's other controls, with corners of
+/// [`TEXT_BUTTON_RADIUS`]. The status line's range and the channel list's Bad use it.
+pub fn text_button<'a>(atoms: impl IntoAtoms<'a>, selected: Option<bool>) -> Button<'a> {
+    let button = match selected {
+        Some(on) => Button::selectable(on, atoms),
+        None => Button::new(atoms).frame_when_inactive(false),
+    };
+    button.corner_radius(TEXT_BUTTON_RADIUS)
+}
 
 /// Size of hints, in points: below the body text's 14, so a hint reads as secondary to the
 /// label above it, as macOS and Windows write such text in dialogs.

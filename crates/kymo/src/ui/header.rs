@@ -1,8 +1,8 @@
 //! The sidebar: the file's header and its channels.
 
 use eframe::egui::{
-    self, Align, Button, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin,
-    Response, RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
+    self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
+    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
 };
 use kymo_core::{ChannelId, ChannelKind};
 
@@ -11,6 +11,7 @@ use crate::document::{Document, Summary, format_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
+use crate::ui::text_button;
 use crate::view::{KINDS, ViewState};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
@@ -517,10 +518,13 @@ fn channel_list(
                     }
                 }
 
-                let response = ui.add(Button::selectable(bad, {
-                    let text = RichText::new("Bad").small();
-                    if bad { text } else { text.weak() }
-                }));
+                let response = ui.add(text_button(
+                    {
+                        let text = RichText::new("Bad").small();
+                        if bad { text } else { text.weak() }
+                    },
+                    Some(bad),
+                ));
                 accessible_label(ui, &response, format!("{name} bad"));
                 if response.clicked() {
                     view.toggle_bad(id);

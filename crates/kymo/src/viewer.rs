@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense,
-    Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
+    StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 use kymo_core::annotation_file;
 use kymo_core::service::TileService;
@@ -793,8 +793,8 @@ impl Viewer {
         }
     }
 
-    /// The window's start and end in the status line: a button that looks like text until
-    /// hovered, as an unselected Bad in the channel list does, and opens Go to Time. It keeps
+    /// The window's start and end in the status line: a [`crate::ui::text_button`], as a
+    /// channel's Bad is, which opens Go to Time. It keeps
     /// the width of the widest range at its decimals, so scrolling doesn't shift its
     /// neighbors (the digits are all one width).
     fn range_button(&self, ui: &mut Ui, keymap: &Keymap) -> egui::Response {
@@ -810,12 +810,8 @@ impl Viewer {
             .map(|c| format!(" ({})", c.display(keymap.platform())))
             .unwrap_or_default();
         let span = format_duration(self.view.span());
-        ui.add(
-            Button::new(&self.status.range)
-                .frame_when_inactive(false)
-                .min_size(vec2(width, 0.0)),
-        )
-        .on_hover_text(format!("{span} shown. Go to Time…{shortcut}"))
+        ui.add(crate::ui::text_button(&self.status.range, None).min_size(vec2(width, 0.0)))
+            .on_hover_text(format!("{span} shown. Go to Time…{shortcut}"))
     }
 
     /// Brings the stim annotations up to the build and the rule, and the legend with them.

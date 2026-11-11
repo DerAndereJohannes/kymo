@@ -729,7 +729,14 @@ fn the_status_line_range_shows_the_window_and_opens_go_to_time() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
-    harness.get_by_role_and_label(Role::Button, "0:00.0 – 0:20.0");
+    // As tall as the DC chip beside it.
+    let range = harness
+        .get_by_role_and_label(Role::Button, "0:00.0 to 0:20.0")
+        .rect();
+    let dc = harness
+        .get_by_role_and_label(Role::Button, kymo::viewer::DC_CHIP)
+        .rect();
+    assert_eq!(range.height(), dc.height());
     harness.key_press_modifiers(command(), Key::G);
     harness.run_steps(2);
     harness.get_by_role(Role::TextInput).type_text("12.5");
@@ -738,7 +745,7 @@ fn the_status_line_range_shows_the_window_and_opens_go_to_time() {
     harness.run_steps(2);
     assert!(!harness.state().go_to_open());
     harness
-        .get_by_role_and_label(Role::Button, "0:12.5 – 0:32.5")
+        .get_by_role_and_label(Role::Button, "0:12.5 to 0:32.5")
         .click();
     harness.run_steps(2);
     assert!(harness.state().go_to_open());
