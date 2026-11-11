@@ -1,82 +1,167 @@
-//! Scale bars: which rows get one, the round value each stands for, and its label.
+//! Scale bars: which block of rows each type's bar keeps to, where it sits as the rows
+//! scroll, the round value each stands for, and its label.
+
+use std::ops::Range;
 
 use kymo::action::Action;
 use kymo::scale_bar::{ScaleBar, round_below, scale_bars};
 use kymo::view::ViewState;
-use kymo_core::{ChannelId, ChannelKind};
+use kymo_core::{
+    BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
+    Recording, SampleType, SamplesMut, Timebase, Unit,
+};
 use proptest::prelude::*;
 
 use crate::view::recording;
 
-/// The bars as (type, channel, value, unit, fraction to 9 decimals).
-fn bars(view: &ViewState, rec: &kymo_core::Recording) -> Vec<(ChannelKind, u32, f64, String, f64)> {
+/// Scale bars never read samples.
+struct NoReader;
+
+impl BlockReader for NoReader {
+    fn read(
+        &self,
+        _: GridId,
+        _: &[ChannelId],
+        _: Range<u64>,
+        _: SamplesMut<'_>,
+    ) -> Result<(), ReadError> {
+        unreachable!("scale bars never read samples")
+    }
+}
+
+/// A channel of each of `kinds`, in that order, all in µV at 100 Hz for a minute.
+fn recording_of(kinds: &[ChannelKind]) -> Recording {
+    let channels = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| {
+            let mut ch = Channel::new(format!("{kind:?} {i}"), GridId(0));
+            ch.kind = kind;
+            ch.unit = Unit {
+                label: "uV".into(),
+                to_si: Some(1e-6),
+            };
+            ch
+        })
+        .collect();
+    let ids = (0..kinds.len() as u32).map(ChannelId).collect();
+    let timebase = Timebase::Regular {
+        rate: 100.0,
+        start: 0.0,
+    };
+    let grid = Grid::continuous(timebase, 6000, SampleType::I16, ids).unwrap();
+    let opened = Opened {
+        header: Header {
+            format: "TEST",
+            start_time: None,
+            channels,
+            grids: vec![grid],
+            extra: vec![],
+        },
+        annotations: vec![],
+        warnings: vec![],
+        sources: vec![],
+        reader: Box::new(NoReader),
+    };
+    Recording::new(opened).unwrap().0
+}
+
+/// 10 EEG, 2 EOG, 10 EEG and a stim channel, 4 rows on screen.
+fn blocks() -> (Recording, ViewState) {
+    use ChannelKind::{Eeg, Eog, Stim};
+    let kinds: Vec<_> = [(Eeg, 10), (Eog, 2), (Eeg, 10), (Stim, 1)]
+        .into_iter()
+        .flat_map(|(kind, n)| std::iter::repeat_n(kind, n))
+        .collect();
+    let rec = recording_of(&kinds);
+    let mut view = ViewState::new(&rec);
+    view.set_rows(4);
+    (rec, view)
+}
+
+/// The bars as (type, channel, middle), the middle to 9 decimals.
+fn placed(rec: &Recording, view: &ViewState) -> Vec<(ChannelKind, u32, f64)> {
     scale_bars(rec, view)
         .into_iter()
-        .map(|b| {
-            let fraction = (b.fraction * 1e9).round() / 1e9;
-            (b.kind, b.channel.0, b.value, b.unit, fraction)
-        })
+        .map(|b| (b.kind, b.channel.0, (b.middle * 1e9).round() / 1e9))
         .collect()
 }
 
 #[test]
-fn each_type_on_screen_gets_one_beside_its_first_row() {
+fn each_type_on_screen_gets_one_but_stim() {
     // EEG 0..3 in µV, EOG in mV, Status.
     let rec = recording(3, 60);
     let view = ViewState::new(&rec);
+    let bars = scale_bars(&rec, &view);
+    let got: Vec<_> = bars
+        .iter()
+        .map(|b| (b.kind, b.channel.0, b.middle, b.value, b.unit.as_str()))
+        .collect();
     // EEG at 20 µV per spacing: ±20 µV spans the row, so 20 µV is half of it. EOG at
     // 150 µV, shown in µV although stored in mV: 200 µV of its 300.
     assert_eq!(
-        bars(&view, &rec),
-        vec![
-            (ChannelKind::Eeg, 0, 20.0, "µV".into(), 0.5),
-            (ChannelKind::Eog, 3, 200.0, "µV".into(), 0.666666667),
+        got,
+        [
+            (ChannelKind::Eeg, 0, 0.5, 20.0, "µV"),
+            (ChannelKind::Eog, 3, 3.5, 200.0, "µV"),
         ]
     );
-    let all = scale_bars(&rec, &view);
-    assert_eq!(all[0].row, 0);
-    assert_eq!(all[1].row, 3);
-    assert_eq!(all[0].label(), "20 µV");
+    assert!((bars[0].fraction - 0.5).abs() < 1e-12);
+    assert!((bars[1].fraction - 2.0 / 3.0).abs() < 1e-12);
+    assert_eq!(bars[0].label(), "20 µV");
 }
 
 #[test]
-fn bad_hidden_and_scrolled_off_rows_get_none() {
-    let rec = recording(30, 60);
-    let first_eeg = |view: &ViewState| {
-        scale_bars(&rec, view)
-            .into_iter()
-            .find(|b| b.kind == ChannelKind::Eeg)
-            .map(|b| (b.channel.0, b.row))
-    };
-    let mut view = ViewState::new(&rec);
-    assert_eq!(first_eeg(&view), Some((0, 0)));
-    view.toggle_bad(ChannelId(0));
-    assert_eq!(first_eeg(&view), Some((1, 1)));
-    view.set_shown(ChannelId(1), false);
-    // Channel 2 now shows in the second row.
-    assert_eq!(first_eeg(&view), Some((2, 1)));
-    // Row 3's middle is above the top: the next row gets it.
-    view.set_top(3.6);
-    assert_eq!(view.top(), 3.6);
-    assert_eq!(first_eeg(&view), Some((5, 4)));
-    // EOG and stim at the bottom: the EOG gets its bar once its row shows, stim never.
-    view.apply(Action::LastChannels);
-    let kinds: Vec<_> = scale_bars(&rec, &view)
-        .into_iter()
-        .map(|b| b.kind)
-        .collect();
-    assert_eq!(kinds, [ChannelKind::Eeg, ChannelKind::Eog]);
-    // Every EEG channel on screen bad: none for EEG.
-    for &channel in view.visible_channels().to_vec().iter() {
-        if view.kind_of(channel) == ChannelKind::Eeg {
-            view.toggle_bad(channel);
-        }
+fn a_bar_stays_put_while_its_block_scrolls_and_leaves_with_it() {
+    use ChannelKind::{Eeg, Eog};
+    let (rec, mut view) = blocks();
+    // Within the first EEG block, at the top row's middle wherever the rows are.
+    for step in 0..=80 {
+        view.set_top(f64::from(step) / 10.0);
+        assert_eq!(
+            placed(&rec, &view)[0],
+            (Eeg, view.visible_channels()[0].0, 0.5)
+        );
     }
-    let kinds: Vec<_> = scale_bars(&rec, &view)
-        .into_iter()
-        .map(|b| b.kind)
-        .collect();
-    assert_eq!(kinds, [ChannelKind::Eog]);
+    // The block's last row rises above the top row's middle and pushes it up, until less
+    // than the bar's half (a quarter row) is left above; then the next EEG block has it.
+    let eeg = |view: &ViewState| placed(&rec, view).into_iter().find(|b| b.0 == Eeg);
+    for (top, middle) in [(9.0, 0.5), (9.1, 0.4), (9.2, 0.3), (9.25, 0.25)] {
+        view.set_top(top);
+        assert_eq!(eeg(&view), Some((Eeg, 9, middle)), "top {top}");
+    }
+    view.set_top(9.3);
+    // Rows 12.. are EEG again: its first row's middle, 12.5 − 9.3.
+    assert_eq!(eeg(&view), Some((Eeg, 12, 3.2)));
+    // The EOG block, at its first row's middle once all of the bar shows.
+    let eog = |view: &ViewState| placed(&rec, view).into_iter().find(|b| b.0 == Eog);
+    view.set_top(6.0);
+    assert_eq!(eog(&view), None, "below the screen");
+    view.set_top(6.8);
+    // Row 10's middle, 3.7 rows down, leaves too little room for a bar of 2/3 row.
+    assert_eq!(eog(&view), None);
+    view.set_top(7.0);
+    assert_eq!(eog(&view), Some((Eog, 10, 3.5)));
+    view.set_top(11.0);
+    assert_eq!(eog(&view), Some((Eog, 11, 0.5)));
+    // Stim, the last row, never.
+    view.apply(Action::LastChannels);
+    assert!(placed(&rec, &view).iter().all(|b| b.0 != ChannelKind::Stim));
+}
+
+#[test]
+fn bad_rows_keep_it_and_hidden_ones_join_blocks() {
+    use ChannelKind::Eeg;
+    let (rec, mut view) = blocks();
+    view.toggle_bad(ChannelId(0));
+    assert_eq!(placed(&rec, &view)[0], (Eeg, 0, 0.5));
+    view.toggle_bad(ChannelId(0));
+    // Without the EOG rows the two EEG blocks are one, which keeps the bar at the top.
+    view.set_shown(ChannelId(10), false);
+    view.set_shown(ChannelId(11), false);
+    view.set_top(9.3);
+    assert_eq!(view.top(), 9.3);
+    assert_eq!(placed(&rec, &view)[0], (Eeg, 9, 0.5));
 }
 
 #[test]
@@ -98,7 +183,7 @@ fn labels_have_the_decimals_they_need() {
         ScaleBar {
             kind: ChannelKind::Eeg,
             channel: ChannelId(0),
-            row: 0,
+            middle: 0.5,
             value,
             unit: unit.into(),
             fraction: 1.0,

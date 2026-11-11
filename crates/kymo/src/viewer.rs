@@ -55,13 +55,10 @@ const ANNOTATION_LABEL_GAP: f32 = 8.0;
 /// [`ANNOTATION_LABEL_PAD`], so the onset's line shows), and its opacity.
 const LABEL_PLATE_MARGIN: f32 = 2.0;
 const LABEL_PLATE_ALPHA: f32 = 0.85;
-/// A scale bar: its distance from the traces' right edge, its line's width, its end caps'
-/// width, the halo of the traces' background around it, and the gap to its label, in
-/// points.
+/// A scale bar: its distance from the traces' right edge, its end caps' width, and the gap
+/// to its label, in points.
 const SCALE_BAR_INSET: f32 = 10.0;
-const SCALE_BAR_WIDTH: f32 = 1.5;
 const SCALE_BAR_CAP: f32 = 6.0;
-const SCALE_BAR_HALO: f32 = 1.5;
 const SCALE_BAR_GAP: f32 = 4.0;
 /// How near an annotation's mark the pointer must be, in points, for the status line to
 /// name it; 1-pixel lines are hard to hit exactly.
@@ -1103,11 +1100,12 @@ impl Viewer {
         self.scale_bars = bars;
     }
 
-    /// The scale bars, at the right edge of `traces`, each centered on its row: a line in
-    /// its type's color with end caps, on a halo of the background so the traces under it
-    /// don't blur it, and its label to its left on a plate, as annotation labels have.
-    /// Rows lower than the label leave them out, as they would cover their neighbors.
-    /// Returns them, each with its bar's rectangle.
+    /// The scale bars, at the right edge of `traces`: a line one physical pixel wide in its
+    /// type's color with end caps, on whole pixels so it is sharp and symmetric, on a halo
+    /// of the background one pixel wide all around, so the traces under it don't blur it;
+    /// its label to its left on a plate, as annotation labels have. Rows lower than the
+    /// label leave them out, as they would cover their neighbors. Returns them, each with
+    /// its bar's rectangle (the caps' width and the line's length, halo not included).
     fn draw_scale_bars(
         &self,
         painter: &egui::Painter,
@@ -1124,25 +1122,34 @@ impl Viewer {
         let ppp = painter.ctx().pixels_per_point();
         let background = visuals.extreme_bg_color;
         let plate = background.gamma_multiply(LABEL_PLATE_ALPHA);
-        // On a physical pixel's center, so the line is sharp.
-        let x = ((traces.right() - SCALE_BAR_INSET) * ppp).round() / ppp + 0.5 / ppp;
+        // In physical pixels: the line's column, and the caps' reach to either side of it.
+        let column = ((traces.right() - SCALE_BAR_INSET) * ppp).round();
+        let reach = (SCALE_BAR_CAP / 2.0 * ppp).round().max(1.0);
+        let points = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            Rect::from_min_max(pos2(x0, y0) / ppp, pos2(x1, y1) / ppp)
+        };
         for bar in scale_bars(&self.document.recording, &self.view) {
-            let middle = traces.top() + self.view.y_of_row(bar.row as f64 + 0.5, height) as f32;
+            let middle = traces.top() + bar.middle as f32 * row_height;
             let half = bar.fraction as f32 * row_height / 2.0;
-            let rect = Rect::from_center_size(pos2(x, middle), vec2(SCALE_BAR_CAP, 2.0 * half));
-            let color = self.channel_color(bar.channel, visuals);
-            let shape = |width: f32, color: Color32| {
-                let stroke = Stroke::new(width, color);
-                let cap = |y: f32| [pos2(rect.left(), y), pos2(rect.right(), y)];
-                painter.line_segment(cap(rect.top()), stroke);
-                painter.line_segment(cap(rect.bottom()), stroke);
-                painter.line_segment([rect.center_top(), rect.center_bottom()], stroke);
-            };
-            shape(SCALE_BAR_WIDTH + 2.0 * SCALE_BAR_HALO, background);
-            shape(SCALE_BAR_WIDTH, color);
+            let first = ((middle - half) * ppp).round();
+            let last = ((middle + half) * ppp).round().max(first + 2.0);
+            let pieces = [
+                points(column, first, column + 1.0, last),
+                points(column - reach, first, column + 1.0 + reach, first + 1.0),
+                points(column - reach, last - 1.0, column + 1.0 + reach, last),
+            ];
+            let halo = 1.0 / ppp;
+            for piece in pieces {
+                painter.rect_filled(piece.expand(halo), 0.0, background);
+            }
+            let color = type_color(bar.kind, &self.type_colors, visuals);
+            for piece in pieces {
+                painter.rect_filled(piece, 0.0, color);
+            }
+            let rect = pieces[1].union(pieces[2]);
             let galley = painter.layout_no_wrap(bar.label(), font.clone(), color);
             let pos = pos2(
-                rect.left() - SCALE_BAR_GAP - galley.size().x,
+                rect.left() - halo - SCALE_BAR_GAP - galley.size().x,
                 middle - galley.size().y / 2.0,
             );
             let label =

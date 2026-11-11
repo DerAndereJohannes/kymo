@@ -1029,14 +1029,19 @@ fn scale_bars_show_beside_their_rows_and_hide() {
     let traces = viewer(&harness).layout().unwrap().traces;
     let view = viewer(&harness).view();
     let row_height = view.row_height(f64::from(traces.height())) as f32;
+    // On whole pixels: within a pixel of where they belong, as long as they should be.
+    let pixel = 1.0 / harness.ctx.pixels_per_point();
     for (bar, rect) in viewer(&harness).scale_bars() {
-        let middle =
-            traces.top() + view.y_of_row(bar.row as f64 + 0.5, f64::from(traces.height())) as f32;
+        let middle = traces.top() + bar.middle as f32 * row_height;
         assert!(
-            (rect.center().y - middle).abs() < 0.01,
+            (rect.center().y - middle).abs() <= pixel,
             "{rect:?} vs {middle}"
         );
-        assert!((rect.height() - bar.fraction as f32 * row_height).abs() < 0.01);
+        let length = bar.fraction as f32 * row_height;
+        assert!(
+            (rect.height() - length).abs() <= pixel,
+            "{rect:?} vs {length}"
+        );
         assert!(traces.right() - 20.0 < rect.left() && rect.right() < traces.right());
     }
     assert!(checked(&mut harness, "View", "Show Scale Bars"));

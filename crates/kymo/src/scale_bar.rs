@@ -1,6 +1,7 @@
-//! Scale bars: one per channel type on screen, beside its first shown row that isn't bad,
-//! as long as a round amplitude (1, 2 or 5 times a power of ten) in the unit its readings
-//! are shown in.
+//! Scale bars: one per channel type on screen, as long as a round amplitude (1, 2 or 5
+//! times a power of ten) in the unit its readings are shown in. Each keeps to the top of
+//! the visible part of its type's first block of rows, as a list's section header does:
+//! scrolling within the block leaves it where it is, and the block's end pushes it out.
 
 use kymo_core::{ChannelId, ChannelKind, Recording};
 
@@ -11,11 +12,12 @@ use crate::view::ViewState;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScaleBar {
     pub kind: ChannelKind,
-    /// The channel whose row it stands beside.
+    /// The first channel on screen of its block, whose unit it is in.
     pub channel: ChannelId,
-    /// That row's index among the shown rows (as [`ViewState::y_of_row`] counts them).
-    pub row: usize,
-    /// How much it stands for, in `unit`: the largest round value up to the row's
+    /// Where its middle is, in rows from the top of the trace area (0.5 is the middle of
+    /// the top row).
+    pub middle: f64,
+    /// How much it stands for, in `unit`: the largest round value up to the rows'
     /// amplitude span (±amplitude spans a row).
     pub value: f64,
     /// The unit its readings are shown in ("µV", "fT"); empty if the channel has none.
@@ -37,21 +39,30 @@ impl ScaleBar {
     }
 }
 
-/// The scale bars of the rows `view` shows: for each channel type but stim (whose rows
-/// hold codes, not amplitudes), beside the first row of that type that isn't bad and whose
-/// middle is on screen. A type without such a row, or without a usable amplitude, gets
-/// none.
+/// The scale bars of the rows `view` shows, one for each channel type but stim (whose rows
+/// hold codes, not amplitudes). A type's bar stands beside the first block of consecutive
+/// rows of that type on screen where it fits whole: in the middle of the block's top row
+/// on screen, or of its top row slot while the block goes on above the screen, and no
+/// lower in the block than the middle of its last row, so a block leaving at the top takes
+/// the bar along. A type without such a block, or without a usable amplitude, gets none.
 pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
+    let top = view.top();
     let rows = view.rows() as f64;
+    let first = view.visible_rows().start;
+    let channels = view.visible_channels();
     let mut bars: Vec<ScaleBar> = Vec::new();
-    for (row, &channel) in view.visible_rows().zip(view.visible_channels()) {
-        let middle = row as f64 + 0.5 - view.top();
-        let kind = view.kind_of(channel);
-        if !(0.0..rows).contains(&middle)
-            || kind == ChannelKind::Stim
-            || view.is_bad(channel)
-            || bars.iter().any(|b| b.kind == kind)
-        {
+    let mut start = 0;
+    while start < channels.len() {
+        let kind = view.kind_of(channels[start]);
+        let end = start
+            + channels[start..]
+                .iter()
+                .take_while(|&&c| view.kind_of(c) == kind)
+                .count();
+        let block = ((first + start) as f64, (first + end) as f64);
+        let channel = channels[start];
+        start = end;
+        if kind == ChannelKind::Stim || bars.iter().any(|b| b.kind == kind) {
             continue;
         }
         let (unit, factor) = display_unit(recording.channel(channel));
@@ -59,13 +70,18 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         let Some(value) = round_below(span) else {
             continue;
         };
+        let fraction = value / span;
+        let middle = (block.0.max(top) - top + 0.5).min(block.1 - top - 0.5);
+        if middle < fraction / 2.0 || middle + fraction / 2.0 > rows {
+            continue;
+        }
         bars.push(ScaleBar {
             kind,
             channel,
-            row,
+            middle,
             value,
             unit,
-            fraction: value / span,
+            fraction,
         });
     }
     bars
