@@ -982,6 +982,39 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     harness.get_by_label_contains(&exact);
 }
 
+/// The reader's warnings show as one line in the sidebar, "1 Warning", and in full, as
+/// sentences, only on hovering it.
+#[test]
+fn warnings_show_as_one_line_with_the_text_on_hover() {
+    use std::io::Write;
+    let file = TempFile::preset("bdf+c-small");
+    // Bytes after the last record, which the reader ignores with a warning.
+    let mut out = std::fs::OpenOptions::new()
+        .append(true)
+        .open(file.path())
+        .unwrap();
+    out.write_all(&[0; 5]).unwrap();
+    drop(out);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let warnings = &viewer(&harness).document().recording.warnings().to_vec();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("the file has 5 bytes"),
+        "{warnings:?}"
+    );
+    let full = "The file has 5 bytes";
+    assert!(harness.query_by_label_contains(full).is_none());
+    let line = harness.get_by_label("1 Warning").rect();
+    // The whole line answers the pointer, the sign at its left as well.
+    hover(&mut harness, egui::pos2(line.left() - 6.0, line.center().y));
+    let shown = Instant::now() + Duration::from_secs(2);
+    while harness.query_by_label_contains(full).is_none() && Instant::now() < shown {
+        harness.step();
+    }
+    harness.get_by_label_contains(full);
+}
+
 /// The legend lists every description with its count; its checkboxes show and hide
 /// annotations by description, or all at once.
 #[test]

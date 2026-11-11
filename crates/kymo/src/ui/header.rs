@@ -120,19 +120,7 @@ pub fn header_panel(
 
     if !summary.warnings.is_empty() {
         ui.add_space(6.0);
-        let color = ui.visuals().warn_fg_color;
-        ui.label(
-            RichText::new(format!(
-                "{} warning{}",
-                summary.warnings.len(),
-                plural(summary.warnings.len())
-            ))
-            .color(color)
-            .strong(),
-        );
-        for warning in &summary.warnings {
-            ui.add(Label::new(RichText::new(warning).color(color)).wrap());
-        }
+        warning_line(ui, &summary.warnings);
     }
 
     ui.add_space(6.0);
@@ -155,6 +143,57 @@ pub fn header_panel(
     ui.separator();
     channel_list(ui, recording, document, view, type_colors);
     relabel
+}
+
+/// Widest a warning tooltip gets before its text wraps, in points.
+const WARNING_TOOLTIP_WIDTH: f32 = 360.0;
+
+/// The reader's warnings as one line, a warning sign and how many ("1 Warning"); hovering
+/// it shows them in full.
+fn warning_line(ui: &mut Ui, warnings: &[String]) {
+    let count = format!("{} Warning{}", warnings.len(), plural(warnings.len()));
+    let response = ui
+        .horizontal(|ui| {
+            let size = ui.text_style_height(&TextStyle::Body);
+            let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+            warning_sign(ui.painter(), rect);
+            ui.add(Label::new(count).selectable(false));
+        })
+        .response
+        .interact(Sense::hover());
+    response
+        .on_hover_cursor(CursorIcon::Help)
+        .on_hover_ui(|ui| {
+            ui.set_max_width(WARNING_TOOLTIP_WIDTH);
+            for warning in warnings {
+                ui.add(Label::new(sentence(warning)).wrap());
+            }
+        });
+}
+
+/// A warning sign filling `rect`: a yellow triangle with a dark exclamation mark, the same
+/// in light and dark themes.
+fn warning_sign(painter: &egui::Painter, rect: egui::Rect) {
+    let at = |x: f32, y: f32| rect.lerp_inside(vec2(x, y));
+    let yellow = Color32::from_rgb(0xFF, 0xCC, 0x00);
+    let dark = Color32::from_gray(0x20);
+    let corners = vec![at(0.5, 0.06), at(0.98, 0.92), at(0.02, 0.92)];
+    // A stroke in the fill's color rounds the corners a little.
+    let stroke = egui::Stroke::new(rect.width() * 0.1, yellow);
+    painter.add(egui::Shape::convex_polygon(corners, yellow, stroke));
+    let width = rect.width() * 0.13;
+    painter.line_segment([at(0.5, 0.36), at(0.5, 0.62)], (width, dark));
+    painter.circle_filled(at(0.5, 0.78), width * 0.6, dark);
+}
+
+/// `text` with its first letter upper case, as a sentence starts; readers write warnings
+/// in lower case, for `kymo --info`'s "warning" lines.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// A row per channel type in the recording: a checkbox, in the type's trace color, that
