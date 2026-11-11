@@ -40,7 +40,12 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     });
                     ui.end_row();
                     hint(ui, "System follows the system's light or dark mode.");
-                    ui.label("Colors");
+                    // At the first row of swatches, as the other labels sit at their
+                    // control, rather than centered on all of them.
+                    // In a row like the swatches' own, centered as they are.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.horizontal(|ui| ui.label("Colors"));
+                    });
                     type_colors(ui, settings);
                     ui.end_row();
                     hint(

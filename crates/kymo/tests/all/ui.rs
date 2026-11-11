@@ -4609,3 +4609,29 @@ fn go_to_time_moves_the_window_there() {
     assert!(!harness.state().go_to_open());
     assert_eq!(viewer(&harness).view().start(), 40.0);
 }
+
+/// Each label in Settings sits level with its setting's first line, the multi-line colors
+/// included, rather than centered on all of them.
+#[test]
+fn settings_labels_are_level_with_their_first_control() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().perform(&ctx, Action::Settings);
+    harness.run_steps(3);
+    let center = |label: &str| harness.get_by_label(label).rect().center().y;
+    for (label, control) in [
+        ("Theme", "System"),
+        ("Colors", "MEG Mag"),
+        ("Traces", "Anti-Aliased"),
+        ("Scale", "Automatic on Opening"),
+    ] {
+        assert!(
+            (center(label) - center(control)).abs() < 0.5,
+            "{label} at {}, {control} at {}",
+            center(label),
+            center(control)
+        );
+    }
+}
