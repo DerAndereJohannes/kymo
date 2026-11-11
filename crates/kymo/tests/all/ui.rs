@@ -462,8 +462,9 @@ fn menu_items_act_and_disabled_ones_dont() {
     assert_eq!(viewer(&harness).view().time(), 0.0..10.0);
     choose(&mut harness, "Go", "End of Recording");
     assert_eq!(viewer(&harness).view().time(), 50.0..60.0);
+    // On by default: the item turns it off.
     choose(&mut harness, "View", "Remove DC");
-    assert!(viewer(&harness).view().dc_removed());
+    assert!(!viewer(&harness).view().dc_removed());
     choose(&mut harness, "Edit", "Settings");
     assert!(harness.state().settings_open());
     harness.get_by_label("Tile Cache");
@@ -632,6 +633,8 @@ fn dc_removal_centers_each_trace_on_its_window_mean() {
     let mut harness = window(file.path());
     ready(&mut harness);
     let a1 = kymo_core::ChannelId(0);
+    assert!(checked(&mut harness, "View", "Remove DC"));
+    dc_off(&mut harness);
     assert_eq!(viewer(&harness).baseline(a1), 0.0);
     assert!(!checked(&mut harness, "View", "Remove DC"));
 
@@ -675,6 +678,14 @@ fn dc_removal_centers_each_trace_on_its_window_mean() {
     assert!(!checked(&mut harness, "View", "Remove DC"));
 }
 
+/// Turns DC removal off, after checking that it is on, as recordings open.
+fn dc_off(harness: &mut Harness<'_, KymoApp>) {
+    assert!(viewer(harness).view().dc_removed(), "on as recordings open");
+    harness.key_press_modifiers(command(), Key::D);
+    harness.step();
+    assert!(!viewer(harness).view().dc_removed());
+}
+
 /// The numbers of the status line's reading of the Status channel, if it shows one. Codes
 /// have no unit (the file's is "Boolean"); the annotations under the pointer may follow.
 fn status_reading(status: &str) -> Option<Vec<f64>> {
@@ -694,6 +705,7 @@ fn stim_channels_read_their_codes_with_and_without_dc_removal() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
+    dc_off(&mut harness);
     let status = kymo_core::ChannelId(4);
     assert_eq!(
         viewer(&harness).document().recording.channel(status).name,
@@ -2639,6 +2651,7 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
     let file = offset_preset("bdf+c-small", -21_000.0);
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
+    dc_off(&mut harness);
     // Without the annotations' labels, some of which are near the trace color.
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
     let trace = harness.ctx.global_style().visuals.text_color();
@@ -3097,6 +3110,7 @@ fn stim_traces_stay_in_their_row() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
+    dc_off(&mut harness);
     whole_pixels(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
     let gray = trace_color(kymo_core::ChannelKind::Stim, &visuals);

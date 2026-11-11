@@ -111,7 +111,7 @@ fn starts_with_20_s_and_20_rows() {
     assert_time(&view, 0.0..20.0);
     assert_eq!(view.rows(), DEFAULT_ROWS);
     assert_eq!(view.visible_rows(), 0..20);
-    assert!(!view.dc_removed());
+    assert!(view.dc_removed());
     assert_eq!(view.bad_channels().count(), 0);
     // MNE's scalings for raw.plot.
     use ChannelKind::*;
@@ -325,9 +325,9 @@ fn changes_the_number_of_rows_between_one_and_all() {
 fn toggles_dc_removal_and_bad_channels() {
     let (_, mut view) = state();
     act(&mut view, Action::ToggleDc);
-    assert!(view.dc_removed());
-    act(&mut view, Action::ToggleDc);
     assert!(!view.dc_removed());
+    act(&mut view, Action::ToggleDc);
+    assert!(view.dc_removed());
 
     view.toggle_bad(ChannelId(2));
     assert_eq!(view.bad_channels().collect::<Vec<_>>(), [ChannelId(2)]);
@@ -683,10 +683,7 @@ proptest! {
 #[test]
 fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     let (rec, mut view) = state();
-    // Off: nothing to ask for.
-    assert_eq!(view.dc_request(&rec), None);
-    act(&mut view, Action::ToggleDc);
-    // Each visible channel but stim ones, top to bottom, over the samples in view of its
+    // On from the start. Each visible channel but stim ones, top to bottom, over the samples in view of its
     // own grid.
     let expected = |view: &ViewState| -> Vec<(ChannelId, Range<u64>)> {
         view.visible_channels()

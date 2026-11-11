@@ -106,7 +106,7 @@ pub struct ViewState {
 
 impl ViewState {
     /// [`DEFAULT_SPAN`] from the start (or the whole recording if shorter), the first
-    /// [`DEFAULT_ROWS`] channels, default amplitudes, DC removal off, no bad channels.
+    /// [`DEFAULT_ROWS`] channels, default amplitudes, DC removal on, no bad channels.
     pub fn new(recording: &Recording) -> Self {
         Self::with_default_span(recording, DEFAULT_SPAN)
     }
@@ -133,7 +133,7 @@ impl ViewState {
             top: 0.0,
             rows: DEFAULT_ROWS,
             amplitudes: KINDS.map(default_amplitude),
-            dc: false,
+            dc: true,
             bad: BTreeSet::new(),
             direction: Direction::Forward,
             generation: 0,
