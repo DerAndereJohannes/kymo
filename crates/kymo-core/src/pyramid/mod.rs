@@ -205,7 +205,7 @@ impl Pyramid {
             return None;
         }
         let valid = self.valid(level, first, len as u64);
-        Some(Tile::new(key, channels as u32, len as u32, data, valid))
+        Some(Tile::new(key, channels as u32, len as u32, data, valid).with_times(&self.grid))
     }
 
     /// Whether everything up to sample `end` (cut at the grid's end) is built.

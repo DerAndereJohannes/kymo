@@ -221,28 +221,187 @@ pub fn drawn_samples(grid: &Grid, level: Level, time: &Range<f64>) -> Range<u64>
     samples
 }
 
-/// The level a view uses for a grid.
+/// The level a view uses for a grid with evenly spaced samples (for an irregular one, the
+/// level its average rate gives; [`level_at`] has the level it uses at a sample).
 pub fn level_for(grid: &Grid, view: &View) -> Level {
     let seconds = view.time.end - view.time.start;
     let samples_per_px = seconds * grid.rate() / f64::from(view.width_px.max(1));
     choose_level(samples_per_px).min(max_level(grid.len()))
 }
 
-/// The tiles a view needs: for every grid with visible channels, each channel block holding
-/// one of them, times each tile of the chosen level that holds one of its
-/// [`drawn_samples`]. Sorted by grid, block and time. Empty for an empty view.
-pub fn tiles_for_view(recording: &Recording, view: &View) -> Vec<TileKey> {
-    let mut tiles = Vec::new();
+/// The level a view uses for `grid` at `sample`: [`level_for`], or for an irregular time
+/// base the level its cover ([`placements_for_view`]) draws there.
+pub fn level_at(grid: &Grid, view: &View, sample: u64) -> Level {
+    if grid.times().is_none() {
+        return level_for(grid, view);
+    }
+    let per_second = pixels_per_second(view);
+    let mut level = max_level(grid.len());
+    loop {
+        let want = wanted(grid, level, level.tile_of(sample), per_second);
+        match level.down() {
+            Some(down) if want < level => level = down,
+            _ => return aligned(level, want.max(level)),
+        }
+    }
+}
+
+/// Pixels per second of a view; 0 for a view without width or time.
+fn pixels_per_second(view: &View) -> f64 {
+    let seconds = view.time.end - view.time.start;
+    let p = f64::from(view.width_px) / seconds;
+    if p.is_finite() { p } else { 0.0 }
+}
+
+/// The coarsest level every level-0 tile in tile `time` of `level` allows at `per_second`
+/// pixels per second, as [`choose_level`] decides from its own density (so no bucket of
+/// its samples spans more than a pixel on average), at most the top of the pyramid.
+fn wanted(grid: &Grid, level: Level, time: u64, per_second: f64) -> Level {
+    let density = grid.least_density(level, time).unwrap_or(f64::INFINITY);
+    let samples_per_px = density / per_second;
+    let samples_per_px = if samples_per_px.is_nan() {
+        f64::INFINITY
+    } else {
+        samples_per_px
+    };
+    choose_level(samples_per_px).min(max_level(grid.len()))
+}
+
+/// The coarsest level up to `want` whose buckets the tiles of `level` start on, so that its
+/// tile can be drawn over the span of one of them.
+fn aligned(level: Level, want: Level) -> Level {
+    let mut m = want;
+    while m > level && m.bucket_len() > level.tile_samples() {
+        m = m.down().unwrap_or(Level::RAW);
+    }
+    m
+}
+
+/// The tiles of `block` of a grid with an irregular time base that a view at `per_second`
+/// pixels per second draws over `samples` (and the sample after them, which a line to the
+/// right edge runs to), each with the samples it is drawn over, in time order. From the top
+/// of the pyramid down, a tile whose level-0 tiles all allow its level or a coarser one is
+/// drawn over its span at the coarsest level they all allow (a coarser tile drawn over part
+/// of its span); otherwise its children are visited. So no level-0 tile is drawn coarser
+/// than its own density allows, and dense ones stay coarse beside sparse ones.
+fn irregular_cover(
+    grid: &Grid,
+    block: ChannelBlock,
+    version: SignalVersion,
+    samples: Range<u64>,
+    per_second: f64,
+) -> Vec<(TileKey, Range<u64>)> {
+    struct Visit<'a> {
+        grid: &'a Grid,
+        drawn: Range<u64>,
+        per_second: f64,
+        block: ChannelBlock,
+        version: SignalVersion,
+        out: Vec<(TileKey, Range<u64>)>,
+    }
+    impl Visit<'_> {
+        fn visit(&mut self, level: Level, time: u64) {
+            let n = level.tile_samples();
+            let span = time.saturating_mul(n)
+                ..time
+                    .saturating_add(1)
+                    .saturating_mul(n)
+                    .min(self.grid.len());
+            if span.start >= self.drawn.end || span.end <= self.drawn.start {
+                return;
+            }
+            let want = wanted(self.grid, level, time, self.per_second);
+            match level.down() {
+                Some(down) if want < level => {
+                    let ratio = n / down.tile_samples();
+                    for child in time * ratio..(time + 1) * ratio {
+                        self.visit(down, child);
+                    }
+                }
+                _ => {
+                    let m = aligned(level, want.max(level));
+                    let key = TileKey {
+                        version: self.version,
+                        level: m,
+                        block: self.block,
+                        time: m.tile_of(span.start),
+                    };
+                    match self.out.last_mut() {
+                        Some((k, s)) if *k == key && s.end == span.start => s.end = span.end,
+                        _ => self.out.push((key, span)),
+                    }
+                }
+            }
+        }
+    }
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let mut v = Visit {
+        grid,
+        drawn: samples.start..(samples.end + 1).min(grid.len()),
+        per_second,
+        block,
+        version,
+        out: Vec::new(),
+    };
+    let top = max_level(grid.len());
+    for time in top.tile_of(v.drawn.start)..=top.tile_of(v.drawn.end - 1) {
+        v.visit(top, time);
+    }
+    v.out
+}
+
+/// The tiles of `block` a view draws over `time`, in time order, each with the samples it
+/// is drawn over: those of its level over their spans, or for an irregular time base those
+/// of its cover.
+fn cover(
+    grid: &Grid,
+    block: ChannelBlock,
+    view: &View,
+    time: &Range<f64>,
+) -> Vec<(TileKey, Range<u64>)> {
+    if grid.times().is_some() {
+        let samples = samples_in(grid, time);
+        irregular_cover(grid, block, view.version, samples, pixels_per_second(view))
+    } else {
+        let level = level_for(grid, view);
+        tiles_over(grid, block, level, view.version, time)
+            .map(|key| {
+                let span = key.sample_range();
+                (key, span.start..span.end.min(grid.len()))
+            })
+            .collect()
+    }
+}
+
+/// What a view draws: for every grid with visible channels, each channel block holding one
+/// of them, times each tile of the chosen level that holds one of its [`drawn_samples`],
+/// with the samples it is drawn over (its span, cut at the grid's end). For a grid with an
+/// irregular time base the level is chosen per level-0 tile from its density, and a coarser
+/// tile may be drawn over part of its span (see [`level_at`]). Sorted by grid, block and
+/// samples, which never overlap within a block. Empty for an empty view.
+pub fn placements_for_view(recording: &Recording, view: &View) -> Vec<(TileKey, Range<u64>)> {
+    let mut placements = Vec::new();
     // `is_empty` is also true for NaN bounds.
     if view.time.is_empty() || view.width_px == 0 {
-        return tiles;
+        return placements;
     }
     for block in view_blocks(recording, &view.channels) {
         let grid = recording.grid(block.grid);
-        let level = level_for(grid, view);
-        tiles.extend(tiles_over(grid, block, level, view.version, &view.time));
+        placements.extend(cover(grid, block, view, &view.time));
     }
-    tiles
+    placements
+}
+
+/// The tiles a view needs: those of [`placements_for_view`], each once, in their order.
+pub fn tiles_for_view(recording: &Recording, view: &View) -> Vec<TileKey> {
+    let mut seen = std::collections::HashSet::new();
+    placements_for_view(recording, view)
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| seen.insert(*key))
+        .collect()
 }
 
 /// The channel blocks holding `channels`, sorted and without duplicates; unknown channels
@@ -283,4 +442,21 @@ fn tiles_over(
         block,
         time,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coarser_tiles_are_drawn_only_where_their_buckets_start() {
+        let l = |l| Level::new(l).unwrap();
+        // A level-0 tile's span holds whole buckets up to level 4 (2048 samples).
+        assert_eq!(aligned(l(0), l(9)), l(4));
+        assert_eq!(aligned(l(0), l(3)), l(3));
+        // A level-L tile's up to level L + 6, whose bucket is the tile's span.
+        assert_eq!(aligned(l(1), l(7)), l(7));
+        assert_eq!(aligned(l(1), l(9)), l(7));
+        assert_eq!(aligned(l(2), l(2)), l(2));
+    }
 }

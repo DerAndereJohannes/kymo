@@ -23,6 +23,7 @@ mod sample;
 pub mod service;
 pub mod stim;
 pub mod tile;
+mod timetable;
 pub mod xdf;
 
 #[cfg(feature = "testing")]
@@ -37,6 +38,7 @@ pub use grid::{Grid, GridId, Piece, RegularRun, Timebase};
 pub use open::open;
 pub use recording::{BlockReader, Header, Opened, Recording};
 pub use sample::{Sample, SampleType, SamplesMut};
+pub use timetable::{TimeTable, TimeTableError};
 
 /// Locks `mutex`, poisoned or not: every critical section in this crate leaves its state
 /// consistent before anything could panic.

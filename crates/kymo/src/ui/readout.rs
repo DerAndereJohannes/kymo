@@ -2,7 +2,7 @@
 //! file.
 
 use kymo_core::tile::{
-    CHANNEL_BLOCK, ChannelBlock, Level, Tile, TileCache, TileData, TileKey, View, level_for,
+    CHANNEL_BLOCK, ChannelBlock, Level, Tile, TileCache, TileData, TileKey, View, level_at,
     max_level,
 };
 use kymo_core::{Channel, ChannelId, ChannelKind, Grid, Quantity, Recording};
@@ -88,7 +88,7 @@ pub fn read(
     if !time.is_finite() || grid.is_empty() {
         return None;
     }
-    let level = level_for(grid, view);
+    let level = level_at(grid, view, grid.sample_at(time).min(grid.len() - 1));
     let sample = if level == Level::RAW {
         nearest_sample(grid, time)?
     } else {

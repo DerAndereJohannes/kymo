@@ -114,6 +114,7 @@ pub struct Tile {
     len: u32,
     data: TileData,
     valid: Vec<Range<u32>>,
+    times: Option<Box<[f64]>>,
 }
 
 impl Tile {
@@ -130,7 +131,21 @@ impl Tile {
             len,
             data,
             valid,
+            times: None,
         }
+    }
+
+    /// The tile with its items' times if `grid` has an irregular time base.
+    pub(crate) fn with_times(mut self, grid: &crate::Grid) -> Tile {
+        if let Some(table) = grid.times() {
+            let first = self.key.time * super::TILE_LEN;
+            self.times = Some(
+                (first..=first + u64::from(self.len))
+                    .map(|k| table.bucket_time(self.key.level, k))
+                    .collect(),
+            );
+        }
+        self
     }
 
     pub fn key(&self) -> TileKey {
@@ -164,10 +179,21 @@ impl Tile {
         &self.valid
     }
 
+    /// For a grid with an irregular time base, where each item starts (seconds since the
+    /// recording start), and after them where the last one ends: `len + 1` times, the last
+    /// the next item's start (or the grid's end). A bucket starts at its first slot's time.
+    pub fn times(&self) -> Option<&[f64]> {
+        self.times.as_deref()
+    }
+
     /// Memory held by the tile, for the cache budget.
     pub fn bytes(&self) -> usize {
         size_of::<Tile>()
             + self.data.len() * self.data.sample_type().size()
             + self.valid.capacity() * size_of::<Range<u32>>()
+            + self
+                .times
+                .as_ref()
+                .map_or(0, |t| t.len() * size_of::<f64>())
     }
 }

@@ -255,8 +255,7 @@ fn header_json(rec: &Recording) -> String {
         // a segmented one.
         let mut pieces = Vec::new();
         let mut first = 0;
-        loop {
-            let run = grid.regular_run(first);
+        while let Some(run) = grid.regular_run(first) {
             pieces.push(format!(
                 "[{}, {}, {}]",
                 run.samples.start, run.start, run.rate

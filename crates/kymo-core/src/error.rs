@@ -28,6 +28,8 @@ pub enum ModelError {
          samples and after the previous piece's samples in time"
     )]
     InvalidPiece(usize),
+    #[error("the time base has times for {times} samples, the grid {len}")]
+    TimesLength { times: u64, len: u64 },
     #[error("segment {0:?} is empty")]
     EmptySegment(Range<u64>),
     #[error("segment {segment:?} ends past the grid length {len}")]

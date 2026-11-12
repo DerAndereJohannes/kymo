@@ -354,7 +354,9 @@ fn split_at_runs(recording: &Recording, placed: &Placed) -> Vec<Placed> {
     let mut parts = Vec::new();
     let mut start = placed.samples.start;
     while start < placed.samples.end {
-        let end = grid.regular_run(start).samples.end.min(placed.samples.end);
+        let end = grid.regular_run(start).map_or(placed.samples.end, |run| {
+            run.samples.end.min(placed.samples.end)
+        });
         parts.push(Placed {
             samples: start..end,
             ..placed.clone()
@@ -406,7 +408,7 @@ fn adjacent(a: &Placed, b: &Placed) -> bool {
 /// the line of the run of evenly spaced samples it starts in (placed tiles are cut at runs).
 fn part(pixels: &Pixels, grid: &Grid, placed: &Placed, x_near: f64) -> Option<Part> {
     let (first, bucket, lo, last) = placed_items(placed)?;
-    let run = grid.regular_run(placed.samples.start);
+    let run = grid.regular_run(placed.samples.start)?;
     let x = |sample: u64| (run.time_of(sample) - pixels.start) * pixels.per_second;
     let item_width = bucket as f64 / run.rate * pixels.per_second;
     let anchor = ((x_near - x(first)) / item_width)

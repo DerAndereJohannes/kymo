@@ -19,6 +19,7 @@ mod eeglab;
 mod fiff;
 mod gdf;
 mod grid;
+mod irregular;
 mod open;
 mod prefetch;
 mod pyramid;

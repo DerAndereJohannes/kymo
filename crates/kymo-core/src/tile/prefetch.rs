@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use super::{
-    CHANNEL_BLOCK, Level, Tile, TileKey, View, level_for, max_level, tiles_for_view, tiles_over,
-    view_blocks,
+    CHANNEL_BLOCK, Level, Tile, TileKey, View, cover, level_for, max_level, samples_in,
+    tiles_for_view, tiles_over, view_blocks,
 };
 use crate::{Grid, Recording};
 
@@ -61,6 +61,38 @@ pub fn prefetch(
     let mut below = Vec::new();
     for block in view_blocks(recording, &view.channels) {
         let grid = recording.grid(block.grid);
+        if grid.times().is_some() {
+            // Levels vary per tile: the cover over the margins, the tiles above it, and
+            // those below the screen's.
+            let top = max_level(grid.len());
+            let wide_cover: Vec<TileKey> = cover(grid, block, view, &wide)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            above.extend(
+                wide_cover
+                    .iter()
+                    .filter_map(TileKey::parent)
+                    .filter(|k| k.level <= top),
+            );
+            for key in wide_cover {
+                if !margins.contains(&key) {
+                    margins.push(key);
+                }
+            }
+            let visible = samples_in(grid, &shown);
+            below.extend(
+                cover(grid, block, view, &shown)
+                    .iter()
+                    .flat_map(|(key, _)| key.children())
+                    .filter(|k| {
+                        let s = k.sample_range();
+                        let end = visible.end.saturating_add(1).min(grid.len());
+                        s.start < end && s.end > visible.start
+                    }),
+            );
+            continue;
+        }
         let level = level_for(grid, view);
         margins.extend(tiles_over(grid, block, level, view.version, &wide));
         if let Some(up) = level.up().filter(|&up| up <= max_level(grid.len())) {
@@ -113,8 +145,13 @@ pub fn tile_bytes(recording: &Recording, key: &TileKey) -> usize {
         return 0;
     }
     let per_bucket = if key.level == Level::RAW { 1 } else { 2 };
-    let values = samples.div_ceil(key.level.bucket_len()) as usize * per_bucket;
-    size_of::<Tile>() + channels * values * grid.sample_type().size()
+    let items = samples.div_ceil(key.level.bucket_len()) as usize;
+    let times = if grid.times().is_some() {
+        (items + 1) * size_of::<f64>()
+    } else {
+        0
+    };
+    size_of::<Tile>() + channels * items * per_bucket * grid.sample_type().size() + times
 }
 
 /// Seconds covered by the tile `key` of `grid`, cut at the grid's end.

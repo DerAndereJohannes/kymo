@@ -1311,7 +1311,10 @@ fn breaks_backwards_and_far_away() {
     assert_eq!(grid.segments(), [0..3000]);
     assert!((grid.time_of(999) - 9.99).abs() < 1e-9);
     assert!((grid.time_of(1000) - 10.0).abs() < 1e-9);
-    assert_eq!(grid.regular_run(1000).samples.start, 1000);
+    assert_eq!(
+        grid.regular_run(1000).expect("segmented").samples.start,
+        1000
+    );
     assert_eq!(values(&rec, 0).len(), 3000);
 
     // Time jumps 40 days ahead: taken for damage, the segment follows directly too.

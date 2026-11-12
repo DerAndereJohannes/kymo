@@ -43,7 +43,7 @@ pub fn compute_raw(recording: &Recording, key: TileKey) -> Result<Tile, TileErro
         .map(|p| (p.start - range.start) as u32..(p.end - range.start) as u32)
         .collect();
     let len = (range.end - range.start) as u32;
-    Ok(Tile::new(key, channels.len() as u32, len, data, valid))
+    Ok(Tile::new(key, channels.len() as u32, len, data, valid).with_times(grid))
 }
 
 fn read<T: NativeSample>(

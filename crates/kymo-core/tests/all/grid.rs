@@ -186,16 +186,16 @@ fn segmented_time_bases_are_piecewise() {
     let late = segmented(vec![piece(0, 0.5, 100.0), piece(150, 3.0, 99.0)]).unwrap();
     assert_eq!(late.sample_at(2.9), 149);
     assert_eq!(late.sample_at(3.0), 150);
-    let run = g.regular_run(160);
+    let run = g.regular_run(160).expect("segmented");
     assert_eq!(
         (run.samples.clone(), run.rate, run.start),
         (150..u64::MAX, 99.0, 2.0)
     );
     assert_eq!(run.time_of(51), 2.0 - 99.0 / 99.0);
-    assert_eq!(g.regular_run(149).samples, 0..150);
+    assert_eq!(g.regular_run(149).expect("segmented").samples, 0..150);
     // A regular time base is one run.
     let r = grid(10, vec![0..10]).unwrap();
-    assert_eq!(r.regular_run(5).samples, 0..u64::MAX);
+    assert_eq!(r.regular_run(5).expect("regular").samples, 0..u64::MAX);
 }
 
 #[test]
@@ -250,7 +250,7 @@ proptest! {
         .unwrap();
         let s = sample.index(len as usize) as u64;
         prop_assert_eq!(g.sample_at(g.time_of(s)), s);
-        let run = g.regular_run(s);
+        let run = g.regular_run(s).expect("segmented");
         prop_assert_eq!(g.sample_at(g.time_of(s) + 0.5 / run.rate), s);
         if s + 1 < len {
             prop_assert!(g.time_of(s + 1) > g.time_of(s));

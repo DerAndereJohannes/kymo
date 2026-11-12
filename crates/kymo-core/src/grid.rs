@@ -1,8 +1,9 @@
 //! Sample grids: groups of channels that share a time base, gaps and sample type.
 
 use std::ops::Range;
+use std::sync::Arc;
 
-use crate::{ChannelId, ModelError, SampleType};
+use crate::{ChannelId, ModelError, SampleType, TimeTable};
 
 /// Index of a grid in [`Recording::grids`](crate::Recording::grids).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -23,6 +24,17 @@ pub enum Timebase {
     /// each starts after the previous one's last sample in time, so time increases with the
     /// sample index. `rate` is the grid's overall rate, for choosing levels and showing it.
     Segmented { rate: f64, pieces: Vec<Piece> },
+    /// Each slot's time from a table (an XDF stream without a nominal rate, or one that can
+    /// drop samples): `t(i) = times.time(i)`, non-decreasing; from the grid's length on,
+    /// `times.end()` plus whole periods of `rate`. A gap is a slot of its own, whose time
+    /// the reader chooses between its neighbors'. `rate` is the average rate, for showing
+    /// it. With `hold`, a sample's value holds until the next sample (drawn as steps),
+    /// otherwise lines join the samples.
+    Irregular {
+        rate: f64,
+        hold: bool,
+        times: Arc<TimeTable>,
+    },
 }
 
 /// A piece of a [`Timebase::Segmented`].
@@ -66,6 +78,62 @@ pub struct Grid {
     segments: Vec<Range<u64>>,
     sample_type: SampleType,
     channels: Vec<ChannelId>,
+    /// For an irregular time base, its density per tile at each level.
+    density: Option<Arc<Density>>,
+}
+
+/// How densely an irregular grid's samples lie: per level-0 tile (block of [`TILE_LEN`]
+/// slots), its present samples per second of present time; per tile of each level above,
+/// the least of its blocks'. A block without present samples, or whose samples share one
+/// time, has infinite density.
+///
+/// [`TILE_LEN`]: crate::tile::TILE_LEN
+#[derive(Clone, Debug, PartialEq)]
+struct Density {
+    levels: Vec<Vec<f64>>,
+}
+
+impl Density {
+    fn new(times: &TimeTable, segments: &[Range<u64>], len: u64) -> Density {
+        use crate::tile::{Level, TILE_LEN, max_level};
+        let blocks = len.div_ceil(TILE_LEN);
+        let mut first = 0;
+        let mut base = Vec::with_capacity(blocks as usize);
+        for b in 0..blocks {
+            let span = b * TILE_LEN..((b + 1) * TILE_LEN).min(len);
+            first += segments[first..].partition_point(|s| s.end <= span.start);
+            let (mut samples, mut seconds) = (0u64, 0.0);
+            for s in segments[first..].iter().take_while(|s| s.start < span.end) {
+                let part = s.start.max(span.start)..s.end.min(span.end);
+                // A present run lasts from its first sample's time to the time of the slot
+                // after it (a gap slot one usual step on, or the grid's end).
+                samples += part.end - part.start;
+                seconds += times.time(part.end) - times.time(part.start);
+            }
+            let density = samples as f64 / seconds;
+            base.push(if samples > 0 && density.is_finite() {
+                density
+            } else {
+                f64::INFINITY
+            });
+        }
+        let mut levels = vec![base];
+        for level in (1..=max_level(len).get()).filter_map(Level::new) {
+            let below = &levels[levels.len() - 1];
+            let ratio = if level.get() == 1 { 32 } else { 4 };
+            let tiles = len.div_ceil(level.tile_samples()) as usize;
+            let row = (0..tiles)
+                .map(|t| {
+                    below[(t * ratio).min(below.len())..((t + 1) * ratio).min(below.len())]
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .collect();
+            levels.push(row);
+        }
+        Density { levels }
+    }
 }
 
 impl Grid {
@@ -116,6 +184,17 @@ impl Grid {
                     return Err(ModelError::InvalidPiece(0));
                 }
             }
+            Timebase::Irregular { rate, times, .. } => {
+                if !(rate.is_finite() && *rate > 0.0) {
+                    return Err(ModelError::InvalidRate(*rate));
+                }
+                if times.len() != len {
+                    return Err(ModelError::TimesLength {
+                        times: times.len(),
+                        len,
+                    });
+                }
+            }
         }
 
         let mut merged: Vec<Range<u64>> = Vec::with_capacity(segments.len());
@@ -147,12 +226,17 @@ impl Grid {
             return Err(ModelError::DuplicateChannel(pair[0]));
         }
 
+        let density = match &timebase {
+            Timebase::Irregular { times, .. } => Some(Arc::new(Density::new(times, &merged, len))),
+            _ => None,
+        };
         Ok(Grid {
             timebase,
             len,
             segments: merged,
             sample_type,
             channels,
+            density,
         })
     }
 
@@ -173,9 +257,9 @@ impl Grid {
 
     /// The run of evenly spaced samples that holds `sample`: the whole grid for a regular
     /// time base (and beyond), the piece for a segmented one (the first piece also holds
-    /// earlier samples, the last later ones).
-    pub fn regular_run(&self, sample: u64) -> RegularRun {
-        match &self.timebase {
+    /// earlier samples, the last later ones); `None` for an irregular one.
+    pub fn regular_run(&self, sample: u64) -> Option<RegularRun> {
+        Some(match &self.timebase {
             &Timebase::Regular { rate, start } => RegularRun {
                 samples: 0..u64::MAX,
                 rate,
@@ -191,7 +275,37 @@ impl Grid {
                     start: p.start,
                 }
             }
+            Timebase::Irregular { .. } => return None,
+        })
+    }
+
+    /// The table of an irregular time base.
+    pub fn times(&self) -> Option<&TimeTable> {
+        match &self.timebase {
+            Timebase::Irregular { times, .. } => Some(times),
+            _ => None,
         }
+    }
+
+    /// For an irregular time base, the least density (present samples per second) of the
+    /// level-0 tiles in tile `time` of `level`; infinite where there are no samples or
+    /// outside the grid. `None` for other time bases.
+    pub fn least_density(&self, level: crate::tile::Level, time: u64) -> Option<f64> {
+        let density = self.density.as_ref()?;
+        Some(
+            density
+                .levels
+                .get(usize::from(level.get()))
+                .and_then(|row| row.get(usize::try_from(time).ok()?))
+                .copied()
+                .unwrap_or(f64::INFINITY),
+        )
+    }
+
+    /// Whether a sample's value holds until the next sample (an irregular time base's
+    /// `hold`), so it is drawn as steps rather than lines.
+    pub fn holds_values(&self) -> bool {
+        matches!(self.timebase, Timebase::Irregular { hold: true, .. })
     }
 
     /// Number of sample slots, gaps included.
@@ -227,10 +341,13 @@ impl Grid {
         &self.channels
     }
 
-    /// Sampling rate in Hz; for a segmented time base, the grid's overall rate.
+    /// Sampling rate in Hz; for a segmented time base, the grid's overall rate, for an
+    /// irregular one its average rate.
     pub fn rate(&self) -> f64 {
         match self.timebase {
-            Timebase::Regular { rate, .. } | Timebase::Segmented { rate, .. } => rate,
+            Timebase::Regular { rate, .. }
+            | Timebase::Segmented { rate, .. }
+            | Timebase::Irregular { rate, .. } => rate,
         }
     }
 
@@ -239,15 +356,27 @@ impl Grid {
         match self.timebase {
             // u64 -> f64 is exact below 2^53 samples, far beyond any recording.
             Timebase::Regular { rate, start } => start + sample as f64 / rate,
-            Timebase::Segmented { .. } => self.regular_run(sample).time_of(sample),
+            Timebase::Segmented { .. } => match self.regular_run(sample) {
+                Some(run) => run.time_of(sample),
+                None => f64::NAN,
+            },
+            Timebase::Irregular {
+                rate, ref times, ..
+            } => match sample.checked_sub(times.len()) {
+                None => times.time(sample),
+                Some(past) => times.end() + past as f64 / rate,
+            },
         }
     }
 
-    /// The sample whose period contains time `t` (floor), clamped to `0..=len`.
+    /// The sample whose period contains time `t` (floor), clamped to `0..=len`. For an
+    /// irregular time base, the last sample at or before `t`.
     ///
-    /// Times computed by [`time_of`](Self::time_of) map back to their sample despite rounding.
+    /// Times computed by [`time_of`](Self::time_of) map back to their sample despite rounding
+    /// (for an irregular time base, to the last sample of that time).
     pub fn sample_at(&self, t: f64) -> u64 {
         let x = match &self.timebase {
+            Timebase::Irregular { times, .. } => return times.slot_at(t).min(self.len),
             &Timebase::Regular { rate, start } => (t - start) * rate,
             Timebase::Segmented { pieces, .. } => {
                 // The last piece starting at or before `t`; its last sample before the next
