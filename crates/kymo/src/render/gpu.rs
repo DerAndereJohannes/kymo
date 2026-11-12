@@ -16,8 +16,9 @@ use super::frame::{Frame, Part};
 /// GPU memory for tile buffers, unless set otherwise.
 pub const DEFAULT_GPU_BUDGET: usize = 256 << 20;
 
-/// Storage buffers the trace pipeline's stages read: per-channel slots and three tiles.
-/// The hatches have a pipeline of their own.
+/// Storage buffers the trace pipeline's stages read: the frame's words (per-channel slots,
+/// then item positions of irregular time bases) and three tiles, as wgpu's downlevel
+/// limits allow. The hatches have a pipeline of their own.
 const VERTEX_STORAGE_BUFFERS: u32 = 4;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -49,7 +50,8 @@ struct Globals {
     size: [f32; 2],
     /// 1 to anti-alias traces, 0 not to.
     antialias: f32,
-    _pad: f32,
+    /// The word where the item positions start in the frame buffer, after the slots.
+    positions: u32,
 }
 
 #[repr(C)]
@@ -83,8 +85,17 @@ struct PartParams {
     /// First data word, after the validity bits.
     data: u32,
     present: u32,
-    _pad: [u32; 2],
+    /// For an irregular time base, the first of the part's item positions (counted from
+    /// [`Globals::positions`]).
+    xs: u32,
+    /// [`IRREGULAR`] and [`HOLD`].
+    flags: u32,
 }
+
+/// The part's items lie at positions from the frame buffer.
+const IRREGULAR: u32 = 1;
+/// The part's samples hold their values until the next one's start.
+const HOLD: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -362,6 +373,7 @@ impl TraceRenderer {
         self.clock += 1;
         self.commands.clear();
         let mut slots: Vec<Slot> = Vec::new();
+        let mut positions: Vec<f32> = Vec::new();
         let mut params: Vec<u8> = Vec::new();
         for draw in &frame.draws {
             let channels = draw.channels.len() as u32;
@@ -371,13 +383,13 @@ impl TraceRenderer {
             }
             let tile = &draw.part.tile;
             let own = self.resident(device, tile);
-            let neighbor = |r: &mut Self, part: &Option<Part>| {
+            let neighbor = |r: &mut Self, part: &Option<Part>, positions: &mut Vec<f32>| {
                 part.as_ref()
                     .filter(|p| !p.tile.is_empty())
-                    .map(|p| (r.resident(device, &p.tile), part_params(p)))
+                    .map(|p| (r.resident(device, &p.tile), part_params(p, positions)))
             };
-            let prev = neighbor(self, &draw.prev);
-            let next = neighbor(self, &draw.next);
+            let prev = neighbor(self, &draw.prev, &mut positions);
+            let next = neighbor(self, &draw.next, &mut positions);
             let buffers = [
                 prev.as_ref().map_or(&own, |(b, _)| b),
                 &own,
@@ -394,7 +406,7 @@ impl TraceRenderer {
             let p = DrawParams {
                 parts: [
                     prev.map_or_else(PartParams::default, |(_, p)| p),
-                    part_params(&draw.part),
+                    part_params(&draw.part, &mut positions),
                     next.map_or_else(PartParams::default, |(_, p)| p),
                 ],
                 column0: draw.columns.start,
@@ -436,9 +448,12 @@ impl TraceRenderer {
             .collect();
         self.hatch_count = hatches.len() as u32;
 
-        let slot_bytes: &[u8] = bytemuck::cast_slice(&slots);
+        // The slots, then the positions.
+        let mut frame_bytes: Vec<u8> = bytemuck::cast_slice(&slots).to_vec();
+        let positions_at = (frame_bytes.len() / 4) as u32;
+        frame_bytes.extend_from_slice(bytemuck::cast_slice(&positions));
         let hatch_bytes: &[u8] = bytemuck::cast_slice(&hatches);
-        let replaced = self.slots.reserve(device, slot_bytes.len() as u64)
+        let replaced = self.slots.reserve(device, frame_bytes.len() as u64)
             | self.draws.reserve(device, params.len() as u64);
         if replaced {
             self.frame_group = frame_group(
@@ -455,10 +470,10 @@ impl TraceRenderer {
         let globals = Globals {
             size: frame.size.map(|s| s as f32),
             antialias: if frame.antialias { 1.0 } else { 0.0 },
-            _pad: 0.0,
+            positions: positions_at,
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        self.slots.write(queue, slot_bytes);
+        self.slots.write(queue, &frame_bytes);
         self.draws.write(queue, &params);
         self.hatches.write(queue, hatch_bytes);
     }
@@ -570,9 +585,19 @@ fn hatch_group(
     })
 }
 
-/// Where `part`'s items lie, for the shader.
-fn part_params(part: &Part) -> PartParams {
+/// Where `part`'s items lie, for the shader; an irregular part's positions go to the end of
+/// `positions`, which follow the slots in the frame buffer.
+fn part_params(part: &Part, positions: &mut Vec<f32>) -> PartParams {
     let tile = &part.tile;
+    let xs = positions.len() as u32;
+    let mut flags = 0;
+    if let Some(p) = &part.xs {
+        positions.extend_from_slice(p);
+        flags |= IRREGULAR;
+    }
+    if part.hold {
+        flags |= HOLD;
+    }
     PartParams {
         anchor_x: part.anchor_x,
         item_width: part.item_width,
@@ -584,7 +609,8 @@ fn part_params(part: &Part) -> PartParams {
         pairs: u32::from(tile.key().level != Level::RAW),
         data: tile.len().div_ceil(32) as u32,
         present: 1,
-        _pad: [0; 2],
+        xs,
+        flags,
     }
 }
 

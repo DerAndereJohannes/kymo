@@ -10,13 +10,15 @@
 //!   their prefilter, trigger mask and whether their changes are events), the ids of the
 //!   channels the file marks as bad, the header's other fields (`extra`, as pairs), and
 //!   grids (rate, start, length, segments, the time base's pieces as [first sample, start,
-//!   rate], sample type, channel ids)
+//!   rate] (none for an irregular one), whether it is irregular and holds its values,
+//!   sample type, channel ids)
 //! - `annotations.json`: onset, duration, description and channel names of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
 //! - `grid{g}.i32`: for integer grids, the same samples as raw digital values (little-endian
 //!   i32, 0 in gaps); float grids have none
+//! - `grid{g}.times`: for an irregular grid, every slot's time (little-endian f64)
 //! - `events.json`: per stim channel, its events (sample and code) under the default rule
 //!   (every change to a non-zero code, none at the first sample), and its value changes
 //!   (sample and new value, starting with the first sample's), from a pyramid build
@@ -88,6 +90,13 @@ fn main() -> Result<()> {
                 out.join(format!("grid{g}.{ext}")),
             )?))
         };
+        if grid.times().is_some() {
+            let mut times = create("times")?;
+            for slot in 0..grid.len() {
+                times.write_all(&grid.time_of(slot).to_le_bytes())?;
+            }
+            times.flush()?;
+        }
         let mut physical = create("f32")?;
         let mut native = match grid.sample_type() {
             SampleType::F32 => None,
@@ -268,12 +277,15 @@ fn header_json(rec: &Recording) -> String {
         let _ = write!(
             j,
             "{sep}\n    {{\"rate\": {}, \"start\": {}, \"len\": {}, \"segments\": [{}], \
-             \"pieces\": [{}], \"sample_type\": \"{:?}\", \"channels\": [{}]}}",
+             \"pieces\": [{}], \"irregular\": {}, \"holds\": {}, \"sample_type\": \"{:?}\", \
+             \"channels\": [{}]}}",
             grid.rate(),
             grid.time_of(0),
             grid.len(),
             segments.join(", "),
             pieces.join(", "),
+            grid.times().is_some(),
+            grid.holds_values(),
             grid.sample_type(),
             channels.join(", ")
         );

@@ -38,7 +38,7 @@ pub use grid::{Grid, GridId, Piece, RegularRun, Timebase};
 pub use open::open;
 pub use recording::{BlockReader, Header, Opened, Recording};
 pub use sample::{Sample, SampleType, SamplesMut};
-pub use timetable::{TimeTable, TimeTableError};
+pub use timetable::{TimeTable, TimeTableError, TimeTableWriter};
 
 /// Locks `mutex`, poisoned or not: every critical section in this crate leaves its state
 /// consistent before anything could panic.

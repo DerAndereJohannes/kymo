@@ -356,6 +356,8 @@ pub(crate) struct Layout {
     /// Segments after a gap longer than [`MAX_GAP_SECONDS`], or with a start that isn't a
     /// number, moved to follow the previous one.
     pub damaged: usize,
+    /// For a stream on its own time stamps, each slot's time (no pieces then).
+    pub times: Option<std::sync::Arc<crate::TimeTable>>,
 }
 
 /// Lays a stream's segments out in a grid: each at its own rate (its line's, or `rate`
@@ -409,6 +411,64 @@ pub(crate) fn layout(segments: &[Segment], rate: f64, t0: f64) -> Layout {
         len: slot,
         moved,
         damaged,
+        times: None,
+    }
+}
+
+/// The median of a stream's steps between time stamps, from a histogram of their sizes
+/// (128 bins a decade from 1 ns to 10^7 s, so within 1 % of the true median), so that no
+/// time stamps are held.
+pub struct StepMedian {
+    bins: Vec<u64>,
+    zero: u64,
+    total: u64,
+}
+
+const STEP_BINS_PER_DECADE: f64 = 128.0;
+const STEP_FIRST_DECADE: f64 = -9.0;
+const STEP_DECADES: f64 = 16.0;
+
+impl StepMedian {
+    pub fn new() -> Self {
+        StepMedian {
+            bins: vec![0; (STEP_BINS_PER_DECADE * STEP_DECADES) as usize],
+            zero: 0,
+            total: 0,
+        }
+    }
+
+    /// Counts a step (its size).
+    pub fn push(&mut self, step: f64) {
+        let step = step.abs();
+        self.total += 1;
+        if step.is_nan() || step == 0.0 {
+            self.zero += 1;
+            return;
+        }
+        let bin = ((step.log10() - STEP_FIRST_DECADE) * STEP_BINS_PER_DECADE).floor();
+        let bin = bin.clamp(0.0, (self.bins.len() - 1) as f64) as usize;
+        self.bins[bin] += 1;
+    }
+
+    /// The (lower) median step; `None` without steps. A median among steps of 0 is 0;
+    /// otherwise its bin's center.
+    pub fn median(&self) -> Option<f64> {
+        if self.total == 0 {
+            return None;
+        }
+        let k = (self.total - 1) / 2;
+        if k < self.zero {
+            return Some(0.0);
+        }
+        let mut seen = self.zero;
+        for (b, &count) in self.bins.iter().enumerate() {
+            seen += count;
+            if seen > k {
+                let decade = (b as f64 + 0.5) / STEP_BINS_PER_DECADE + STEP_FIRST_DECADE;
+                return Some(10f64.powf(decade));
+            }
+        }
+        None
     }
 }
 
@@ -524,6 +584,27 @@ mod tests {
             (rate - 1000.0 / (slope * 999.0 + 0.01)).abs() < 1e-6,
             "{rate}"
         );
+    }
+
+    #[test]
+    fn median_steps_are_within_a_percent() {
+        let mut m = StepMedian::new();
+        assert_eq!(m.median(), None);
+        for step in [0.004, 0.0041, 0.0039, 7.0, 0.004, -0.004, 1e-3] {
+            m.push(step);
+        }
+        let median = m.median().unwrap();
+        assert!((median / 0.004 - 1.0).abs() < 0.01, "{median}");
+        let mut zeros = StepMedian::new();
+        for step in [0.0, 0.0, 1.0] {
+            zeros.push(step);
+        }
+        assert_eq!(zeros.median(), Some(0.0));
+        let mut wide = StepMedian::new();
+        for step in [1e-12, 1e9, 1e9] {
+            wide.push(step);
+        }
+        assert!(wide.median().unwrap() > 9e6);
     }
 
     #[test]

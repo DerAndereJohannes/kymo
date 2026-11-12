@@ -7,7 +7,7 @@ use eframe::egui::{
 use kymo_core::{ChannelId, ChannelKind};
 
 use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
-use crate::document::{Document, Summary, format_rate, plural};
+use crate::document::{Document, Summary, grid_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
@@ -423,11 +423,7 @@ impl Columns {
             name: widest(&mut channels.iter().map(|c| c.name.clone())),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
             unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
-            rate: widest(
-                &mut channels
-                    .iter()
-                    .map(|c| format_rate(rec.grid(c.grid).rate())),
-            ),
+            rate: widest(&mut channels.iter().map(|c| grid_rate(rec.grid(c.grid)))),
         };
         ui.data_mut(|d| {
             d.insert_temp(
@@ -538,9 +534,13 @@ fn channel_list(
                     weak(kind_name(channel.kind).to_owned()),
                 );
                 cell(ui, columns.unit, left, weak(display_unit(channel).0));
-                let rate = rec.grid(channel.grid).rate();
                 let right = Layout::right_to_left(Align::Center);
-                cell(ui, columns.rate, right, weak(format_rate(rate)));
+                cell(
+                    ui,
+                    columns.rate,
+                    right,
+                    weak(grid_rate(rec.grid(channel.grid))),
+                );
             }
         });
 }

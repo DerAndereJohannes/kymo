@@ -1,7 +1,7 @@
 //! The CPU side of trace drawing: coefficients against f64, where tiles land on screen, and
 //! the scene built from the view state.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::common::{Fixture, Rng, channel, grid, i16_rows, i32_rows, view, walk};
 use eframe::egui_wgpu::wgpu;
@@ -10,7 +10,7 @@ use kymo::render::{
 };
 use kymo::view::ViewState;
 use kymo_core::tile::{Level, TILE_LEN, TileData, query, tiles_for_view};
-use kymo_core::{ChannelId, ChannelKind, Grid, Piece, SampleType, Timebase};
+use kymo_core::{ChannelId, ChannelKind, Grid, Piece, SampleType, TimeTable, Timebase};
 use proptest::prelude::*;
 
 fn row(center: f64, px_per_unit: f64, baseline: f64) -> Row {
@@ -308,6 +308,100 @@ proptest! {
         // Something was on screen unless the view lies inside the gap.
         let in_gap = start > grid.time_of(4999) && start + span < 6.5;
         prop_assert!(checked > 0 || in_gap);
+    }
+}
+
+/// An irregular time base: 20,000 samples with steps from 0.1 ms to 0.3 s in runs, and a
+/// gap of 10 s in the middle; values held.
+fn irregular_fixture() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let mut rng = Rng::new(13);
+        let n = 20_001usize;
+        let mut times = Vec::with_capacity(n);
+        let mut t = 0.5;
+        let steps = [1e-4, 3e-3, 0.3, 1e-3];
+        for i in 0..n {
+            times.push(t);
+            t += if i == 10_000 {
+                10.0
+            } else {
+                steps[(i / 2500) % 4] * (0.5 + rng.uniform())
+            };
+        }
+        let table = TimeTable::new(&times, t).unwrap();
+        let grid = Grid::new(
+            Timebase::Irregular {
+                rate: n as f64 / (t - 0.5),
+                hold: true,
+                times: Arc::new(table),
+            },
+            n as u64,
+            vec![0..10_000, 10_001..n as u64],
+            SampleType::I16,
+            vec![ChannelId(0)],
+        )
+        .unwrap();
+        Fixture::new(
+            vec![channel("irregular", 0, 1.0, 0.0)],
+            vec![grid],
+            vec![i16_rows(vec![walk(&mut rng, n, 50.0, -3000.0, 3000.0)])],
+        )
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// With an irregular time base, every item placed lies where its time puts it, at every
+    /// zoom, and every item that reaches the screen is among a draw's items.
+    #[test]
+    fn items_of_irregular_grids_land_at_their_times(
+        at in 0.0f64..1.0,
+        span_log in -3.0f64..3.5,
+        width in 50u32..3000,
+    ) {
+        let fx = irregular_fixture();
+        let grid = fx.grid_of(ChannelId(0));
+        let first = grid.time_of(0);
+        let end = grid.time_of(grid.len());
+        let span = 10f64.powf(span_log).min(end - first);
+        let start = first + at * (end - first - span);
+        let scene = fx.scene(ChannelId(0), start..start + span, [width, 100]);
+        let cache = fx.cache(tiles_for_view(&fx.recording, &view(&scene)));
+        let q = query(&fx.recording, &view(&scene), &cache);
+        let frame = Frame::new(&fx.recording, &scene, &q);
+        let per_px = f64::from(width) / span;
+        let x = |t: f64| (t - start) * per_px;
+        for placed in &q.draw {
+            let key = placed.tile.key();
+            let bucket = key.level.bucket_len();
+            let base = key.sample_range().start;
+            for item in (placed.samples.start - base) / bucket..=(placed.samples.end - 1 - base) / bucket {
+                let a = x(grid.time_of(base + item * bucket));
+                let b = x(grid.time_of((base + (item + 1) * bucket).min(grid.len())));
+                if b < 0.0 || a > f64::from(width) {
+                    continue;
+                }
+                // A tile may be drawn more than once (around a sparse stretch).
+                let draw = frame
+                    .draws
+                    .iter()
+                    .find(|d| d.part.tile.key() == key && d.part.items.contains(&(item as u32)));
+                let Some(draw) = draw else {
+                    prop_assert!(false, "{key:?} item {item} reaches the screen, but isn't drawn");
+                    unreachable!()
+                };
+                let items = &draw.part.items;
+                let xs = draw.part.xs.as_ref().unwrap();
+                let i = (item as u32 - items.start()) as usize;
+                // A start or end far off screen is as precise as an f32 there.
+                let slack = |x: f64| 1e-3 + x.abs() * f64::from(f32::EPSILON);
+                prop_assert!((f64::from(xs[i]) - a).abs() < slack(a), "{key:?} item {item}: {} vs {a}", xs[i]);
+                prop_assert!((f64::from(xs[i + 1]) - b).abs() < slack(b), "{key:?} item {item} end");
+                prop_assert!(draw.part.hold);
+            }
+        }
     }
 }
 

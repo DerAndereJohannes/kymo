@@ -157,8 +157,14 @@ differs:
 - Samples before a stream's first time stamp count back from it in Kymo; pyxdf counts
   them on from 0. No file seen has any.
 - Irregular numeric streams with several channels that are not of an event type become
-  channels in Kymo (left out until it reads irregular time bases), annotations in
-  mnextend.
+  channels in Kymo, annotations in mnextend. They are drawn as held values (steps) on
+  their synchronized time stamps, as pyxdf leaves them, which must match within 1 us;
+  a time stamp before the previous one is taken as the previous one. Steps longer than
+  1 s and 500 median steps (Kymo's median is a histogram's, within 1 %) are gaps, and the
+  grid's rate is the average within the segments (pyxdf gives such streams none).
+- Streams that can drop samples are on their synchronized time stamps too, as in pyxdf,
+  drawn as lines, with gaps at steps longer than 1 s and 2 sample periods; their rate is
+  the average within the segments (pyxdf's effective rate counts the gaps in).
 - Channels of type "trigger(s)" are stim channels in Kymo, misc in mnextend.
 - Labels two streams share are prefixed by their stream's name, type or id in Kymo; empty
   labels are named "{stream name}_{n}". Names must be the label, a prefixed label, or
@@ -468,8 +474,42 @@ def xdf_mode(stream):
         return "channels"
     kind = str(xdf_field(info, "type")).strip().lower()
     if count > 1 and kind not in XDF_EVENT_TYPES:
-        return "left out (irregular channels)"
+        return "channels"
     return "annotations"
+
+
+def xdf_can_drop(stream):
+    """Whether a pyxdf stream's header says it can drop samples."""
+    try:
+        value = stream["info"]["desc"][0]["synchronization"][0]["can_drop_samples"][0]
+    except (TypeError, IndexError, KeyError):
+        return False
+    return str(value).strip().lower() == "true"
+
+
+def xdf_own_timing(stamps, nominal):
+    """Kymo's layout of a stream on its own (synchronized) time stamps: the stamps never
+    before the previous one, the lengths of the runs between gaps (steps longer than 1 s and
+    500 median steps, or for a nominal rate 1 s and 2 periods) and the average rate within
+    them."""
+    times = np.maximum.accumulate(np.asarray(stamps, dtype=np.float64))
+    steps = np.diff(times)
+    n = len(times)
+    span = times[-1] - times[0] if n else 0.0
+    if nominal > 0:
+        usual = 1.0 / nominal
+        threshold = max(1.0, 2.0 / nominal)
+    else:
+        ordered = np.sort(steps)
+        median = ordered[(len(ordered) - 1) // 2] if len(ordered) else 0.0
+        usual = median if median > 0 else (span / (n - 1) if span > 0 else 1.0)
+        threshold = max(1.0, 500.0 * usual)
+    gap = steps > threshold
+    starts = np.concatenate([[0], np.flatnonzero(gap) + 1])
+    lengths = np.diff(np.concatenate([starts, [n]]))
+    within = steps[~gap]
+    rate = len(within) / within.sum() if len(within) and within.sum() > 0 else 1.0 / usual
+    return times, lengths, rate
 
 
 def xdf_channels(stream):
@@ -518,7 +558,7 @@ def compare_xdf(path, tmp, header, annotations, windows):
         if ours != expected:
             problems.append(f"stream {sid}: Kymo reads it as {ours!r}, expected {expected!r}")
         default = mnextend_xdf.stream_modes(info)[0]
-        if ours == "left out (irregular channels)" and default == "annotations":
+        if ours == "channels" and float(info["nominal_srate"]) == 0 and default == "annotations":
             notes.append(f"stream {sid}: irregular channels, annotations in mnextend")
     shown = sorted(sid for sid, m in kymo_modes.items() if m == "channels")
     if len(shown) != len(header["grids"]):
@@ -543,20 +583,47 @@ def compare_xdf(path, tmp, header, annotations, windows):
         if lengths.sum() != len(stamps):
             problems.append(f"stream {sid}: {lengths.sum()} samples, pyxdf {len(stamps)}")
             continue
-        effective = float(info["effective_srate"]) or float(xdf_field(info, "nominal_srate"))
-        if not np.isclose(grid["rate"], effective, rtol=1e-9, atol=0):
-            problems.append(f"stream {sid}: rate {grid['rate']}, pyxdf {effective}")
-        n_segments = len(info["segments"])
-        if n_segments > 1:
-            notes.append(f"stream {sid}: {n_segments} segments")
         before = np.concatenate([[0], np.cumsum(lengths)[:-1]])
         slots = np.concatenate(
             [np.arange(a, b) for a, b in segments]
         ) if len(segments) else np.zeros(0, dtype=np.int64)
-        pieces = np.array(grid["pieces"], dtype=np.float64).reshape(-1, 3)
-        piece = np.searchsorted(pieces[:, 0], slots, side="right") - 1
-        times = pieces[piece, 1] + (slots - pieces[piece, 0]) / pieces[piece, 2]
-        error = np.abs(times - (stamps - t0))
+        nominal = float(xdf_field(info, "nominal_srate"))
+        own = nominal == 0 or xdf_can_drop(stream)
+        if own != grid["irregular"] or grid["holds"] != (nominal == 0):
+            problems.append(
+                f"stream {sid}: irregular {grid['irregular']}, holds {grid['holds']}; "
+                f"nominal rate {nominal}, can drop samples {xdf_can_drop(stream)}"
+            )
+            continue
+        if own:
+            # On its own synchronized time stamps, which pyxdf doesn't dejitter either.
+            expected_times, expected_lengths, expected_rate = xdf_own_timing(stamps, nominal)
+            if list(lengths) != list(expected_lengths):
+                problems.append(
+                    f"stream {sid}: segments of {list(lengths)} samples, expected "
+                    f"{list(expected_lengths)}"
+                )
+            if not np.isclose(grid["rate"], expected_rate, rtol=1e-9, atol=0):
+                problems.append(f"stream {sid}: rate {grid['rate']}, expected {expected_rate}")
+            if len(expected_lengths) > 1:
+                notes.append(f"stream {sid}: own time stamps, {len(expected_lengths)} segments")
+            backward = int((np.diff(stamps) < 0).sum())
+            if backward:
+                notes.append(f"stream {sid}: {backward} time stamps before the previous one")
+            all_times = np.fromfile(tmp / f"grid{g}.times", dtype="<f8")
+            times = all_times[slots]
+            error = np.abs(times - (expected_times - t0))
+        else:
+            effective = float(info["effective_srate"]) or nominal
+            if not np.isclose(grid["rate"], effective, rtol=1e-9, atol=0):
+                problems.append(f"stream {sid}: rate {grid['rate']}, pyxdf {effective}")
+            n_segments = len(info["segments"])
+            if n_segments > 1:
+                notes.append(f"stream {sid}: {n_segments} segments")
+            pieces = np.array(grid["pieces"], dtype=np.float64).reshape(-1, 3)
+            piece = np.searchsorted(pieces[:, 0], slots, side="right") - 1
+            times = pieces[piece, 1] + (slots - pieces[piece, 0]) / pieces[piece, 2]
+            error = np.abs(times - (stamps - t0))
         worst_time = max(worst_time, float(error.max()) if len(error) else 0.0)
         if len(error) and error.max() > 1e-6:
             i = int(error.argmax())
@@ -1357,6 +1424,7 @@ def testgen_files(directory):
         ("xdf-mixed", "xdf", []),
         ("xdf-events", "xdf", []),
         ("xdf-clocks", "xdf", []),
+        ("xdf-irregular", "xdf", []),
     ]
     files = []
     for name, ext, extra in presets:

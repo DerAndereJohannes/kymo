@@ -48,6 +48,7 @@ impl Document {
                 .iter()
                 .map(|g| GridSummary {
                     rate: g.rate(),
+                    irregular: g.times().is_some(),
                     samples: g.len(),
                     segments: g.segments().len(),
                     channels: g
@@ -92,7 +93,10 @@ pub struct Summary {
 /// One sampling grid: channels sharing a rate and gap structure.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GridSummary {
+    /// For an irregular time base, the average rate.
     pub rate: f64,
+    /// Whether the samples have times of their own (an irregular time base).
+    pub irregular: bool,
     pub samples: u64,
     /// Sample ranges holding data; more than one means the recording has gaps.
     pub segments: usize,
@@ -101,15 +105,15 @@ pub struct GridSummary {
 
 impl GridSummary {
     /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels", with
-    /// the exact rate.
+    /// the exact rate ("irregular, 299.98 Hz on average, ..." for an irregular time base).
     pub fn describe(&self) -> String {
         let n = self.channels.len();
-        let mut s = format!(
-            "{}, {} samples, {n} channel{}",
-            exact_rate(self.rate),
-            self.samples,
-            plural(n)
-        );
+        let rate = if self.irregular {
+            format!("irregular, {} on average", exact_rate(self.rate))
+        } else {
+            exact_rate(self.rate)
+        };
+        let mut s = format!("{rate}, {} samples, {n} channel{}", self.samples, plural(n));
         if self.segments != 1 {
             s += &format!(", {} segments", self.segments);
         }
@@ -134,34 +138,39 @@ impl Summary {
             SidebarRow::new("Duration", format_duration(self.duration)),
             SidebarRow::new("Channels", self.channels.to_string()),
         ];
-        // Grids of the same rate (split by sample type) count as one.
-        let mut rates: Vec<(f64, usize, u64)> = Vec::new();
+        // Grids of the same rate (split by sample type) count as one; irregular ones show
+        // their average rate.
+        let mut rates: Vec<(f64, bool, usize, u64)> = Vec::new();
         for grid in &self.grids {
-            match rates.iter_mut().find(|(rate, ..)| *rate == grid.rate) {
-                Some((_, channels, samples)) => {
+            let same = |r: &&mut (f64, bool, usize, u64)| r.0 == grid.rate && r.1 == grid.irregular;
+            match rates.iter_mut().find(same) {
+                Some((_, _, channels, samples)) => {
                     *channels += grid.channels.len();
                     *samples = (*samples).max(grid.samples);
                 }
-                None => rates.push((grid.rate, grid.channels.len(), grid.samples)),
+                None => rates.push((grid.rate, grid.irregular, grid.channels.len(), grid.samples)),
             }
         }
         let value = match &rates[..] {
-            [(rate, ..)] => format_rate(*rate),
+            [(rate, irregular, ..)] => rate_text(*rate, *irregular),
             // A line each, so the row never truncates.
             _ => rates
                 .iter()
-                .map(|&(rate, n, _)| format!("{} ({n} channel{})", format_rate(rate), plural(n)))
+                .map(|&(rate, irregular, n, _)| {
+                    format!("{} ({n} channel{})", rate_text(rate, irregular), plural(n))
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
         let hover = rates
             .iter()
-            .map(|&(rate, n, samples)| {
-                format!(
-                    "{}: {n} channel{}, {samples} samples",
-                    exact_rate(rate),
-                    plural(n)
-                )
+            .map(|&(rate, irregular, n, samples)| {
+                let rate = if irregular {
+                    format!("{} on average (irregular)", exact_rate(rate))
+                } else {
+                    exact_rate(rate)
+                };
+                format!("{rate}: {n} channel{}, {samples} samples", plural(n))
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -235,6 +244,21 @@ pub fn format_rate(rate: f64) -> String {
     let decimals = (2 - rate.log10().floor() as i32).max(2) as usize;
     let text = format!("{rate:.decimals$}");
     format!("{} Hz", text.trim_end_matches('0').trim_end_matches('.'))
+}
+
+/// A grid's rate as [`format_rate`] rounds it, "irregular, 300 Hz" for the average rate of
+/// an irregular time base.
+pub fn rate_text(rate: f64, irregular: bool) -> String {
+    if irregular {
+        format!("irregular, {}", format_rate(rate))
+    } else {
+        format_rate(rate)
+    }
+}
+
+/// The rate of `grid` as [`rate_text`] gives it.
+pub fn grid_rate(grid: &kymo_core::Grid) -> String {
+    rate_text(grid.rate(), grid.times().is_some())
 }
 
 /// A rate with every digit it has ("500.00649253529946 Hz").
@@ -457,6 +481,7 @@ mod tests {
     fn rounded_rates_keep_the_exact_one() {
         let grid = |rate: f64| GridSummary {
             rate,
+            irregular: false,
             samples: 1000,
             segments: 1,
             channels: vec!["Fz".into(), "Cz".into()],
@@ -513,6 +538,32 @@ mod tests {
         assert_eq!(
             sampling.hover.as_deref(),
             Some("500.00649253529946 Hz: 4 channels, 1000 samples")
+        );
+
+        // An irregular grid shows its average rate as such, apart from a regular grid of
+        // that rate.
+        let irregular = GridSummary {
+            irregular: true,
+            ..grid(250.0)
+        };
+        let mixed = summary(vec![grid(250.0), irregular.clone()]);
+        let rows = mixed.sidebar_rows();
+        let sampling = rows.iter().find(|r| r.key == "Sampling").unwrap();
+        assert_eq!(
+            sampling.value,
+            "250 Hz (2 channels)\nirregular, 250 Hz (2 channels)"
+        );
+        assert!(
+            sampling
+                .hover
+                .as_deref()
+                .unwrap()
+                .ends_with("250 Hz on average (irregular): 2 channels, 1000 samples")
+        );
+        assert!(
+            irregular
+                .describe()
+                .starts_with("irregular, 250 Hz on average, 1000 samples")
         );
     }
 

@@ -10,12 +10,12 @@ use memmap2::Mmap;
 
 use super::XdfError;
 use super::scan::{self, Chunk, Info, MAGIC, Mode, Stamps, Stream, ValueFormat};
-use super::time::{self, Clock, Corrector, Dejitter, Layout, Segment};
+use super::time::{self, Clock, Corrector, Dejitter, Layout, Segment, StepMedian};
 use crate::decode::{ByteOrder, Decoder, frames_into};
 use crate::mapped::{self, map_read_only};
 use crate::{
     AnnotationData, BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, OpenError,
-    Opened, Origin, ReadError, Sample, SampleType, SamplesMut, Timebase, Unit,
+    Opened, Origin, ReadError, Sample, SampleType, SamplesMut, TimeTable, Timebase, Unit,
 };
 
 /// Reads samples straight from the mapped file, chunk by chunk.
@@ -84,7 +84,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         .iter()
         .zip(&clocks)
         .map(|(s, clock)| {
-            (s.mode == Mode::Channels && s.len > 0).then(|| timing(s, &map, clock.as_ref()))
+            (matches!(s.mode, Mode::Channels | Mode::Irregular) && s.len > 0)
+                .then(|| timing(s, &map, clock.as_ref()))
         })
         .collect();
 
@@ -101,11 +102,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             Mode::Unreadable(reason) if stream.info.is_some() => {
                 warnings.push(format!("{} is not read: {reason}", stream.describe()));
             }
-            Mode::Irregular => warnings.push(format!(
-                "{} has an irregular rate and several channels, which kymo doesn't show yet; \
-                 it is left out",
-                stream.describe()
-            )),
             _ => {}
         }
         if stream.info.is_some() && !stream.footer {
@@ -114,19 +110,23 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 stream.describe()
             ));
         }
-        if timing.is_some() && stream.info.as_ref().is_some_and(|i| i.can_drop) {
+        if let Some(own) = timing.as_ref().and_then(|t| t.own.as_ref())
+            && own.backward > 0
+        {
             warnings.push(format!(
-                "{} can drop samples, so pyxdf doesn't dejitter it; kymo does until it reads \
-                 such streams on their own timestamps",
-                stream.describe()
+                "{}: {} of its time stamps come before the previous one's; each is taken as \
+                 the previous one",
+                stream.describe(),
+                own.backward
             ));
         }
     }
 
-    let shown: Vec<(&Stream, &Timing)> = streams
+    let shown: Vec<(&Stream, &Timing, Option<&Clock>)> = streams
         .iter()
         .zip(&timing)
-        .filter_map(|(s, t)| Some((s, t.as_ref()?)))
+        .zip(&clocks)
+        .filter_map(|((s, t), c)| Some((s, t.as_ref()?, c.as_ref())))
         .collect();
     if shown.is_empty() {
         let listed: Vec<String> = streams
@@ -145,10 +145,10 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     // t = 0 is the earliest first (synchronized, dejittered) time of the streams shown.
     let t0 = shown
         .iter()
-        .filter_map(|(_, t)| t.segments.first().filter(|_| t.stamped).map(|s| s.start))
+        .filter_map(|(_, t, _)| t.segments.first().filter(|_| t.stamped).map(|s| s.start))
         .fold(f64::INFINITY, f64::min);
     let t0 = if t0.is_finite() { t0 } else { 0.0 };
-    for (stream, timing) in &shown {
+    for (stream, timing, _) in &shown {
         if !timing.stamped {
             warnings.push(format!(
                 "{} has no timestamps; it is placed at the start",
@@ -157,13 +157,13 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         }
     }
 
-    let streams_shown: Vec<&Stream> = shown.iter().map(|(s, _)| *s).collect();
+    let streams_shown: Vec<&Stream> = shown.iter().map(|(s, _, _)| *s).collect();
     let names = labels(&streams_shown);
     let mut channels = Vec::new();
     let mut grids = Vec::new();
     let mut readers = Vec::new();
     let mut unknown_units: Vec<String> = Vec::new();
-    for (g, (stream, timing)) in shown.iter().enumerate() {
+    for (g, &(stream, timing, clock)) in shown.iter().enumerate() {
         let Some(info) = &stream.info else { continue };
         let ValueFormat::Numeric(encoding) = info.format else {
             continue;
@@ -173,7 +173,12 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         let event_stream = scan::is_event_type(&info.kind);
         // A stream without time stamps starts at t = 0.
         let origin = if timing.stamped { t0 } else { 0.0 };
-        let layout = time::layout(&timing.segments, timing.rate, origin);
+        let layout = match &timing.own {
+            Some(own) => {
+                own_layout(stream, &map, clock, timing, own, origin).map_err(|e| error(e.into()))?
+            }
+            None => time::layout(&timing.segments, timing.rate, origin),
+        };
         if layout.damaged > 0 {
             warnings.push(format!(
                 "{}: {} of its segments start more than 30 days after the previous one, or \
@@ -237,6 +242,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         let grid = grid_of(
             &layout,
             timing.rate,
+            timing.own.as_ref().map(|own| own.hold),
             reader.native,
             (first_channel..channels.len() as u32)
                 .map(ChannelId)
@@ -317,15 +323,33 @@ struct Timing {
     /// Whether the stream has time stamps at all; without, one segment from 0 at the
     /// nominal rate.
     stamped: bool,
+    /// For a stream on its own time stamps (irregular, or one that can drop samples): its
+    /// segments are runs between gaps, each starting at its first time stamp, and `rate`
+    /// is the average rate within them.
+    own: Option<OwnTimes>,
 }
 
-/// Synchronizes and dejitters the time stamps of a stream shown as channels.
+/// How a stream on its own (synchronized, not dejittered) time stamps is laid out.
+struct OwnTimes {
+    /// The usual step: the median step of an irregular stream, the sample period of one
+    /// with a nominal rate. A gap's slot lies this far after the sample before it, and the
+    /// last sample ends this far after its time.
+    step: f64,
+    /// Whether samples hold their values until the next one (irregular streams) or lines
+    /// join them (streams with a nominal rate that can drop samples).
+    hold: bool,
+    /// Time stamps before the previous one's, taken as the previous one.
+    backward: u64,
+}
+
+/// Synchronizes and dejitters the time stamps of a stream shown as channels; those of an
+/// irregular stream, or one that can drop samples, are only synchronized (as pyxdf does).
 fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
     let nominal = stream.info.as_ref().map_or(1.0, |i| i.rate);
-    let frame = stream.info.as_ref().map_or(1, |i| match i.format {
-        ValueFormat::Numeric(e) => 1 + i.count * e.size(),
-        ValueFormat::String => 1,
-    });
+    let frame = frame_of(stream);
+    if stream.mode == Mode::Irregular || stream.info.as_ref().is_some_and(|i| i.can_drop) {
+        return own_timing(stream, map, clock, nominal);
+    }
     if stream.first_stamp.is_none() {
         return Timing {
             segments: vec![Segment {
@@ -336,6 +360,7 @@ fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
             }],
             rate: nominal,
             stamped: false,
+            own: None,
         };
     }
     let mut corrector = Corrector::new(clock);
@@ -349,7 +374,172 @@ fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
         segments,
         rate,
         stamped: true,
+        own: None,
     }
+}
+
+/// Bytes of a sample without a time stamp: the flag and the values.
+fn frame_of(stream: &Stream) -> usize {
+    stream.info.as_ref().map_or(1, |i| match i.format {
+        ValueFormat::Numeric(e) => 1 + i.count * e.size(),
+        ValueFormat::String => 1,
+    })
+}
+
+/// The spacing of a stream without time stamps: its sample period, else a second.
+fn unstamped_step(period: f64) -> f64 {
+    if period > 0.0 { period } else { 1.0 }
+}
+
+/// Feeds `f` each sample's synchronized time stamp, never before the previous one's (those
+/// that are count as `backward`); a stream without time stamps has its samples `step`
+/// apart from 0.
+fn own_times(
+    stream: &Stream,
+    map: &[u8],
+    clock: Option<&Clock>,
+    step: f64,
+    mut f: impl FnMut(u64, f64),
+) -> u64 {
+    if stream.first_stamp.is_none() {
+        for i in 0..stream.len {
+            f(i, i as f64 * step);
+        }
+        return 0;
+    }
+    let nominal = stream.info.as_ref().map_or(0.0, |i| i.rate);
+    // pyxdf deduces missing time stamps of an irregular stream as the previous one.
+    let tdiff = if nominal > 0.0 { 1.0 / nominal } else { 0.0 };
+    let mut corrector = Corrector::new(clock);
+    let mut previous = f64::NEG_INFINITY;
+    let mut backward = 0;
+    timestamps(stream, map, frame_of(stream), tdiff, |i, t| {
+        let mut t = corrector.correct(t);
+        if !t.is_finite() {
+            t = previous;
+        }
+        if t < previous {
+            backward += 1;
+            t = previous;
+        }
+        previous = t;
+        f(i, t);
+    });
+    backward
+}
+
+/// The timing of a stream on its own time stamps: the usual step (the median step, or the
+/// sample period for a stream with a nominal rate), the runs between gaps (steps longer
+/// than 1 s and 500 usual steps, or for a nominal rate pyxdf's breaks as kymo sets them:
+/// 1 s and 2 periods), and the average rate within them.
+fn own_timing(stream: &Stream, map: &[u8], clock: Option<&Clock>, nominal: f64) -> Timing {
+    let period = if nominal > 0.0 { 1.0 / nominal } else { 0.0 };
+    let mut median = StepMedian::new();
+    let (mut first, mut last) = (None, 0.0);
+    let backward = own_times(stream, map, clock, unstamped_step(period), |_, t| {
+        if first.is_some() {
+            median.push(t - last);
+        } else {
+            first = Some(t);
+        }
+        last = t;
+    });
+    let first = first.unwrap_or(0.0);
+    let span = last - first;
+    let usual = if nominal > 0.0 {
+        period
+    } else {
+        median
+            .median()
+            .filter(|&m| m > 0.0)
+            .or_else(|| (span > 0.0).then(|| span / (stream.len - 1) as f64))
+            .unwrap_or(1.0)
+    };
+    let threshold = if nominal > 0.0 {
+        1f64.max(2.0 * period)
+    } else {
+        1f64.max(500.0 * usual)
+    };
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut previous = f64::NAN;
+    let (mut samples, mut seconds) = (0u64, 0.0);
+    own_times(stream, map, clock, unstamped_step(period), |i, t| {
+        match segments.last_mut() {
+            Some(s) if t - previous <= threshold => {
+                s.len += 1;
+                samples += 1;
+                seconds += t - previous;
+            }
+            _ => segments.push(Segment {
+                first: i,
+                len: 1,
+                start: t,
+                step: None,
+            }),
+        }
+        previous = t;
+    });
+    let rate = if samples > 0 && seconds > 0.0 {
+        samples as f64 / seconds
+    } else {
+        1.0 / usual
+    };
+    Timing {
+        segments,
+        rate,
+        stamped: stream.first_stamp.is_some(),
+        own: Some(OwnTimes {
+            step: usual,
+            hold: nominal <= 0.0,
+            backward,
+        }),
+    }
+}
+
+/// The layout of a stream on its own time stamps, and its time table: its runs between gaps
+/// in order, a slot of its own for each gap (its time a usual step after the sample before
+/// it), the last sample ending a usual step after its time; times from `origin`.
+fn own_layout(
+    stream: &Stream,
+    map: &[u8],
+    clock: Option<&Clock>,
+    timing: &Timing,
+    own: &OwnTimes,
+    origin: f64,
+) -> Result<Layout, crate::TimeTableError> {
+    let segments = &timing.segments;
+    let gaps = segments.len().saturating_sub(1) as u64;
+    let len = stream.len + gaps;
+    let mut writer = TimeTable::writer(len);
+    let mut next = 1;
+    let mut previous = f64::NAN;
+    let period = stream
+        .info
+        .as_ref()
+        .map_or(0.0, |i| if i.rate > 0.0 { 1.0 / i.rate } else { 0.0 });
+    own_times(stream, map, clock, unstamped_step(period), |i, t| {
+        let t = t - origin;
+        if segments.get(next).is_some_and(|s| s.first == i) {
+            writer.push((previous + own.step).min(t));
+            next += 1;
+        }
+        writer.push(t);
+        previous = t;
+    });
+    let times = writer.finish(previous + own.step)?;
+    let map = segments
+        .iter()
+        .enumerate()
+        .map(|(k, s)| (s.first + k as u64, s.first, s.len))
+        .collect();
+    Ok(Layout {
+        pieces: Vec::new(),
+        map,
+        len,
+        moved: 0,
+        damaged: 0,
+        times: Some(std::sync::Arc::new(times)),
+    })
 }
 
 /// Feeds `f` the raw time stamp of each sample of a stream shown as channels, in order: its
@@ -392,19 +582,26 @@ fn timestamps(stream: &Stream, map: &[u8], frame: usize, tdiff: f64, mut f: impl
 }
 
 /// The grid of a stream laid out as `layout`: a regular time base for one segment, a
-/// segmented one for several.
+/// segmented one for several, an irregular one for a stream on its own time stamps
+/// (holding its values with `hold`).
 fn grid_of(
     layout: &Layout,
     rate: f64,
+    hold: Option<bool>,
     native: SampleType,
     channels: Vec<ChannelId>,
 ) -> Result<Grid, crate::ModelError> {
-    let timebase = match layout.pieces.as_slice() {
-        [one] => Timebase::Regular {
+    let timebase = match (&layout.times, layout.pieces.as_slice()) {
+        (Some(times), _) => Timebase::Irregular {
+            rate,
+            hold: hold.unwrap_or(true),
+            times: std::sync::Arc::clone(times),
+        },
+        (None, [one]) => Timebase::Regular {
             rate: one.rate,
             start: one.start,
         },
-        pieces => Timebase::Segmented {
+        (None, pieces) => Timebase::Segmented {
             rate,
             pieces: pieces.to_vec(),
         },
@@ -433,7 +630,7 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
         _ if stream.len == 0 => "no samples",
         Mode::Channels => "channels",
         Mode::Annotations => "annotations",
-        Mode::Irregular => "left out (irregular channels)",
+        Mode::Irregular => "channels",
     };
     let rate = if info.rate > 0.0 {
         format!("{} Hz", info.rate)
@@ -446,7 +643,14 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
         info.format.name(),
         stream.len
     );
-    if let Some(timing) = timing.filter(|t| t.stamped) {
+    if let Some(timing) = timing.filter(|t| t.stamped && t.own.is_some()) {
+        text.push_str(&format!(
+            "; own time stamps, average rate {:.6} Hz, {} segment{}",
+            timing.rate,
+            timing.segments.len(),
+            if timing.segments.len() == 1 { "" } else { "s" }
+        ));
+    } else if let Some(timing) = timing.filter(|t| t.stamped) {
         text.push_str(&format!(
             "; effective rate {:.6} Hz, {} segment{}",
             timing.rate,

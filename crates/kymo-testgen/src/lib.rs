@@ -1121,14 +1121,24 @@ mod presets {
             "xdf-events",
             "XDF, float64 EEG with a Trigger channel at 250 Hz, a regular int32 Markers \
              stream at 100 Hz (stim), numeric and string marker streams (one at a nominal \
-             rate), an irregular two-channel stream (left out until irregular streams are \
-             read), 1 min",
+             rate), an irregular two-channel stream (channels on its own time stamps), 1 min",
         ),
         (
             "xdf-clocks",
             "XDF, 8 EEG channels at 500 Hz and an accelerometer at 52 Hz on drifting clocks \
              with a reset, jittered time stamps, rates off nominal, breaks of 3 and 4 s (the \
              second with the rate changing), string markers, 2 min",
+        ),
+        (
+            "xdf-irregular",
+            "XDF, 4 EEG channels at 250 Hz, an irregular three-channel eye tracker (about \
+             300 Hz, jittered, pauses of 8 and 3 s) and a 100 Hz stream that can drop samples \
+             (a pause of 2.5 s), on drifting clocks, string markers, 2 min",
+        ),
+        (
+            "xdf-eyetracker",
+            "XDF, an irregular three-channel eye tracker at about 1000 Hz (jittered, pauses of \
+             12, 30 and 5 s), string markers, 1 h",
         ),
     ];
 
@@ -1160,6 +1170,8 @@ mod presets {
             "xdf-mixed" => xdf_mixed(),
             "xdf-events" => xdf_events(),
             "xdf-clocks" => xdf_clocks(),
+            "xdf-irregular" => xdf_irregular(),
+            "xdf-eyetracker" => xdf_eyetracker(),
             _ => return None,
         };
         Some(spec)
@@ -2066,6 +2078,116 @@ mod presets {
         spec.xdf.clock_drift = 3e-6;
         spec.xdf.clock_reset = Some((70.0, 4000.0));
         spec.seed = 23;
+        spec
+    }
+
+    /// String markers every few seconds over `duration`, as `xdf_markers` writes them, in a
+    /// stream of id `id`.
+    fn string_markers(spec: &mut Spec, id: u32, duration: f64) {
+        spec.annotations = xdf_markers(duration, &["S  1", "S  2"]);
+        spec.xdf.markers = vec![XdfMarkers {
+            id,
+            name: "Markers".into(),
+            kind: "Markers".into(),
+            values: MarkerValues::Strings,
+            rate: 0.0,
+            annotations: 0..spec.annotations.len(),
+        }];
+    }
+
+    /// Gaze position (pixels, unscaled) and pupil size channels of an eye tracker at about
+    /// `rate` Hz.
+    fn gaze_channels(rate: u32) -> Vec<ChannelSpec> {
+        [("GazeX", "pixels"), ("GazeY", "pixels"), ("Pupil", "NA")]
+            .iter()
+            .map(|&(label, unit)| ChannelSpec {
+                amplitude: 400.0,
+                ..ChannelSpec::xdf(label, "gaze", unit, rate, XdfFormat::F32)
+            })
+            .collect()
+    }
+
+    fn xdf_irregular() -> Spec {
+        let f = Format::Xdf;
+        let mut channels: Vec<ChannelSpec> = ["Fz", "Cz", "Pz", "Oz"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 250, f))
+            .collect();
+        channels.extend(gaze_channels(300));
+        for axis in ["Fx", "Fy"] {
+            channels.push(ChannelSpec {
+                amplitude: 50.0,
+                ..ChannelSpec::xdf(axis, "force", "NA", 100, XdfFormat::F32)
+            });
+        }
+        let mut spec = Spec::new(f, channels, 1.0, 120);
+        let eeg = XdfStream {
+            chunk: 25,
+            ..XdfStream::new(1, "Amp", "EEG", vec![0, 1, 2, 3])
+        };
+        // Pauses longer than 1 s and 500 median steps (1.7 s).
+        let gaze = XdfStream {
+            stamps: XdfStamps::All,
+            chunk: 20,
+            start: 0.2,
+            jitter: 1.5e-3,
+            irregular: true,
+            breaks: vec![
+                XdfBreak {
+                    before: 9000,
+                    seconds: 8.0,
+                    rate_error: 0.0,
+                },
+                XdfBreak {
+                    before: 24_000,
+                    seconds: 3.0,
+                    rate_error: 1e-3,
+                },
+            ],
+            ..XdfStream::new(2, "Tracker", "Gaze", vec![4, 5, 6])
+        };
+        let force = XdfStream {
+            stamps: XdfStamps::All,
+            chunk: 10,
+            start: 0.5,
+            jitter: 1e-3,
+            can_drop: true,
+            breaks: vec![XdfBreak {
+                before: 5000,
+                seconds: 2.5,
+                rate_error: 0.0,
+            }],
+            ..XdfStream::new(3, "Plate", "Force", vec![7, 8])
+        };
+        spec.xdf.streams = vec![eeg, gaze, force];
+        string_markers(&mut spec, 4, 120.0);
+        spec.xdf.clock = 9_000.0;
+        spec.xdf.clock_offsets = true;
+        spec.xdf.clock_offset = 0.4;
+        spec.xdf.clock_drift = -2e-6;
+        spec.seed = 24;
+        spec
+    }
+
+    fn xdf_eyetracker() -> Spec {
+        let mut spec = Spec::new(Format::Xdf, gaze_channels(1000), 1.0, 3600);
+        let breaks = [(600_000, 12.0), (1_800_000, 30.0), (2_900_000, 5.0)]
+            .map(|(before, seconds)| XdfBreak {
+                before,
+                seconds,
+                rate_error: 0.0,
+            })
+            .to_vec();
+        spec.xdf.streams = vec![XdfStream {
+            stamps: XdfStamps::All,
+            chunk: 32,
+            jitter: 4e-4,
+            irregular: true,
+            breaks,
+            ..XdfStream::new(1, "Tracker", "Gaze", vec![0, 1, 2])
+        }];
+        string_markers(&mut spec, 2, 3600.0);
+        spec.seed = 25;
         spec
     }
 }

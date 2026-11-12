@@ -28,10 +28,11 @@ struct Globals {
     size: vec2<f32>,
     // 1 to anti-alias traces, 0 to draw them in whole pixels.
     antialias: f32,
-    _pad: f32,
+    // The word of `frame` where the item positions start, after the slots.
+    positions: u32,
 };
 
-// One channel of a tile draw.
+// One channel of a tile draw, 12 words in `frame`.
 struct Slot {
     color: vec4<f32>,
     // The channel's row in the tiles.
@@ -49,7 +50,8 @@ struct Slot {
     _pad1: u32,
 };
 
-// Where one tile's items lie: item `i` starts at `anchor_x + (i - anchor) * item_width`.
+// Where one tile's items lie: item `i` starts at `anchor_x + (i - anchor) * item_width`,
+// or for an irregular time base at `positions[xs + i - first]`, ending at the next one.
 struct Part {
     anchor_x: f32,
     item_width: f32,
@@ -66,9 +68,17 @@ struct Part {
     data: u32,
     // 0 if there is no such tile.
     present: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // The first of an irregular part's positions.
+    xs: u32,
+    // IRREGULAR and HOLD.
+    flags: u32,
 };
+
+// The part's items lie at the positions in `frame`.
+const IRREGULAR: u32 = 1u;
+// Its samples hold their values until the next one's start: each is drawn as an envelope
+// of its one value, reaching to the next.
+const HOLD: u32 = 2u;
 
 // One tile draw.
 struct Draw {
@@ -87,7 +97,8 @@ struct Hatch {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
-@group(0) @binding(1) var<storage, read> slots: array<Slot>;
+// The frame's slots, then the item positions of irregular parts (f32 bits).
+@group(0) @binding(1) var<storage, read> frame: array<u32>;
 @group(0) @binding(2) var<uniform> draw: Draw;
 // Per tile: validity bits (one per item, shared by all channels), then the values.
 @group(1) @binding(0) var<storage, read> tile0: array<u32>;
@@ -95,6 +106,21 @@ struct Hatch {
 @group(1) @binding(2) var<storage, read> tile2: array<u32>;
 // The hatch pipeline's own group.
 @group(1) @binding(3) var<storage, read> hatches: array<Hatch>;
+
+// Slot `i` of the frame.
+fn slot_at(i: u32) -> Slot {
+    let w = 12u * i;
+    var s: Slot;
+    s.color = vec4<f32>(bitcast<f32>(frame[w]), bitcast<f32>(frame[w + 1u]),
+        bitcast<f32>(frame[w + 2u]), bitcast<f32>(frame[w + 3u]));
+    s.row = frame[w + 4u];
+    s.reference = frame[w + 5u];
+    s.scale = bitcast<f32>(frame[w + 6u]);
+    s.offset = bitcast<f32>(frame[w + 7u]);
+    s.clip_top = bitcast<f32>(frame[w + 8u]);
+    s.clip_bottom = bitcast<f32>(frame[w + 9u]);
+    return s;
+}
 
 struct Out {
     @builtin(position) position: vec4<f32>,
@@ -242,17 +268,28 @@ fn fetch(slot: Slot, k: i32) -> Item {
     let part = draw.parts[p];
     var item: Item;
     item.ok = false;
-    item.x = part.anchor_x + f32(local - part.anchor) * part.item_width;
-    item.width = part.item_width;
-    item.pairs = part.pairs != 0u;
-    if part.present == 0u || local < part.first || local > part.last {
-        return item;
+    item.pairs = part.pairs != 0u || (part.flags & HOLD) != 0u;
+    if (part.flags & IRREGULAR) != 0u {
+        // Positions exist for the readable items only (and the end of the last).
+        item.x = 0.0;
+        item.width = 0.0;
+        if part.present == 0u || local < part.first || local > part.last {
+            return item;
+        }
+        item.x = position(part, local);
+        item.width = position(part, local + 1) - item.x;
+    } else {
+        item.x = part.anchor_x + f32(local - part.anchor) * part.item_width;
+        item.width = part.item_width;
+        if part.present == 0u || local < part.first || local > part.last {
+            return item;
+        }
     }
     let i = u32(local);
     if ((word(p, i >> 5u) >> (i & 31u)) & 1u) == 0u {
         return item;
     }
-    if item.pairs {
+    if part.pairs != 0u {
         let index = 2u * (slot.row * part.len + i);
         let a = y_of(bits_at(p, index), slot);
         let b = y_of(bits_at(p, index + 1u), slot);
@@ -268,6 +305,28 @@ fn fetch(slot: Slot, k: i32) -> Item {
     return item;
 }
 
+// Where item `local` of an irregular part starts (the last readable item's end at `last + 1`).
+fn position(part: Part, local: i32) -> f32 {
+    return bitcast<f32>(frame[globals.positions + part.xs + u32(local - part.first)]);
+}
+
+// The last readable item of an irregular part starting at or before x: `first - 1` if
+// none, `last + 1` if x lies at or after the last one's end (as a regular part's index of x
+// lies past its items).
+fn last_at(part: Part, x: f32) -> i32 {
+    var lo = part.first;
+    var hi = part.last + 2;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if position(part, mid) <= x {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo - 1;
+}
+
 // The run indices of the items that can reach x in xa..=xb, with one more on either side
 // against rounding at item boundaries.
 fn items_near(xa: f32, xb: f32) -> vec2<i32> {
@@ -278,8 +337,15 @@ fn items_near(xa: f32, xb: f32) -> vec2<i32> {
         if part.present == 0u {
             continue;
         }
-        let l0 = max(part.first, part.anchor + to_int(floor((xa - part.anchor_x) * part.inverse_width)));
-        let l1 = min(part.last, part.anchor + to_int(floor((xb - part.anchor_x) * part.inverse_width)));
+        var l0: i32;
+        var l1: i32;
+        if (part.flags & IRREGULAR) != 0u {
+            l0 = max(part.first, last_at(part, xa));
+            l1 = min(part.last, last_at(part, xb));
+        } else {
+            l0 = max(part.first, part.anchor + to_int(floor((xa - part.anchor_x) * part.inverse_width)));
+            l1 = min(part.last, part.anchor + to_int(floor((xb - part.anchor_x) * part.inverse_width)));
+        }
         if l0 <= l1 {
             k0 = min(k0, run_index(p, l0));
             k1 = max(k1, run_index(p, l1));
@@ -400,7 +466,7 @@ fn slices(slot: Slot, x0: f32) -> array<vec2<f32>, 16> {
 
 @vertex
 fn vs_trace(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
-    let slot = slots[draw.slot0 + instance / draw.columns];
+    let slot = slot_at(draw.slot0 + instance / draw.columns);
     let column = f32(draw.column0 + instance % draw.columns);
     let aa = globals.antialias > 0.5;
     var lo: f32;
@@ -457,7 +523,7 @@ fn fs_trace(input: Out) -> @location(0) vec4<f32> {
     if globals.antialias < 0.5 {
         return input.color;
     }
-    let slot = slots[draw.slot0 + input.instance / draw.columns];
+    let slot = slot_at(draw.slot0 + input.instance / draw.columns);
     let column = f32(draw.column0 + input.instance % draw.columns);
     let p = vec2<f32>(column + 0.5, floor(input.y) + 0.5);
     // The trace clamped to its clip (and to near the screen).

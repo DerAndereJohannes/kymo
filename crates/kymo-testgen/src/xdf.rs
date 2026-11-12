@@ -119,6 +119,11 @@ pub struct XdfStream {
     pub jitter: f64,
     /// Breaks in the stream's time, in order.
     pub breaks: Vec<XdfBreak>,
+    /// The header gives no nominal rate (0): an irregular stream, its samples at their
+    /// times all the same.
+    pub irregular: bool,
+    /// The header says the stream can drop samples (`can_drop_samples`).
+    pub can_drop: bool,
 }
 
 /// A break in a stream's time: before sample `before`, time jumps by `seconds` (backwards
@@ -150,6 +155,8 @@ impl XdfStream {
             rate_error: 0.0,
             jitter: 0.0,
             breaks: Vec::new(),
+            irregular: false,
+            can_drop: false,
         }
     }
 }
@@ -691,10 +698,20 @@ fn write_to<W: Write>(spec: &Spec, out: &mut W) -> Result<(), Error> {
             &s.name,
             &s.kind,
             s.channels.len(),
-            rate(s),
+            if s.irregular { 0.0 } else { rate(s) },
             s.format.name(),
             s.described.then_some(channels.as_slice()),
         );
+        let xml = if s.can_drop {
+            xml.replacen(
+                "<desc>",
+                "<desc><synchronization><can_drop_samples>true</can_drop_samples>\
+                 </synchronization>",
+                1,
+            )
+        } else {
+            xml
+        };
         chunks.stream_header(s.id, &xml);
     }
     for m in &opts.markers {

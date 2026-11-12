@@ -15,7 +15,9 @@ use kymo::render::{EDGE_TOLERANCE, Frame, Scene, TraceRenderer};
 use kymo_core::tile::{
     Level, Query, TILE_LEN, TileCache, TileKey, level_for, max_level, query, tiles_for_view,
 };
-use kymo_core::{ChannelId, SampleType};
+use std::sync::Arc;
+
+use kymo_core::{ChannelId, Grid, SampleType, TimeTable, Timebase};
 
 struct Gpu {
     device: wgpu::Device,
@@ -196,14 +198,18 @@ impl Image {
 #[derive(Clone, Debug)]
 enum Shape {
     Line,
-    Buckets { widths: Vec<f64> },
+    /// Samples whose values hold until the next slot (an irregular time base's steps).
+    Steps,
+    Buckets {
+        widths: Vec<f64>,
+    },
 }
 
 impl Shape {
     /// The widest bucket anywhere.
     fn widest(&self) -> f64 {
         match self {
-            Shape::Line => 0.0,
+            Shape::Line | Shape::Steps => 0.0,
             Shape::Buckets { widths } => widths.iter().copied().fold(0.0, f64::max),
         }
     }
@@ -236,6 +242,10 @@ fn check_columns(
                 truth.line(c + EPS, c + 1.0 - EPS),
                 truth.line(c - EPS, c + 1.0 + EPS),
             ),
+            Shape::Steps => (
+                truth.held(c + EPS, c + 1.0 - EPS),
+                truth.held(c - EPS, c + 1.0 + EPS),
+            ),
             Shape::Buckets { widths } => {
                 let width = widths[x as usize];
                 (
@@ -267,7 +277,7 @@ fn check_columns(
         for x in range.start..range.end.saturating_sub(1) {
             let c = f64::from(x);
             let slack = match shape {
-                Shape::Line => 0.0,
+                Shape::Line | Shape::Steps => 0.0,
                 Shape::Buckets { widths } => widths[x as usize].max(widths[x as usize + 1]) + EPS,
             };
             if !truth.continuous(c - slack, c + 2.0 + slack) {
@@ -339,11 +349,16 @@ fn check_antialiased(
     Ok(())
 }
 
-/// The reference shape for what `query` draws: lines if everything is level 0, otherwise
-/// buckets as wide as the widest drawn.
+/// The reference shape for what `query` draws: lines if everything is level 0 (steps where
+/// values hold), otherwise buckets as wide as the widest drawn (for an irregular time base,
+/// the widest item, a held sample's hold included).
 fn shape(fx: &Fixture, scene: &Scene, query: &Query) -> Shape {
     if query.draw.iter().all(|p| p.tile.key().level == Level::RAW) {
-        return Shape::Line;
+        let holds = query
+            .draw
+            .iter()
+            .any(|p| fx.recording.grid(p.tile.key().block.grid).holds_values());
+        return if holds { Shape::Steps } else { Shape::Line };
     }
     let per_px = f64::from(scene.size[0]) / (scene.time.end - scene.time.start);
     let x = |t: f64| (t - scene.time.start) * per_px;
@@ -354,7 +369,18 @@ fn shape(fx: &Fixture, scene: &Scene, query: &Query) -> Shape {
         .map(|p| {
             let key = p.tile.key();
             let grid = fx.recording.grid(key.block.grid);
-            let width = key.level.bucket_len() as f64 / grid.rate() * per_px;
+            let bucket = key.level.bucket_len();
+            let width = match p.tile.times() {
+                Some(times) => {
+                    let first = key.sample_range().start;
+                    let items =
+                        (p.samples.start - first) / bucket..=(p.samples.end - 1 - first) / bucket;
+                    items
+                        .map(|i| (times[i as usize + 1] - times[i as usize]) * per_px)
+                        .fold(0.0, f64::max)
+                }
+                None => bucket as f64 / grid.rate() * per_px,
+            };
             (
                 x(grid.time_of(p.samples.start)),
                 x(grid.time_of(p.samples.end)),
@@ -407,6 +433,7 @@ fn check_some(
     let margin = match shape {
         Shape::Line => 1.0,
         Shape::Buckets { .. } => shape.widest() + 2.0,
+        Shape::Steps => 2.0,
     };
     let truth = Truth::new(fx, scene, margin);
     if let Some(dir) = std::env::var_os("KYMO_DUMP") {
@@ -431,6 +458,7 @@ fn check_some(
                 .collect::<Vec<_>>(),
             match shape {
                 Shape::Line => "line".to_owned(),
+                Shape::Steps => "steps".to_owned(),
                 Shape::Buckets { .. } => format!("buckets up to {:.3} px", shape.widest()),
             },
         );
@@ -514,6 +542,79 @@ fn columns_match_the_samples_at_every_zoom() {
         for time in views(fx.recording.duration(), rate) {
             let scene = fx.scene(id, time, SIZE);
             check(gpu, &fx, &scene, &exact(&fx, &scene));
+        }
+    }
+}
+
+/// One channel on an irregular time base: 30,000 samples 1 ms apart, 2,000 jittered ones
+/// 2 to 18 ms apart, 300 a tenth of a second apart, a gap of 20 s, 60,000 samples 0.5 ms
+/// apart, and 5,000 jittered ones again; values held (steps) or joined by lines.
+fn irregular(hold: bool) -> Fixture {
+    let mut rng = Rng::new(if hold { 21 } else { 22 });
+    let mut jitter = Rng::new(3);
+    let mut times = Vec::new();
+    let mut t = 0.25;
+    let mut run = |times: &mut Vec<f64>, t: &mut f64, n: usize, step: f64, jittered: bool| {
+        for _ in 0..n {
+            times.push(*t);
+            *t += if jittered {
+                step + 16e-3 * jitter.uniform()
+            } else {
+                step
+            };
+        }
+    };
+    run(&mut times, &mut t, 30_000, 1e-3, false);
+    run(&mut times, &mut t, 2_000, 2e-3, true);
+    run(&mut times, &mut t, 300, 0.1, false);
+    let before = 0..times.len() as u64;
+    // The gap's slot, one step after the sample before it.
+    times.push(t);
+    t += 20.0;
+    let after = times.len() as u64;
+    run(&mut times, &mut t, 60_000, 5e-4, false);
+    run(&mut times, &mut t, 5_000, 2e-3, true);
+    let segments = vec![before, after..times.len() as u64];
+    let n = times.len() as u64;
+    let end = t;
+    let table = TimeTable::new(&times, end).unwrap();
+    let grid = Grid::new(
+        Timebase::Irregular {
+            rate: n as f64 / (end - times[0]),
+            hold,
+            times: Arc::new(table),
+        },
+        n,
+        segments,
+        SampleType::I16,
+        vec![ChannelId(0)],
+    )
+    .unwrap();
+    Fixture::new(
+        vec![channel("irregular", 0, 0.5, 0.0)],
+        vec![grid],
+        vec![i16_rows(vec![walk(
+            &mut rng, n as usize, 300.0, -30_000.0, 30_000.0,
+        )])],
+    )
+}
+
+#[test]
+fn irregular_columns_match_the_samples_at_every_zoom() {
+    let Some(gpu) = gpu() else { return };
+    for hold in [true, false] {
+        let fx = irregular(hold);
+        let duration = fx.recording.duration();
+        // Spans from 10 dense samples to everything, in dense, sparse and gap stretches.
+        let mut span = 0.01;
+        while span < duration * 2.0 {
+            let span_now = span.min(duration);
+            for start in [0.0, 30.5, 61.0, 62.5, duration - span_now] {
+                let start = start.clamp(0.0, duration - span_now);
+                let scene = fx.scene(ChannelId(0), start..start + span_now, SIZE);
+                check(gpu, &fx, &scene, &exact(&fx, &scene));
+            }
+            span *= 6.7;
         }
     }
 }

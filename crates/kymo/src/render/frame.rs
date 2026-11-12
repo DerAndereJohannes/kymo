@@ -188,11 +188,13 @@ pub struct ChannelDraw {
 ///
 /// Items are samples at level 0 and buckets above. Item `i` starts at
 /// `anchor_x + (i − anchor) · item_width` pixels, a bucket's envelope reaching to the start
-/// of the next one.
+/// of the next one; for a grid with an irregular time base at `xs[i − first]`, its end at
+/// the next entry.
 #[derive(Clone, Debug)]
 pub struct Part {
     pub tile: Arc<Tile>,
-    /// The items the query placed this tile for.
+    /// The items the query placed this tile for (for an irregular time base, those of them
+    /// near the screen).
     pub items: RangeInclusive<u32>,
     /// An item near the screen (or near the seam, for a neighbor), for precise positions.
     pub anchor: u32,
@@ -201,6 +203,12 @@ pub struct Part {
     pub item_width: f32,
     /// 1 / `item_width`, computed in f64.
     pub inverse_width: f32,
+    /// For an irregular time base, where each of `items` starts and, last, where the last
+    /// one ends, in pixels (from the tile's item times, computed in f64).
+    pub xs: Option<Vec<f32>>,
+    /// Whether a sample's value holds until the next sample's start (drawn as steps: each
+    /// sample an envelope of its one value).
+    pub hold: bool,
 }
 
 /// A tile placed on screen, with the tiles placed right before and after it in the same
@@ -405,9 +413,13 @@ fn adjacent(a: &Placed, b: &Placed) -> bool {
 }
 
 /// `placed` as a [`Part`], anchored at its item nearest `x_near` pixels. Its items lie on
-/// the line of the run of evenly spaced samples it starts in (placed tiles are cut at runs).
+/// the line of the run of evenly spaced samples it starts in (placed tiles are cut at runs),
+/// or for an irregular time base at their times.
 fn part(pixels: &Pixels, grid: &Grid, placed: &Placed, x_near: f64) -> Option<Part> {
     let (first, bucket, lo, last) = placed_items(placed)?;
+    if let Some(times) = placed.tile.times() {
+        return irregular_part(pixels, grid, placed, times, lo as usize..=last as usize);
+    }
     let run = grid.regular_run(placed.samples.start)?;
     let x = |sample: u64| (run.time_of(sample) - pixels.start) * pixels.per_second;
     let item_width = bucket as f64 / run.rate * pixels.per_second;
@@ -421,6 +433,42 @@ fn part(pixels: &Pixels, grid: &Grid, placed: &Placed, x_near: f64) -> Option<Pa
         anchor_x: x(first + anchor * bucket) as f32,
         item_width: item_width as f32,
         inverse_width: (1.0 / item_width) as f32,
+        xs: None,
+        hold: false,
+    })
+}
+
+/// `placed` of a grid with an irregular time base as a [`Part`]: of `items`, those that
+/// reach the screen, and one more on either side (lines and steps run on to them), with
+/// their positions from the tile's item `times`.
+fn irregular_part(
+    pixels: &Pixels,
+    grid: &Grid,
+    placed: &Placed,
+    times: &[f64],
+    items: RangeInclusive<usize>,
+) -> Option<Part> {
+    let (lo, last) = (*items.start(), *items.end());
+    let seconds = |px: f64| pixels.start + px / pixels.per_second;
+    // Items starting at or before the left edge, but the last of them; those starting
+    // after the right edge, but the first of them.
+    let left = seconds(-2.0);
+    let right = seconds(f64::from(pixels.width) + 2.0);
+    let from = times[lo..=last].partition_point(|&t| t <= left);
+    let to = times[lo..=last].partition_point(|&t| t <= right);
+    let a = (lo + from.saturating_sub(2)).min(last);
+    let b = (lo + to + 1).min(last).max(a);
+    let x = |t: f64| ((t - pixels.start) * pixels.per_second) as f32;
+    let xs: Vec<f32> = times[a..=b + 1].iter().map(|&t| x(t)).collect();
+    Some(Part {
+        tile: Arc::clone(&placed.tile),
+        items: a as u32..=b as u32,
+        anchor: a as u32,
+        anchor_x: xs[0],
+        item_width: 0.0,
+        inverse_width: 0.0,
+        xs: Some(xs),
+        hold: grid.holds_values(),
     })
 }
 
@@ -443,8 +491,11 @@ fn tile_draw(
     let next = next.filter(|n| adjacent(placed, n));
     let samples =
         placed.samples.start.max(first)..placed.samples.end.min(first + (last + 1) * bucket);
+    // A held value and a bucket of irregular samples reach to the next item's start.
+    let reaches = grid.times().is_some() && (grid.holds_values() || bucket > 1);
     let end = match next {
         Some(n) => x(n.samples.start),
+        None if reaches => x(samples.end),
         None => x(samples.end - 1),
     };
     let domain = [x(samples.start), end];

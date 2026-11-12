@@ -226,6 +226,11 @@ impl Truth {
                     .map(|p| row.center - (p - row.baseline) * row.px_per_unit),
             );
         }
+        // Where the last sample ends (a held value lasts until then), without a value.
+        if end == grid.len() {
+            xs.push((grid.time_of(end) - scene.time.start) * per_px);
+            ys.push(None);
+        }
         Truth { xs, ys }
     }
 
@@ -270,6 +275,22 @@ impl Truth {
         let mut range = None;
         for y in self.ys[self.within(a, b)].iter().flatten() {
             extend(&mut range, *y);
+        }
+        range
+    }
+
+    /// The y range of the present samples whose values hold over part of x in `a..=b`: from
+    /// their own x to the next slot's.
+    pub fn held(&self, a: f64, b: f64) -> Option<(f64, f64)> {
+        let mut range = None;
+        let from = self.xs.partition_point(|&x| x <= a).saturating_sub(1);
+        for i in from..self.xs.partition_point(|&x| x <= b) {
+            let next = self.xs.get(i + 1).copied().unwrap_or(self.xs[i]);
+            if let Some(y) = self.ys[i]
+                && next >= a
+            {
+                extend(&mut range, y);
+            }
         }
         range
     }

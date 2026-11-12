@@ -144,12 +144,10 @@ fn check_pyramid(rec: &Recording, id: GridId, pyramid: &Pyramid) -> Result<(), T
         let samples = block * TILE_LEN..((block + 1) * TILE_LEN).min(len);
         for &channel in ids {
             let want = brute_sum(rec, channel, samples.clone());
-            prop_assert_eq!(
-                pyramid.block_sum(channel, block),
-                Some(want),
-                "block {}",
-                block
-            );
+            // A NaN sample makes its block's sum NaN.
+            let got = pyramid.block_sum(channel, block);
+            let same = got.is_some_and(|g| g == want || (g.is_nan() && want.is_nan()));
+            prop_assert!(same, "block {}: {:?} vs {}", block, got, want);
         }
     }
     prop_assert_eq!(pyramid.block_sum(ids[0], len.div_ceil(TILE_LEN)), None);
@@ -301,7 +299,7 @@ fn pyramids_of_two_grids() {
 /// datasets (a .fdt, float32 and float64 inside the .set), GDF files (float64, int32,
 /// and every sample type in one file), FIFF files (every buffer type, skips, buffers
 /// of varying length, split parts) and XDF files (every value format, streams starting at
-/// different times, mixed timestamps).
+/// different times, mixed timestamps, irregular streams).
 #[test]
 fn pyramids_of_generated_files() {
     for preset in [
@@ -326,6 +324,7 @@ fn pyramids_of_generated_files() {
         "xdf-mixed",
         "xdf-events",
         "xdf-clocks",
+        "xdf-irregular",
     ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
@@ -335,7 +334,10 @@ fn pyramids_of_generated_files() {
         for g in 0..rec.grids().len() {
             let id = GridId(g as u32);
             let pyramid = Pyramid::build(&rec, id).unwrap();
-            assert!(pyramid.top() >= Level::new(1).unwrap(), "{preset}: levels");
+            // Grids of a tile or less (xdf-events' two irregular samples) have none.
+            if rec.grid(id).len() > TILE_LEN {
+                assert!(pyramid.top() >= Level::new(1).unwrap(), "{preset}: levels");
+            }
             check_pyramid(&rec, id, &pyramid).unwrap();
         }
     }

@@ -56,15 +56,11 @@ impl TimeTable {
     /// the last one ends (where its value would hold until).
     pub fn new(times: &[f64], end: f64) -> Result<TimeTable, TimeTableError> {
         let len = times.len() as u64;
-        let mut bytes = vec![0u8; size_bytes(len)].into_boxed_slice();
-        let (index, levels) = fill(&mut bytes, len, times.iter().copied(), end)?;
-        Ok(TimeTable {
-            storage: Storage::Memory(bytes),
-            len,
-            end,
-            index,
-            levels,
-        })
+        let mut writer = TimeTableWriter::new(Storage::memory(len), len);
+        for &t in times {
+            writer.push(t);
+        }
+        writer.finish(end)
     }
 
     /// A table of `len` slots written from `times` into a temporary file in kymo's cache
@@ -75,8 +71,11 @@ impl TimeTable {
         times: impl IntoIterator<Item = f64>,
         end: f64,
     ) -> Result<TimeTable, TimeTableError> {
-        let dir = crate::pyramid::Sidecar::default_dir().unwrap_or_else(std::env::temp_dir);
-        Self::write_in(&dir, len, times, end)
+        let mut writer = Self::writer(len);
+        for t in times {
+            writer.push(t);
+        }
+        writer.finish(end)
     }
 
     /// [`write`](Self::write) into `dir`.
@@ -86,25 +85,27 @@ impl TimeTable {
         times: impl IntoIterator<Item = f64>,
         end: f64,
     ) -> Result<TimeTable, TimeTableError> {
-        let mut times = times.into_iter();
-        let (storage, index, levels) = match scratch_map(dir, size_bytes(len)) {
-            Some(mut map) => {
-                let (index, levels) = fill(&mut map, len, &mut times, end)?;
-                (Storage::Mapped(map), index, levels)
-            }
-            None => {
-                let mut bytes = vec![0u8; size_bytes(len)].into_boxed_slice();
-                let (index, levels) = fill(&mut bytes, len, &mut times, end)?;
-                (Storage::Memory(bytes), index, levels)
-            }
+        let mut writer = Self::writer_in(dir, len);
+        for t in times {
+            writer.push(t);
+        }
+        writer.finish(end)
+    }
+
+    /// A writer of a table of `len` slots, as [`write`](Self::write) makes it, which takes
+    /// the times one by one.
+    pub fn writer(len: u64) -> TimeTableWriter {
+        let dir = crate::pyramid::Sidecar::default_dir().unwrap_or_else(std::env::temp_dir);
+        Self::writer_in(&dir, len)
+    }
+
+    /// [`writer`](Self::writer) into `dir`.
+    pub fn writer_in(dir: &Path, len: u64) -> TimeTableWriter {
+        let storage = match scratch_map(dir, size_bytes(len)) {
+            Some(map) => Storage::Mapped(map),
+            None => Storage::memory(len),
         };
-        Ok(TimeTable {
-            storage,
-            len,
-            end,
-            index,
-            levels,
-        })
+        TimeTableWriter::new(storage, len)
     }
 
     /// Number of slots.
@@ -126,10 +127,14 @@ impl TimeTable {
         matches!(self.storage, Storage::Mapped(_))
     }
 
-    /// The time of `slot`; [`end`](Self::end) from `len` on.
+    /// The time of `slot`; [`end`](Self::end) from `len` on. Slots that start a tile
+    /// (multiples of [`TILE_LEN`]) come from memory.
     pub fn time(&self, slot: u64) -> f64 {
         if slot >= self.len {
             return self.end;
+        }
+        if slot.is_multiple_of(TILE_LEN) {
+            return self.index[(slot / TILE_LEN) as usize];
         }
         self.entry(slot as usize)
     }
@@ -191,6 +196,90 @@ impl TimeTable {
     }
 }
 
+/// Writes a [`TimeTable`] slot by slot.
+pub struct TimeTableWriter {
+    storage: Storage,
+    len: u64,
+    got: u64,
+    previous: f64,
+    index: Vec<f64>,
+    error: Option<TimeTableError>,
+}
+
+impl TimeTableWriter {
+    fn new(storage: Storage, len: u64) -> TimeTableWriter {
+        TimeTableWriter {
+            storage,
+            len,
+            got: 0,
+            previous: f64::NEG_INFINITY,
+            index: Vec::with_capacity(len.div_ceil(TILE_LEN) as usize),
+            error: None,
+        }
+    }
+
+    /// The next slot's time: finite and not before the previous one's. Times beyond the
+    /// table's length are counted, not stored.
+    pub fn push(&mut self, t: f64) {
+        if self.error.is_some() {
+            return;
+        }
+        if !(t.is_finite() && t >= self.previous) {
+            self.error = Some(TimeTableError::Unordered {
+                sample: self.got,
+                time: t,
+            });
+            return;
+        }
+        if self.got < self.len {
+            if self.got.is_multiple_of(TILE_LEN) {
+                self.index.push(t);
+            }
+            let i = 8 * self.got as usize;
+            self.storage.bytes_mut()[i..i + 8].copy_from_slice(&t.to_le_bytes());
+        }
+        self.previous = t;
+        self.got += 1;
+    }
+
+    /// The table, the last slot ending at `end`.
+    pub fn finish(mut self, end: f64) -> Result<TimeTable, TimeTableError> {
+        if let Some(e) = self.error {
+            return Err(e);
+        }
+        if self.got != self.len {
+            return Err(TimeTableError::Count {
+                expected: self.len,
+                got: self.got,
+            });
+        }
+        if !(end.is_finite() && end >= self.previous) {
+            return Err(TimeTableError::End { end });
+        }
+        let levels = fill_levels(self.storage.bytes_mut(), self.len);
+        Ok(TimeTable {
+            storage: self.storage,
+            len: self.len,
+            end,
+            index: self.index,
+            levels,
+        })
+    }
+}
+
+impl Storage {
+    fn memory(len: u64) -> Storage {
+        Storage::Memory(vec![0u8; size_bytes(len)].into_boxed_slice())
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            Storage::Memory(b) => b,
+            Storage::Mapped(m) => m,
+        }
+    }
+}
+
 impl PartialEq for TimeTable {
     fn eq(&self, other: &Self) -> bool {
         let slots = 8 * self.len as usize;
@@ -227,38 +316,9 @@ fn size_bytes(len: u64) -> usize {
     8 * entries as usize
 }
 
-/// Writes the slots' times, then each level's bucket start times, into `bytes`; returns the
-/// in-memory index and each level's first entry.
-fn fill(
-    bytes: &mut [u8],
-    len: u64,
-    times: impl IntoIterator<Item = f64>,
-    end: f64,
-) -> Result<(Vec<f64>, Vec<usize>), TimeTableError> {
-    let mut index = Vec::with_capacity(len.div_ceil(TILE_LEN) as usize);
-    let mut previous = f64::NEG_INFINITY;
-    let mut got = 0u64;
-    for t in times.into_iter().take(len as usize) {
-        if !(t.is_finite() && t >= previous) {
-            return Err(TimeTableError::Unordered {
-                sample: got,
-                time: t,
-            });
-        }
-        if got.is_multiple_of(TILE_LEN) {
-            index.push(t);
-        }
-        let i = 8 * got as usize;
-        bytes[i..i + 8].copy_from_slice(&t.to_le_bytes());
-        previous = t;
-        got += 1;
-    }
-    if got != len {
-        return Err(TimeTableError::Count { expected: len, got });
-    }
-    if !(end.is_finite() && end >= previous) {
-        return Err(TimeTableError::End { end });
-    }
+/// Writes each level's bucket start times after the slots' times in `bytes`; returns each
+/// level's first entry.
+fn fill_levels(bytes: &mut [u8], len: u64) -> Vec<usize> {
     let mut levels = Vec::new();
     let mut at = len as usize;
     for level in table_levels(len) {
@@ -270,7 +330,7 @@ fn fill(
         }
         at += buckets(len, level) as usize;
     }
-    Ok((index, levels))
+    levels
 }
 
 /// A private writable mapping of `size` bytes in a new file in `dir`, or `None` if there is

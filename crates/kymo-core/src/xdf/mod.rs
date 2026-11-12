@@ -8,9 +8,13 @@
 //! - No resampling: every stream shown as channels keeps its own grid. `t = 0` is the
 //!   earliest first timestamp of these streams.
 //! - Irregular numeric streams with several channels that are not of an event type
-//!   (Marker(s), Event(s), Trigger(s), Stim) are channels on their own timestamps, where
-//!   mnextend makes annotations of them; until kymo draws irregular time bases they are
-//!   left out, with a warning.
+//!   (Marker(s), Event(s), Trigger(s), Stim) are channels on their own synchronized time
+//!   stamps (an irregular time base, drawn as held values), where mnextend makes
+//!   annotations of them. Steps longer than 1 s and 500 median steps are gaps; a time stamp
+//!   before the previous one is taken as the previous one.
+//! - Streams that can drop samples are on their own synchronized time stamps too, as pyxdf
+//!   leaves them (drawn as lines, gaps at steps longer than 1 s and 2 periods); mnextend
+//!   resamples them.
 //! - Channels of type "trigger" (or "triggers") are stim channels, as are those of type
 //!   "stim" and every channel of a regular stream of an event type; mnextend makes
 //!   "trigger" channels misc.
@@ -47,4 +51,6 @@ pub enum XdfError {
     NoChannels(String),
     #[error(transparent)]
     Model(#[from] ModelError),
+    #[error("a stream's time stamps can't be laid out: {0}")]
+    Times(#[from] crate::TimeTableError),
 }

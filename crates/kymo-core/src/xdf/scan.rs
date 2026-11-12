@@ -102,8 +102,8 @@ pub(crate) enum Mode {
     /// Strings, or numeric at an irregular rate with one channel or of an event type: an
     /// annotation per sample.
     Annotations,
-    /// Numeric at an irregular rate with several channels, not of an event type: channels
-    /// on their own timestamps, which kymo doesn't show yet.
+    /// Numeric at an irregular rate with several channels, not of an event type: one grid
+    /// on its own timestamps.
     Irregular,
     /// The header can't be read: why.
     Unreadable(String),
@@ -354,7 +354,10 @@ pub(crate) fn scan(map: &[u8]) -> Scan {
                     .is_some_and(|&s| {
                         let stream = &scan.streams[s];
                         stream.info.is_some()
-                            && matches!(stream.mode, Mode::Channels | Mode::Annotations)
+                            && matches!(
+                                stream.mode,
+                                Mode::Channels | Mode::Irregular | Mode::Annotations
+                            )
                     });
             if !reported {
                 scan.warnings
@@ -485,7 +488,7 @@ fn samples(
         return;
     };
     match (&stream.mode, info.format) {
-        (Mode::Channels, ValueFormat::Numeric(encoding)) => {
+        (Mode::Channels | Mode::Irregular, ValueFormat::Numeric(encoding)) => {
             let payload = info.count * encoding.size();
             index_chunk(stream, data, start, count, payload, truncated, warnings);
         }
