@@ -20,7 +20,7 @@ fn recordings(dir: &Path, found: &mut Vec<PathBuf>) {
         if path.is_dir() {
             recordings(&path, found);
         } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            ["edf", "bdf", "vhdr", "set", "gdf", "fif"]
+            ["edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf"]
                 .iter()
                 .any(|x| e.eq_ignore_ascii_case(x))
         }) {
@@ -47,14 +47,14 @@ fn windows(len: u64, rate: f64) -> Vec<Range<u64>> {
 #[ignore = "needs real recordings in KYMO_TEST_DATA"]
 fn real_recordings_open_and_read() {
     let dir = std::env::var_os("KYMO_TEST_DATA").expect(
-        "set KYMO_TEST_DATA to a directory of EDF, BDF, BrainVision, EEGLAB, GDF and FIFF \
+        "set KYMO_TEST_DATA to a directory of EDF, BDF, BrainVision, EEGLAB, GDF, FIFF and XDF \
          recordings",
     );
     let mut files = Vec::new();
     recordings(Path::new(&dir), &mut files);
     assert!(
         !files.is_empty(),
-        "no .edf, .bdf, .vhdr, .set, .gdf or .fif files under {dir:?}"
+        "no .edf, .bdf, .vhdr, .set, .gdf, .fif or .xdf files under {dir:?}"
     );
 
     for path in &files {
@@ -107,13 +107,14 @@ fn real_recordings_open_and_read() {
                 let mut out = vec![0.0f32; ids.len() * n];
                 rec.read_physical(GridId(g as u32), ids, w.clone(), &mut out)
                     .unwrap_or_else(|e| panic!("{}: grid {g}, {w:?}: {e}", path.display()));
-                // Float samples may be stored as NaN; integers are always finite.
+                // Float samples may be stored as NaN, or beyond float32's range (XDF's
+                // float64, read as infinite); integers are always finite.
                 let float = grid.sample_type() == kymo_core::SampleType::F32;
                 for (k, row) in out.chunks_exact(n.max(1)).enumerate() {
                     for (i, x) in (w.start..).zip(row) {
                         let present = grid.segments().iter().any(|s| s.contains(&i));
                         let ok = if present {
-                            x.is_finite() || (float && x.is_nan())
+                            x.is_finite() || float
                         } else {
                             x.is_nan()
                         };

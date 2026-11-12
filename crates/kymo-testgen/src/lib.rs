@@ -1,8 +1,9 @@
-//! Synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files for tests and benchmarks.
+//! Synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files for tests and benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
 //! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
-//! BrainVision, events in EEGLAB and GDF). [`write()`] streams it to disk. Records are
+//! BrainVision, events in EEGLAB and GDF, marker streams in XDF). [`write()`] streams it to
+//! disk. Records are
 //! EDF's and GDF's data records and FIFF's data buffers; formats without them (BrainVision,
 //! EEGLAB) only take their length from them.
 //! The sample values come from a deterministic truth function, [`Spec::digital`], so tests
@@ -24,12 +25,14 @@ pub mod mat;
 mod signal;
 mod temp;
 mod write;
+pub mod xdf;
 
 use std::ops::Range;
 
 pub use gdf::MANUFACTURER as GDF_MANUFACTURER;
 pub use temp::{TempDir, TempFile};
 pub use write::{write, write_to};
+pub use xdf::{MarkerValues, XdfFormat, XdfMarkers, XdfOptions, XdfStamps, XdfStream};
 
 /// File format to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -60,6 +63,11 @@ pub enum Format {
     /// are skips of whole records; `first_onset` is `first_samp / sfreq`; channel types
     /// come from [`ChannelSpec::kind`] (MNE's names, EEG if empty).
     Fiff(FiffType),
+    /// XDF: streams of the channels, each in its own value format, timestamped (see
+    /// [`XdfOptions`]), and marker streams of the annotations. No offsets: values are
+    /// stored as physical values (`digital × gain`); no gaps; a "record" is only a unit of
+    /// length.
+    Xdf,
 }
 
 /// The type of FIFF data buffers.
@@ -358,11 +366,16 @@ impl Format {
             Format::Eeglab(..) => "EEGLAB",
             Format::Gdf(..) => "GDF",
             Format::Fiff(..) => "FIFF",
+            Format::Xdf => "XDF",
         }
     }
 
     pub fn is_fiff(self) -> bool {
         matches!(self, Format::Fiff(..))
+    }
+
+    pub fn is_xdf(self) -> bool {
+        matches!(self, Format::Xdf)
     }
 
     pub fn is_gdf(self) -> bool {
@@ -383,7 +396,11 @@ impl Format {
 
     /// EDF or BDF, with or without +.
     pub fn is_edf(self) -> bool {
-        !self.is_brainvision() && !self.is_eeglab() && !self.is_gdf() && !self.is_fiff()
+        !self.is_brainvision()
+            && !self.is_eeglab()
+            && !self.is_gdf()
+            && !self.is_fiff()
+            && !self.is_xdf()
     }
 
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
@@ -400,7 +417,7 @@ impl Format {
     }
 
     /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's,
-    /// EEGLAB's and FIFF's are `digital × gain`.
+    /// EEGLAB's, FIFF's and XDF's are `digital × gain`.
     pub fn has_offset(self) -> bool {
         self.is_edf() || self.is_gdf()
     }
@@ -411,6 +428,7 @@ impl Format {
         match self {
             Format::Gdf(_) => 2,
             Format::Fiff(t) => t.size(),
+            Format::Xdf => 4,
             Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
             Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
             Format::Eeglab(Storage::Double, _) => 8,
@@ -435,16 +453,19 @@ impl Format {
             Format::Fiff(FiffType::Pack16 | FiffType::Short | FiffType::Mixed) => (-32_768, 32_767),
             Format::Fiff(FiffType::Float) => (-16_777_216, 16_777_216),
             Format::Fiff(_) => (i32::MIN, i32::MAX),
+            // The default value format, float32 (see `ChannelSpec::xdf`).
+            Format::Xdf => XdfFormat::F32.limits(),
             f if f.is_bdf() => (-8_388_608, 8_388_607),
             _ => (-32_768, 32_767),
         }
     }
 
-    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"`, `"gdf"` or
-    /// `"fif"`.
+    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"`, `"gdf"`,
+    /// `"fif"` or `"xdf"`.
     pub fn extension(self) -> &'static str {
         match self {
             Format::Fiff(_) => "fif",
+            Format::Xdf => "xdf",
             Format::Gdf(_) => "gdf",
             Format::BrainVision(..) => "vhdr",
             Format::Eeglab(..) => "set",
@@ -522,6 +543,15 @@ impl ChannelSpec {
         if format.is_fiff() {
             return ChannelSpec::fiff(label, "eeg", samples_per_record, format);
         }
+        if format.is_xdf() {
+            return ChannelSpec::xdf(
+                label,
+                "EEG",
+                "microvolts",
+                samples_per_record,
+                XdfFormat::F32,
+            );
+        }
         let (digital_min, digital_max, physical_min, physical_max) = match format {
             Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
@@ -579,6 +609,36 @@ impl ChannelSpec {
             samples_per_record,
             trigger: false,
             amplitude,
+            kind: kind.into(),
+            stored: None,
+        }
+    }
+
+    /// An XDF channel of type `kind` with `unit`, over the whole range of `format`
+    /// ([`XdfFormat::limits`]): a step of 1 for integer formats, 1/16 for float ones (so
+    /// float32 stores every value exactly). Its signal reaches [`EEG_AMPLITUDE`] (in
+    /// `unit`) from zero.
+    pub fn xdf(
+        label: impl Into<String>,
+        kind: &str,
+        unit: &str,
+        samples_per_record: u32,
+        format: XdfFormat,
+    ) -> Self {
+        let (lo, hi) = format.limits();
+        let gain = if format.is_float() { 0.0625 } else { 1.0 };
+        ChannelSpec {
+            label: label.into(),
+            transducer: String::new(),
+            dimension: unit.into(),
+            physical_min: f64::from(lo) * gain,
+            physical_max: f64::from(hi) * gain,
+            digital_min: lo,
+            digital_max: hi,
+            prefilter: String::new(),
+            samples_per_record,
+            trigger: false,
+            amplitude: EEG_AMPLITUDE,
             kind: kind.into(),
             stored: None,
         }
@@ -719,6 +779,8 @@ pub struct Spec {
     pub spike_every: u64,
     /// FIFF's own options; ignored for other formats.
     pub fiff: FiffOptions,
+    /// XDF's own options; ignored for other formats.
+    pub xdf: XdfOptions,
 }
 
 impl Spec {
@@ -747,6 +809,7 @@ impl Spec {
             seed: 0,
             spike_every: SPIKE_EVERY,
             fiff: FiffOptions::default(),
+            xdf: XdfOptions::default(),
         }
     }
 
@@ -886,6 +949,9 @@ impl Spec {
         if self.format.is_fiff() {
             return fiff::file_size(self);
         }
+        if self.format.is_xdf() {
+            return xdf::file_size(self);
+        }
         if !self.format.is_edf() {
             self.validate()?;
             let samples = self.len(0) * self.channels.len() as u64;
@@ -925,7 +991,8 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 mod presets {
     use super::{
         Binary, ChannelSpec, EEG_AMPLITUDE, FiffSplit, FiffType, Format, GapSpec, GdfVersion,
-        Layout, Orientation, Spec, SplitNaming, Storage, Stored, Tal,
+        Layout, MarkerValues, Orientation, Spec, SplitNaming, Storage, Stored, Tal, XdfFormat,
+        XdfMarkers, XdfStamps, XdfStream,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -1038,6 +1105,25 @@ mod presets {
             "FIFF, buffers of short, int, float and double in turn, 5 channels at 400 Hz, \
              30 s",
         ),
+        (
+            "xdf-float32",
+            "XDF, float32, 8 EEG channels at 500 Hz in microvolts, 1 min, a string marker \
+             stream, the file's date and time, clock offsets and boundary chunks",
+        ),
+        (
+            "xdf-mixed",
+            "XDF, a stream of each value format (int8 to double64) at 52 to 256 Hz, starting \
+             at different times, timestamps on all, some or the first sample of each chunk, \
+             chunks of varying length, labels two streams share, an undescribed stream, a \
+             large DC channel, 90 s, string markers",
+        ),
+        (
+            "xdf-events",
+            "XDF, float64 EEG with a Trigger channel at 250 Hz, a regular int32 Markers \
+             stream at 100 Hz (stim), numeric and string marker streams (one at a nominal \
+             rate), an irregular two-channel stream (left out until irregular streams are \
+             read), 1 min",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -1064,6 +1150,9 @@ mod presets {
             "fif-int32-varying" => fif_int32_varying(),
             "fif-double-dc" => fif_double_dc(),
             "fif-mixed" => fif_mixed(),
+            "xdf-float32" => xdf_float32(),
+            "xdf-mixed" => xdf_mixed(),
+            "xdf-events" => xdf_events(),
             _ => return None,
         };
         Some(spec)
@@ -1696,6 +1785,221 @@ mod presets {
         channels.push(sti014(200, f));
         let mut spec = Spec::new(f, channels, 0.5, 60);
         spec.seed = 19;
+        spec
+    }
+
+    /// Annotations every 1.7 s from 0.3 s over `seconds`, texts from `texts` in turn.
+    fn xdf_markers(seconds: f64, texts: &[&str]) -> Vec<Tal> {
+        let mut tals = Vec::new();
+        let mut k = 0;
+        while 0.3 + k as f64 * 1.7 < seconds {
+            tals.push(Tal {
+                onset: 0.3 + k as f64 * 1.7,
+                duration: None,
+                texts: vec![texts[k % texts.len()].to_owned()],
+            });
+            k += 1;
+        }
+        tals
+    }
+
+    fn xdf_float32() -> Spec {
+        let f = Format::Xdf;
+        let channels = ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "O1", "O2"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 500, f))
+            .collect();
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        let mut eeg = XdfStream::new(1, "BrainAmp", "EEG", (0..8).collect());
+        eeg.chunk = 250;
+        spec.annotations = xdf_markers(60.0, &["S  1", "S  2", "Stimulus & response <ok>"]);
+        spec.xdf.streams = vec![eeg];
+        spec.xdf.markers = vec![XdfMarkers {
+            id: 2,
+            name: "BrainAmp Markers".into(),
+            kind: "Markers".into(),
+            values: MarkerValues::Strings,
+            rate: 0.0,
+            annotations: 0..spec.annotations.len(),
+        }];
+        spec.xdf.datetime = Some("2024-01-02T03:04:05+0100".into());
+        spec.xdf.clock = 52_311.25;
+        spec.xdf.clock_offsets = true;
+        spec.xdf.boundaries = true;
+        spec.seed = 20;
+        spec
+    }
+
+    fn xdf_mixed() -> Spec {
+        let f = Format::Xdf;
+        let ch = |label: &str, kind: &str, unit: &str, spr: u32, format: XdfFormat| {
+            ChannelSpec::xdf(label, kind, unit, spr, format)
+        };
+        let mut channels = vec![
+            ch("Fz", "EEG", "microvolts", 256, XdfFormat::I16),
+            ch("Cz", "EEG", "microvolts", 256, XdfFormat::I16),
+            ch("Pz", "EEG", "\u{b5}V", 256, XdfFormat::I16),
+            ch("X", "accelerometer", "g", 52, XdfFormat::F32),
+            ch("Y", "accelerometer", "g", 52, XdfFormat::F32),
+            ch("X", "gyroscope", "dps", 52, XdfFormat::F64),
+            ch("Y", "gyroscope", "dps", 52, XdfFormat::F64),
+            ch("EOG", "EOG", "mV", 128, XdfFormat::I8),
+            ch("EMG", "EMG", "uV", 128, XdfFormat::I8),
+            ch("Resp", "RESP", "ohm", 100, XdfFormat::I32),
+            ch("A", "", "", 100, XdfFormat::I32),
+        ];
+        channels.push(ChannelSpec {
+            // A large DC offset in int64, which kymo reads relative to its first sample.
+            label: "DC".into(),
+            digital_min: 999_000_000,
+            digital_max: 1_001_000_000,
+            physical_min: 999_000_000.0,
+            physical_max: 1_001_000_000.0,
+            amplitude: 400.0,
+            ..ch("", "MISC", "nV", 200, XdfFormat::I64)
+        });
+        channels.push(ChannelSpec {
+            amplitude: 40.0,
+            ..ch(
+                "Temp",
+                "temperature",
+                "degrees celsius",
+                200,
+                XdfFormat::I64,
+            )
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 90);
+        let stream = |id, name: &str, kind: &str, format, channels: Vec<usize>| XdfStream {
+            format,
+            ..XdfStream::new(id, name, kind, channels)
+        };
+        let amp = XdfStream {
+            stamps: XdfStamps::Every(7),
+            chunk: 40,
+            varying_chunks: true,
+            ..stream(3, "Amp", "EEG", XdfFormat::I16, vec![0, 1, 2])
+        };
+        let acc = XdfStream {
+            start: 0.125,
+            ..stream(1, "Muse", "ACC", XdfFormat::F32, vec![3, 4])
+        };
+        let gyro = XdfStream {
+            start: 0.375,
+            stamps: XdfStamps::All,
+            chunk: 13,
+            ..stream(2, "Muse", "GYRO", XdfFormat::F64, vec![5, 6])
+        };
+        let exg = XdfStream {
+            start: 1.5,
+            stamps: XdfStamps::All,
+            ..stream(4, "ExG", "ExG", XdfFormat::I8, vec![7, 8])
+        };
+        let aux = XdfStream {
+            described: false,
+            start: 0.01,
+            chunk: 100,
+            ..stream(6, "Aux", "AUX", XdfFormat::I32, vec![9, 10])
+        };
+        let dc = XdfStream {
+            start: 2.0,
+            stamps: XdfStamps::Every(3),
+            ..stream(5, "DC", "MISC", XdfFormat::I64, vec![11, 12])
+        };
+        spec.xdf.streams = vec![amp, acc, gyro, exg, aux, dc];
+        spec.annotations = xdf_markers(90.0, &["start", "Stimulus/S  1", "end"]);
+        spec.xdf.markers = vec![XdfMarkers {
+            id: 9,
+            name: "Markers".into(),
+            kind: "Markers".into(),
+            values: MarkerValues::Strings,
+            rate: 0.0,
+            annotations: 0..spec.annotations.len(),
+        }];
+        spec.xdf.clock = 1_000_000.0;
+        spec.seed = 21;
+        spec
+    }
+
+    fn xdf_events() -> Spec {
+        let f = Format::Xdf;
+        let mut channels: Vec<ChannelSpec> = ["C3", "Cz", "C4"]
+            .iter()
+            .map(|l| ChannelSpec::xdf(*l, "EEG", "microvolts", 250, XdfFormat::F64))
+            .collect();
+        channels.push(ChannelSpec {
+            label: "STETriggerIn".into(),
+            kind: "Trigger".into(),
+            dimension: "integer".into(),
+            ..ChannelSpec::trigger(250, f)
+        });
+        channels.push(ChannelSpec {
+            label: "Code".into(),
+            kind: String::new(),
+            ..ChannelSpec::trigger(100, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        let eeg = XdfStream {
+            format: XdfFormat::F64,
+            ..XdfStream::new(1, "LiveAmp", "EEG", vec![0, 1, 2, 3])
+        };
+        let codes = XdfStream {
+            format: XdfFormat::I32,
+            start: 0.04,
+            ..XdfStream::new(2, "Codes", "Markers", vec![4])
+        };
+        spec.xdf.streams = vec![eeg, codes];
+        let mut annotations = xdf_markers(60.0, &["3", "17", "-4"]);
+        let numeric = annotations.len();
+        annotations.extend(xdf_markers(60.0, &["1.5", "1e-04", "-2.0", "1e-05"]));
+        let floats = annotations.len();
+        annotations.extend(xdf_markers(60.0, &["10.0,20.5", "nan,1.0"]));
+        let pairs = annotations.len();
+        annotations.extend(xdf_markers(60.0, &["onset", "offset"]));
+        spec.annotations = annotations;
+        let markers = |id, name: &str, kind: &str, values, rate, annotations| XdfMarkers {
+            id,
+            name: name.into(),
+            kind: kind.into(),
+            values,
+            rate,
+            annotations,
+        };
+        spec.xdf.markers = vec![
+            markers(
+                3,
+                "Ints",
+                "StickMvmt",
+                MarkerValues::Numeric(XdfFormat::I16, 1),
+                0.0,
+                0..numeric,
+            ),
+            markers(
+                4,
+                "Floats",
+                "Events",
+                MarkerValues::Numeric(XdfFormat::F32, 1),
+                0.0,
+                numeric..floats,
+            ),
+            markers(
+                5,
+                "Mouse",
+                "Position",
+                MarkerValues::Numeric(XdfFormat::F32, 2),
+                0.0,
+                floats..pairs,
+            ),
+            markers(
+                6,
+                "Stimuli",
+                "Markers",
+                MarkerValues::Strings,
+                10.0,
+                pairs..spec.annotations.len(),
+            ),
+        ];
+        spec.xdf.clock = 77.5;
+        spec.seed = 22;
         spec
     }
 }

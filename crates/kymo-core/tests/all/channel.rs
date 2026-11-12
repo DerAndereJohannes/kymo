@@ -63,7 +63,7 @@ fn mne_type_names_map_to_kinds_and_back() {
 #[test]
 fn unit_labels_give_factors_and_quantities() {
     use Quantity::*;
-    let cases: [(&str, Option<(f64, Quantity)>); 26] = [
+    let cases: [(&str, Option<(f64, Quantity)>); 36] = [
         ("V", Some((1.0, Voltage))),
         ("mV", Some((1e-3, Voltage))),
         ("\u{b5}V", Some((1e-6, Voltage))),
@@ -82,7 +82,18 @@ fn unit_labels_give_factors_and_quantities() {
         ("fT/cm", Some((1e-13, FieldGradient))),
         ("pT/m", Some((1e-12, FieldGradient))),
         ("fT/mm", Some((1e-12, FieldGradient))),
+        // As words, as XDF streams write them.
+        ("microvolts", Some((1e-6, Voltage))),
+        ("Microvolt", Some((1e-6, Voltage))),
+        ("millivolts", Some((1e-3, Voltage))),
+        ("nanovolt", Some((1e-9, Voltage))),
+        ("volts", Some((1.0, Voltage))),
+        ("femtotesla", Some((1e-15, MagneticField))),
+        ("picoteslas", Some((1e-12, MagneticField))),
+        ("siemens", Some((1.0, Conductance))),
+        ("microsiemens", Some((1e-6, Conductance))),
         // Not units kymo scales.
+        ("kilovolts", None),
         ("fV", None),
         ("pS", None),
         ("V/m", None),

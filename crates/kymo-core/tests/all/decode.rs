@@ -224,6 +224,9 @@ fn the_reference_is_the_first_finite_value() {
     let f64s = Decoder::new(Encoding::F64, ByteOrder::Big);
     assert_eq!(f64s.reference_from(&1234.5f64.to_be_bytes()), 1234.5);
     assert_eq!(f64s.reference_from(&f64::NAN.to_be_bytes()), 0.0);
+    // Relative to a value beyond float32's range, every other value would be infinite.
+    assert_eq!(f64s.reference_from(&1.3e212f64.to_be_bytes()), 0.0);
+    assert_eq!(f64s.reference_from(&3e38f64.to_be_bytes()), 3e38);
     assert_eq!(f64s.reference_from(&[0, 1]), 0.0);
     let u32s = Decoder::new(Encoding::U32, ByteOrder::Little);
     assert_eq!(u32s.reference_from(&4_000_000_000u32.to_le_bytes()), 4e9);

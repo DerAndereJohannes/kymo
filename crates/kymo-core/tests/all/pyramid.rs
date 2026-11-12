@@ -299,8 +299,9 @@ fn pyramids_of_two_grids() {
 /// Through the real readers: generated EDF+D (mixed rates, gaps, huge offset, negative
 /// gain), BDF+C, BrainVision files (both layouts; int16, int32 and float32), EEGLAB
 /// datasets (a .fdt, float32 and float64 inside the .set), GDF files (float64, int32,
-/// and every sample type in one file) and FIFF files (every buffer type, skips, buffers
-/// of varying length, split parts).
+/// and every sample type in one file), FIFF files (every buffer type, skips, buffers
+/// of varying length, split parts) and XDF files (every value format, streams starting at
+/// different times, mixed timestamps).
 #[test]
 fn pyramids_of_generated_files() {
     for preset in [
@@ -321,6 +322,9 @@ fn pyramids_of_generated_files() {
         "fif-double-dc",
         "fif-mixed",
         "fif-split",
+        "xdf-float32",
+        "xdf-mixed",
+        "xdf-events",
     ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);

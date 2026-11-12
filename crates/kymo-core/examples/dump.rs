@@ -8,8 +8,8 @@
 //! Writes to OUTDIR:
 //! - `header.json`: format, start time, duration, warnings, source files, channels (with
 //!   their prefilter, trigger mask and whether their changes are events), the ids of the
-//!   channels the file marks as bad, and grids (rate, start, length, segments, sample type,
-//!   channel ids)
+//!   channels the file marks as bad, the header's other fields (`extra`, as pairs), and
+//!   grids (rate, start, length, segments, sample type, channel ids)
 //! - `annotations.json`: onset, duration, description and channel names of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
@@ -210,6 +210,12 @@ fn header_json(rec: &Recording) -> String {
     let _ = writeln!(j, "  \"sources\": [{}],", sources.join(", "));
     let bads: Vec<String> = rec.bad_channels().iter().map(|c| c.0.to_string()).collect();
     let _ = writeln!(j, "  \"bad_channels\": [{}],", bads.join(", "));
+    let extra: Vec<String> = rec
+        .extra()
+        .iter()
+        .map(|(k, v)| format!("[{}, {}]", string(k), string(v)))
+        .collect();
+    let _ = writeln!(j, "  \"extra\": [{}],", extra.join(", "));
     j.push_str("  \"channels\": [");
     for (i, c) in rec.channels().iter().enumerate() {
         let sep = if i == 0 { "" } else { "," };

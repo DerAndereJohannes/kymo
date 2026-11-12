@@ -10,8 +10,8 @@ const BRAINVISION: &[u8] = b"Brain Vision Data Exchange Header File Version 1.0\
 const MAT: &[u8] = b"MATLAB 5.0 MAT-file, Platform: GLNXA64, Created on: Mon Jan  1 00:00:00 2024";
 
 /// The reason `path` could not be opened, and the file it names: unsupported, or a
-/// BrainVision header, MAT-file, GDF header or FIFF file id the reader refused (these are only first
-/// lines).
+/// BrainVision header, MAT-file, GDF header, FIFF file id or XDF magic the reader refused
+/// (these are only first lines).
 fn unsupported(path: &Path) -> (PathBuf, String) {
     match kymo_core::open(path) {
         Err(OpenError::Unsupported { path, reason }) => (path, reason),
@@ -19,6 +19,7 @@ fn unsupported(path: &Path) -> (PathBuf, String) {
         Err(OpenError::Eeglab { path, source }) => (path, format!("EEGLAB: {source}")),
         Err(OpenError::Gdf { path, source }) => (path, format!("GDF: {source}")),
         Err(OpenError::Fiff { path, source }) => (path, format!("FIFF: {source}")),
+        Err(OpenError::Xdf { path, source }) => (path, format!("XDF: {source}")),
         other => panic!("{}: expected a refusal, got {other:?}", path.display()),
     }
 }
@@ -35,7 +36,7 @@ const UNKNOWN: &str = "not a supported file format";
 fn formats_are_recognized_by_their_first_bytes() {
     let fiff = [0, 0, 0, 100, 0, 0, 0, 31, 0, 0, 0, 20, 0, 0, 0, 0];
     let cases: &[(&[u8], &str)] = &[
-        (b"XDF:\x01\x2a\x00\x00", "XDF files"),
+        (b"XDF:\x01\x2a\x00\x00", "XDF: "),
         (b"GDF 1.25", "GDF: "),
         (b"GDF 2.10", "GDF: "),
         (b"GDF 3.00", "only GDF 1 and 2"),

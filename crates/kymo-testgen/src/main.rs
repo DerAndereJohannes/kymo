@@ -1,4 +1,4 @@
-//! Command-line front end of the synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF
+//! Command-line front end of the synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF
 //! generator.
 
 use std::path::PathBuf;
@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use kymo_testgen::{PRESETS, Spec};
 
 const HELP: &str = "\
-kymo-testgen: generate synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files for tests and
-benchmarks
+kymo-testgen: generate synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files for tests
+and benchmarks
 
 Usage: kymo-testgen <PRESET> <OUTPUT> [OPTIONS]
        kymo-testgen --list

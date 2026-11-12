@@ -9,6 +9,7 @@ use crate::eeglab::EeglabError;
 use crate::fiff::FiffError;
 use crate::gdf::GdfError;
 use crate::tile::TileKey;
+use crate::xdf::XdfError;
 use crate::{AnnotationId, ChannelId, GridId, SampleType};
 
 /// A header, grid or annotation violates the recording model's invariants.
@@ -140,6 +141,8 @@ pub enum OpenError {
     Gdf { path: PathBuf, source: GdfError },
     #[error("{}: {source}", path.display())]
     Fiff { path: PathBuf, source: FiffError },
+    #[error("{}: {source}", path.display())]
+    Xdf { path: PathBuf, source: XdfError },
     #[error("{}: {reason}", path.display())]
     Unsupported { path: PathBuf, reason: String },
 }

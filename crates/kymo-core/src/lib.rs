@@ -23,6 +23,7 @@ mod sample;
 pub mod service;
 pub mod stim;
 pub mod tile;
+pub mod xdf;
 
 #[cfg(feature = "testing")]
 pub mod testing;

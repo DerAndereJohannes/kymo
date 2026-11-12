@@ -157,6 +157,9 @@ fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     if matches!(label, "UV" | "uv") {
         return Some((1e-6, Quantity::Voltage));
     }
+    if let Some(unit) = unit_word(label) {
+        return Some(unit);
+    }
     let (numerator, per) = match label.split_once('/') {
         Some((n, "m")) => (n, 1.0),
         Some((n, "cm")) => (n, 1e-2),
@@ -184,11 +187,32 @@ fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     }
 }
 
+/// A unit written as a word, ignoring case ("microvolts", as XDF streams write them).
+fn unit_word(label: &str) -> Option<(f64, Quantity)> {
+    let word = label.to_ascii_lowercase();
+    let word = word.strip_suffix('s').unwrap_or(&word);
+    Some(match word {
+        "volt" => (1.0, Quantity::Voltage),
+        "millivolt" => (1e-3, Quantity::Voltage),
+        "microvolt" => (1e-6, Quantity::Voltage),
+        "nanovolt" => (1e-9, Quantity::Voltage),
+        "tesla" => (1.0, Quantity::MagneticField),
+        "picotesla" => (1e-12, Quantity::MagneticField),
+        "femtotesla" => (1e-15, Quantity::MagneticField),
+        // "siemens" without its "s".
+        "siemen" => (1.0, Quantity::Conductance),
+        "microsiemen" => (1e-6, Quantity::Conductance),
+        _ => return None,
+    })
+}
+
 impl Unit {
     /// The unit of `label`, with its SI factor if it is a known unit: volts and siemens
     /// (plain or with the prefix m, µ or n), teslas (also p and f) and teslas per meter,
     /// centimeter or millimeter ("fT/cm"). The micro prefix may be the micro sign (U+00B5),
     /// the Greek mu (U+03BC, which looks the same) or "u". Surrounding whitespace is ignored.
+    /// Volts (with milli, micro, nano), teslas (pico, femto) and siemens (micro) may also be
+    /// written as words, in any case and singular or plural ("microvolts").
     pub fn from_label(label: impl Into<String>) -> Unit {
         let label = label.into();
         let to_si = parse_unit(&label).map(|(factor, _)| factor);

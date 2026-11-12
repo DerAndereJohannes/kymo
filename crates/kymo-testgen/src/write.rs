@@ -113,6 +113,9 @@ pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
     if spec.format.is_fiff() {
         return crate::fiff::write(spec, path.as_ref());
     }
+    if spec.format.is_xdf() {
+        return crate::xdf::write(spec, path.as_ref());
+    }
     let file = File::create(path)?;
     write_to(spec, BufWriter::with_capacity(1 << 20, file))
 }

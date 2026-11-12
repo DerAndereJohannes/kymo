@@ -349,11 +349,12 @@ fn spec_codes(spec: &Spec, c: usize) -> Vec<(u64, i32)> {
         .collect()
 }
 
-/// Generated BDF+C (masked Status with toggling high bits) and EDF+D (gaps) files: the
-/// changes match the codes the generator wrote, and a reopened sidecar has the same ones.
+/// Generated BDF+C (masked Status with toggling high bits), EDF+D (gaps) and XDF (a float64
+/// stream's Trigger channel) files: the changes match the codes the generator wrote, and a
+/// reopened sidecar has the same ones.
 #[test]
 fn generated_files_and_sidecars_have_the_written_codes() {
-    for preset in ["bdf+c-small", "edf+d-mixed"] {
+    for preset in ["bdf+c-small", "edf+d-mixed", "xdf-events"] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
         let rec = Recording::new(kymo_core::open(file.path()).unwrap())
@@ -398,7 +399,14 @@ fn generated_files_and_sidecars_have_the_written_codes() {
             want
         );
         for g in 0..rec.grids().len() as u32 {
-            if GridId(g) != channel.grid {
+            // Other grids without stim channels have no changes (xdf-events has a stim
+            // stream of its own).
+            let stim = rec
+                .grid(GridId(g))
+                .channels()
+                .iter()
+                .any(|&c| rec.channel(c).kind == ChannelKind::Stim);
+            if GridId(g) != channel.grid && !stim {
                 assert!(
                     reopened
                         .pyramid(GridId(g))

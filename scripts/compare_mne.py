@@ -1,16 +1,17 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["mne", "numpy", "pandas"]
+# dependencies = ["mne", "mnextend", "numpy", "pandas", "pyxdf"]
 # ///
-"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files with MNE-Python's.
+"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files with MNE-Python's
+(XDF: with pyxdf's and mnextend's).
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
     scripts/compare_mne.py --testgen           # files from kymo-testgen presets
     scripts/compare_mne.py --annotations ...   # also annotation files, both ways
 
-Needs numpy, mne and pandas (pandas only with --annotations). The dependencies are
+Needs numpy, mne, pandas (only with --annotations), pyxdf and mnextend (only for XDF). The dependencies are
 declared inline (PEP 723), so uv installs them on its own. Run the script directly or
 through uv:
     uv run scripts/compare_mne.py ...
@@ -136,6 +137,28 @@ FIFF, where Kymo deliberately differs from MNE:
   channels' events are compared.
 - Float64 samples are read relative to each channel's first sample, as in EEGLAB.
 - Channel kinds and filters are not compared.
+
+XDF, which MNE doesn't read: values and timestamps are compared with pyxdf's (load_xdf
+without clock synchronization and dejittering, as Kymo doesn't apply them yet), stream
+modes with mnextend's stream_modes, annotation texts with mnextend's read_raw_xdf, the
+start time with the file header's datetime as mnextend reads it. Where Kymo deliberately
+differs:
+- No resampling: every stream shown as channels is a grid of its own, compared with its
+  pyxdf stream sample by sample. Its start must be its first timestamp minus the earliest
+  first timestamp of these streams.
+- Irregular numeric streams with several channels that are not of an event type become
+  channels in Kymo (left out until it reads irregular time bases), annotations in
+  mnextend.
+- Channels of type "trigger(s)" are stim channels in Kymo, misc in mnextend.
+- Labels two streams share are prefixed by their stream's name, type or id in Kymo; empty
+  labels are named "{stream name}_{n}". Names must be the label, a prefixed label, or
+  that default.
+- Int64 and double64 values are read relative to each channel's first sample (unless it
+  is beyond float32's range); Kymo's values must equal that float32 reading exactly.
+  Stim channels' NaN reads as 0.
+- Annotation onsets are compared with pyxdf's raw timestamps; mnextend's are
+  synchronized and dejittered, so only its texts (and their number) are compared.
+- Stim events are not compared.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -394,6 +417,256 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
     return problems
 
 
+XDF_EVENT_TYPES = {"marker", "markers", "event", "events", "trigger", "triggers", "stim"}
+# Kymo's kinds of MNE's channel types; MNE's other types are misc.
+KYMO_KINDS = {
+    "eeg": "Eeg",
+    "eog": "Eog",
+    "ecg": "Ecg",
+    "emg": "Emg",
+    "stim": "Stim",
+    "misc": "Misc",
+    "mag": "Mag",
+    "grad": "Grad",
+    "ref_meg": "RefMeg",
+    "seeg": "Seeg",
+    "ecog": "Ecog",
+    "dbs": "Dbs",
+    "resp": "Resp",
+    "bio": "Bio",
+}
+
+
+def xdf_field(info, key):
+    value = info.get(key) or [None]
+    return value[0] if value[0] is not None else ""
+
+
+def xdf_mode(stream):
+    """How Kymo reads a pyxdf stream by default, as its info view says."""
+    info = stream["info"]
+    if len(stream["time_stamps"]) == 0:
+        return "no samples"
+    rate = float(xdf_field(info, "nominal_srate"))
+    count = int(xdf_field(info, "channel_count"))
+    if xdf_field(info, "channel_format") == "string":
+        return "annotations"
+    if rate > 0:
+        return "channels"
+    kind = str(xdf_field(info, "type")).strip().lower()
+    if count > 1 and kind not in XDF_EVENT_TYPES:
+        return "left out (irregular channels)"
+    return "annotations"
+
+
+def xdf_channels(stream):
+    """(label, type, unit) of each channel of a pyxdf stream, empty where it has none."""
+    info = stream["info"]
+    count = int(xdf_field(info, "channel_count"))
+    try:
+        described = info["desc"][0]["channels"][0]["channel"]
+    except (TypeError, IndexError, KeyError):
+        described = []
+    channels = [
+        tuple(str((ch.get(k) or [""])[0] or "") for k in ("label", "type", "unit"))
+        for ch in described
+    ]
+    return channels if len(channels) == count else [("", "", "")] * count
+
+
+def compare_xdf(path, tmp, header, annotations, windows):
+    """Compares Kymo's reading of an XDF file with pyxdf's and mnextend's; returns the
+    problems and prints a summary."""
+    import pyxdf
+    from mnextend.io import xdf as mnextend_xdf
+
+    problems, notes = [], []
+    streams, file_header = pyxdf.load_xdf(
+        str(path),
+        synchronize_clocks=False,
+        handle_clock_resets=False,
+        dejitter_timestamps=False,
+        verbose=False,
+    )
+    by_id = {s["info"]["stream_id"]: s for s in streams}
+    kymo_modes = {}
+    for key, value in header["extra"]:
+        if key.startswith("stream "):
+            mode = "not read" if ", not read: " in value else value.rsplit(": ", 1)[-1]
+            kymo_modes[int(key.split()[1])] = mode
+
+    # Stream modes, against Kymo's rule and mnextend's defaults.
+    for info in mnextend_xdf.resolve_streams(str(path)):
+        sid = info["stream_id"]
+        stream = by_id.get(sid)
+        expected = xdf_mode(stream) if stream is not None else "no samples"
+        ours = kymo_modes.get(sid)
+        if ours != expected:
+            problems.append(f"stream {sid}: Kymo reads it as {ours!r}, expected {expected!r}")
+        default = mnextend_xdf.stream_modes(info)[0]
+        if ours == "left out (irregular channels)" and default == "annotations":
+            notes.append(f"stream {sid}: irregular channels, annotations in mnextend")
+    shown = sorted(sid for sid, m in kymo_modes.items() if m == "channels")
+    if len(shown) != len(header["grids"]):
+        problems.append(f"{len(header['grids'])} grids, but {len(shown)} streams shown")
+        shown = shown[: len(header["grids"])]
+    t0 = min(by_id[sid]["time_stamps"][0] for sid in shown) if shown else 0.0
+
+    # Grids: rate, length, start, names, kinds, units and values.
+    channels = header["channels"]
+    worst, compared = 0.0, 0
+    for g, (grid, sid) in enumerate(zip(header["grids"], shown)):
+        stream = by_id[sid]
+        info = stream["info"]
+        ids = grid["channels"]
+        data = np.asarray(stream["time_series"])
+        stamps = stream["time_stamps"]
+        name = str(xdf_field(info, "name"))
+        if grid["rate"] != float(xdf_field(info, "nominal_srate")) or grid["len"] != len(
+            stamps
+        ):
+            problems.append(f"stream {sid}: rate or length differs")
+            continue
+        if abs(grid["start"] - (stamps[0] - t0)) > 1e-6:
+            problems.append(
+                f"stream {sid}: starts at {grid['start']}, pyxdf at {stamps[0] - t0}"
+            )
+        discrete = mnextend_xdf.stream_modes(
+            {
+                "channel_format": xdf_field(info, "channel_format"),
+                "nominal_srate": xdf_field(info, "nominal_srate"),
+                "type": xdf_field(info, "type"),
+            }
+        )[0] == "discrete"
+        for k, (c, (label, kind, unit)) in enumerate(zip(ids, xdf_channels(stream))):
+            ch = channels[c]
+            default = f"{name}_{k}"
+            if not (
+                ch["name"] == (label or default)
+                or (label and ch["name"].endswith(" " + label))
+            ):
+                problems.append(f"stream {sid} channel {k}: name {ch['name']!r}, label {label!r}")
+            kind = kind.strip().lower()
+            if discrete or kind in ("stim", "trigger", "triggers"):
+                expected = "Stim"
+            else:
+                expected = KYMO_KINDS.get(kind, "Misc")
+            if ch["kind"] != expected:
+                problems.append(f"{ch['name']}: kind {ch['kind']}, expected {expected}")
+            parsed = mnextend_xdf._parse_unit(unit)
+            if isinstance(parsed, tuple) and parsed[1] in (
+                mne.io.constants.FIFF.FIFF_UNIT_V,
+                mne.io.constants.FIFF.FIFF_UNIT_T,
+                mne.io.constants.FIFF.FIFF_UNIT_S,
+            ):
+                if ch["to_si"] is None or not np.isclose(ch["to_si"], parsed[0]):
+                    problems.append(f"{ch['name']}: unit {unit!r} scales by {ch['to_si']}")
+        ours_all = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
+        reference = np.array([channels[c]["offset"] for c in ids])[:, None]
+        stim = np.array([channels[c]["kind"] == "Stim" for c in ids])[:, None]
+        offset = 0
+        for a, b in windows[g]:
+            n = b - a
+            ours = ours_all[offset : offset + len(ids) * n].reshape(len(ids), n)
+            offset += len(ids) * n
+            theirs = data[a:b].T.astype(np.float64)
+            theirs = np.where(stim & np.isnan(theirs), 0.0, theirs)
+            # Kymo's reading: float32 relative to the reference, back in float64.
+            with np.errstate(over="ignore", invalid="ignore"):
+                native = (theirs - reference).astype(np.float32).astype(np.float64)
+                expected = (native + reference).astype(np.float32)
+            same = (ours == expected) | (np.isnan(ours) & np.isnan(expected))
+            if not same.all():
+                k, i = np.argwhere(~same)[0]
+                problems.append(
+                    f"{channels[ids[k]]['name']}: sample {a + i} is {ours[k, i]}, pyxdf "
+                    f"{theirs[k, i]} ({(~same).sum()} differ)"
+                )
+            # Relative to the value's size, or to the reference's for values read
+            # relative to one.
+            size = np.maximum(np.abs(theirs), np.abs(reference))
+            finite = np.isfinite(theirs) & np.isfinite(ours) & (size != 0)
+            if finite.any():
+                rel = np.abs(ours[finite] - theirs[finite]) / size[finite]
+                worst = max(worst, float(np.nanmax(rel)))
+            compared += ours.size
+
+    # Annotations: onsets from pyxdf's raw timestamps, texts as mnextend writes them.
+    annotation_ids = sorted(sid for sid, m in kymo_modes.items() if m == "annotations")
+    expected = []
+    for sid in annotation_ids:
+        stream = by_id[sid]
+        string = xdf_field(stream["info"], "channel_format") == "string"
+        for t, sample in zip(stream["time_stamps"], stream["time_series"]):
+            if string:
+                items = [item for item in sample if item]
+            else:
+                values = [str(v) for v in sample if not np.isnan(v)]
+                items = [",".join(values)] if values else []
+            expected += [(t - t0, item) for item in items]
+    # Sorted by onset (to the microsecond, as both are rounded), then text.
+    ours = sorted(
+        ((a["onset"], a["description"]) for a in annotations),
+        key=lambda a: (round(a[0], 6), a[1]),
+    )
+    expected.sort(key=lambda a: (round(a[0], 6), a[1]))
+    if len(ours) != len(expected):
+        problems.append(f"{len(ours)} annotations, pyxdf {len(expected)}")
+    else:
+        bad = [
+            (o, e) for o, e in zip(ours, expected) if o[1] != e[1] or abs(o[0] - e[0]) > 1e-6
+        ]
+        if bad:
+            problems.append(f"{len(bad)} annotations differ, first: {bad[0]}")
+    if annotation_ids and shown:
+        modes = {shown[0]: None, **dict.fromkeys(annotation_ids, "annotations")}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            raw = mnextend_xdf.read_raw_xdf(str(path), modes, verbose="error")
+        theirs = sorted(
+            d for d in raw.annotations.description if d != "BAD_ACQ_SKIP"
+        )
+        if sorted(a["description"] for a in annotations) != theirs:
+            problems.append("annotation texts differ from mnextend's")
+
+    # The start time: the file header's datetime, in UTC.
+    datetime_text = (file_header["info"].get("datetime") or [None])[0]
+    if datetime_text:
+        try:
+            theirs = datetime.datetime.fromisoformat(datetime_text)
+        except ValueError:
+            theirs = datetime.datetime.fromisoformat(
+                datetime_text[:-2] + ":" + datetime_text[-2:]
+            )
+        zone = dict(header["extra"]).get("time zone")
+        ours = header["start_time"] and datetime.datetime.fromisoformat(header["start_time"])
+        if ours and zone:
+            sign = -1 if zone[3] == "-" else 1
+            hours, minutes = (int(x) for x in zone[4:].split(":")) if len(zone) > 3 else (0, 0)
+            ours = ours.replace(
+                tzinfo=datetime.timezone(sign * datetime.timedelta(hours=hours, minutes=minutes))
+            )
+        if ours != theirs:
+            problems.append(f"start time {ours}, file header {theirs}")
+    elif header["start_time"] is not None:
+        problems.append(f"start time {header['start_time']} without a datetime")
+    notes.append("stim events not compared")
+
+    status = "OK" if not problems else "DIFFERS"
+    print(f"{status}: {path}")
+    print(
+        f"  XDF, {len(channels)} channels in {len(shown)} streams, {compared} samples "
+        f"compared, max relative error {worst:.1e}, {len(annotations)} annotations"
+    )
+    for w in header["warnings"]:
+        print(f"  Kymo warning: {w}")
+    for n in notes:
+        print(f"  note: {n}")
+    for p in problems:
+        print(f"  PROBLEM: {p}")
+    return problems
+
+
 def compare(path, max_values=None, annotation_files=False):
     """Returns a list of problems (empty if the readers agree), or None for a file
     neither reader reads, and prints a summary."""
@@ -416,6 +689,8 @@ def compare(path, max_values=None, annotation_files=False):
             return None
         annotations = json.loads((tmp / "annotations.json").read_text())
         windows = json.loads((tmp / "windows.json").read_text())
+        if header["format"] == "XDF":
+            return compare_xdf(path, tmp, header, annotations, windows)
 
         brainvision = header["format"] == "BrainVision"
         eeglab = header["format"] == "EEGLAB"
@@ -1019,6 +1294,9 @@ def testgen_files(directory):
         ("fif-double-dc", "fif", []),
         ("fif-mixed", "fif", []),
         ("fif-split", "fif", []),
+        ("xdf-float32", "xdf", []),
+        ("xdf-mixed", "xdf", []),
+        ("xdf-events", "xdf", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -1063,7 +1341,8 @@ def find_files(arguments):
             files += sorted(
                 p
                 for p in a.rglob("*")
-                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set", ".gdf", ".fif")
+                if p.suffix.lower()
+                in (".edf", ".bdf", ".vhdr", ".set", ".gdf", ".fif", ".xdf")
             )
         else:
             files.append(a)
@@ -1075,7 +1354,7 @@ def main():
     parser.add_argument(
         "paths",
         nargs="*",
-        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF/FIFF files or directories",
+        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF/FIFF/XDF files or directories",
     )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
@@ -1102,7 +1381,7 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF, BDF, BrainVision, EEGLAB, GDF or FIFF files found")
+            sys.exit("no EDF, BDF, BrainVision, EEGLAB, GDF, FIFF or XDF files found")
         skipped = 0
         for path in files:
             if path.suffix.lower() == ".set" and is_mat_v73(path):

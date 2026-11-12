@@ -180,10 +180,12 @@ impl Decoder {
     }
 
     /// The reference to use for a channel whose first stored sample is `first`: its value,
-    /// if the decoder uses a reference and the value is finite (not missing); 0 otherwise.
+    /// if the decoder uses a reference and the value is finite (not missing) and within
+    /// float32's range; 0 otherwise. (Relative to a value beyond float32's range, every
+    /// other value would read as infinite.)
     pub fn reference_from(&self, first: &[u8]) -> f64 {
         match self.value(first) {
-            Some(v) if self.uses_reference() && v.is_finite() => v,
+            Some(v) if self.uses_reference() && v.abs() <= f64::from(f32::MAX) => v,
             _ => 0.0,
         }
     }

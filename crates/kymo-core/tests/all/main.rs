@@ -32,3 +32,4 @@ mod stim;
 mod tile_cache;
 mod tiles;
 mod window_mean;
+mod xdf;

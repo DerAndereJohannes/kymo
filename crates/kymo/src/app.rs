@@ -665,8 +665,8 @@ impl KymoApp {
                 .add_filter(
                     "All Supported File Types",
                     &[
-                        "edf", "bdf", "vhdr", "set", "gdf", "fif", "EDF", "BDF", "VHDR", "SET",
-                        "GDF", "FIF",
+                        "edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf", "EDF", "BDF", "VHDR",
+                        "SET", "GDF", "FIF", "XDF",
                     ],
                 )
                 .add_filter("BDF", &["bdf", "BDF"])
@@ -675,6 +675,7 @@ impl KymoApp {
                 .add_filter("EEGLAB", &["set", "SET"])
                 .add_filter("FIFF", &["fif", "FIF"])
                 .add_filter("GDF", &["gdf", "GDF"])
+                .add_filter("XDF", &["xdf", "XDF"])
                 .add_filter("All Files", &["*"])
                 .pick_file(),
             Dialog::Save(suggested) => save(files, "Save Annotations", &suggested),
