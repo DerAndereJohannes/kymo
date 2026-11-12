@@ -286,11 +286,18 @@ impl Frame {
         };
         let rows: HashMap<ChannelId, &Row> = scene.rows.iter().map(|r| (r.channel, r)).collect();
 
+        // Tiles cut where a grid's samples stop being evenly spaced (the pieces of a
+        // segmented time base), so each draw places its items along one line.
+        let draws: Vec<Placed> = query
+            .draw
+            .iter()
+            .flat_map(|p| split_at_runs(recording, p))
+            .collect();
         // The seam column of the tile before, which the next draw leaves to it.
         let mut seam: Option<u32> = None;
-        for (i, placed) in query.draw.iter().enumerate() {
-            let prev = i.checked_sub(1).and_then(|i| query.draw.get(i));
-            let next = query.draw.get(i + 1);
+        for (i, placed) in draws.iter().enumerate() {
+            let prev = i.checked_sub(1).and_then(|i| draws.get(i));
+            let next = draws.get(i + 1);
             let draw = tile_draw(recording, &pixels, &rows, placed, prev, next);
             if let Some(mut draw) = draw {
                 if let Some(c) = seam {
@@ -338,6 +345,25 @@ fn block_grid(recording: &Recording, block: ChannelBlock) -> Option<&Grid> {
         .filter(|grid| block.index < ChannelBlock::count(grid))
 }
 
+/// `placed` cut into the runs of evenly spaced samples of its grid ([`Grid::regular_run`]):
+/// itself, unless a piece of a segmented time base starts inside it.
+fn split_at_runs(recording: &Recording, placed: &Placed) -> Vec<Placed> {
+    let Some(grid) = block_grid(recording, placed.tile.key().block) else {
+        return vec![placed.clone()];
+    };
+    let mut parts = Vec::new();
+    let mut start = placed.samples.start;
+    while start < placed.samples.end {
+        let end = grid.regular_run(start).samples.end.min(placed.samples.end);
+        parts.push(Placed {
+            samples: start..end,
+            ..placed.clone()
+        });
+        start = end;
+    }
+    parts
+}
+
 /// The items `placed` covers: (the tile's first sample, samples per item, first item, last
 /// item), or `None` if it covers none.
 fn placed_items(placed: &Placed) -> Option<(u64, u64, u64, u64)> {
@@ -376,11 +402,13 @@ fn adjacent(a: &Placed, b: &Placed) -> bool {
         && !b.tile.is_empty()
 }
 
-/// `placed` as a [`Part`], anchored at its item nearest `x_near` pixels.
+/// `placed` as a [`Part`], anchored at its item nearest `x_near` pixels. Its items lie on
+/// the line of the run of evenly spaced samples it starts in (placed tiles are cut at runs).
 fn part(pixels: &Pixels, grid: &Grid, placed: &Placed, x_near: f64) -> Option<Part> {
     let (first, bucket, lo, last) = placed_items(placed)?;
-    let x = |sample: u64| pixels.x(grid, sample);
-    let item_width = bucket as f64 / grid.rate() * pixels.per_second;
+    let run = grid.regular_run(placed.samples.start);
+    let x = |sample: u64| (run.time_of(sample) - pixels.start) * pixels.per_second;
+    let item_width = bucket as f64 / run.rate * pixels.per_second;
     let anchor = ((x_near - x(first)) / item_width)
         .floor()
         .clamp(lo as f64, last as f64) as u64;

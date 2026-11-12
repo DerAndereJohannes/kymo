@@ -9,7 +9,8 @@
 //! - `header.json`: format, start time, duration, warnings, source files, channels (with
 //!   their prefilter, trigger mask and whether their changes are events), the ids of the
 //!   channels the file marks as bad, the header's other fields (`extra`, as pairs), and
-//!   grids (rate, start, length, segments, sample type, channel ids)
+//!   grids (rate, start, length, segments, the time base's pieces as [first sample, start,
+//!   rate], sample type, channel ids)
 //! - `annotations.json`: onset, duration, description and channel names of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
@@ -250,14 +251,30 @@ fn header_json(rec: &Recording) -> String {
             .map(|s| format!("[{}, {}]", s.start, s.end))
             .collect();
         let channels: Vec<String> = grid.channels().iter().map(|c| c.0.to_string()).collect();
+        // The runs of evenly spaced samples: one for a regular time base, a piece each for
+        // a segmented one.
+        let mut pieces = Vec::new();
+        let mut first = 0;
+        loop {
+            let run = grid.regular_run(first);
+            pieces.push(format!(
+                "[{}, {}, {}]",
+                run.samples.start, run.start, run.rate
+            ));
+            if run.samples.end >= grid.len() {
+                break;
+            }
+            first = run.samples.end;
+        }
         let _ = write!(
             j,
             "{sep}\n    {{\"rate\": {}, \"start\": {}, \"len\": {}, \"segments\": [{}], \
-             \"sample_type\": \"{:?}\", \"channels\": [{}]}}",
+             \"pieces\": [{}], \"sample_type\": \"{:?}\", \"channels\": [{}]}}",
             grid.rate(),
             grid.time_of(0),
             grid.len(),
             segments.join(", "),
+            pieces.join(", "),
             grid.sample_type(),
             channels.join(", ")
         );

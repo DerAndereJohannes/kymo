@@ -10,9 +10,12 @@ use kymo_core::xdf::XdfError;
 use kymo_core::{
     AnnotationData, ChannelId, ChannelKind, GridId, OpenError, Quantity, Recording, SampleType,
 };
-use kymo_testgen::xdf::{Chunks, channel_order, header_xml, stream_of, streams, tag};
+use kymo_testgen::xdf::{
+    Chunks, channel_order, clock_offset_at, header_xml, local_time, offset_times, stream_of,
+    streams, tag, written_stamps,
+};
 use kymo_testgen::{
-    ChannelSpec, Format, MarkerValues, Spec, XdfFormat, XdfMarkers, XdfStamps, XdfStream,
+    ChannelSpec, Format, MarkerValues, Spec, XdfBreak, XdfFormat, XdfMarkers, XdfStamps, XdfStream,
 };
 use proptest::prelude::*;
 
@@ -39,16 +42,17 @@ fn step(x: f64) -> f64 {
     f64::from(f32::from_bits(x.to_bits() + 1) - x)
 }
 
-/// Whether `got` (channel-major) matches the truth: exactly, or within the steps of both
-/// roundings for formats read relative to each channel's first sample (int64, double64).
-fn matches(spec: &Spec, channels: &[ChannelId], range: Range<u64>, got: &[f32]) -> bool {
+/// Whether `got` (channel-major, one column per stream sample in `samples`) matches the
+/// truth: exactly, or within the steps of both roundings for formats read relative to each
+/// channel's first sample (int64, double64).
+fn matches(spec: &Spec, channels: &[ChannelId], samples: Range<u64>, got: &[f32]) -> bool {
     let order = channel_order(spec);
-    let n = (range.end - range.start) as usize;
+    let n = (samples.end - samples.start) as usize;
     got.len() == channels.len() * n
         && got.iter().enumerate().all(|(k, &g)| {
             let c = order[channels[k / n.max(1)].0 as usize];
             let (stream, _) = stream_of(spec, c).unwrap();
-            let i = range.start + (k % n.max(1)) as u64;
+            let i = samples.start + (k % n.max(1)) as u64;
             let e = spec.physical(c, i);
             let relative = matches!(stream.format, XdfFormat::I64 | XdfFormat::F64)
                 && !spec.channels[c].trigger;
@@ -58,14 +62,143 @@ fn matches(spec: &Spec, channels: &[ChannelId], range: Range<u64>, got: &[f32]) 
         })
 }
 
+/// What kymo should make of a stream's time stamps, worked out by brute force as pyxdf
+/// does: each sample's time (relative to `t = 0`), the stream's effective rate, its
+/// segments' lengths.
+struct Expected {
+    times: Vec<f64>,
+    rate: f64,
+    segments: Vec<u64>,
+}
+
+/// The expected time stamps of every stream of `spec`, by stream id, with `t = 0` the
+/// earliest first time; and that time on the recording's clock.
+fn timeline(spec: &Spec) -> (Vec<Expected>, f64) {
+    let mut streams = streams(spec);
+    streams.sort_by_key(|s| s.id);
+    // The clock's ranges between resets: each its offset line over the stream's clock
+    // (offsets lie on it exactly), and its first and last clock time.
+    let offsets: Vec<(f64, f64, bool)> = offset_times(spec)
+        .into_iter()
+        .map(|t| {
+            let reset = spec
+                .xdf
+                .clock_reset
+                .is_some_and(|(at, _)| t >= spec.xdf.clock + at);
+            (local_time(spec, t), clock_offset_at(spec, t), reset)
+        })
+        .collect();
+    let ranges: Vec<(f64, f64, f64, f64)> = [false, true]
+        .iter()
+        .filter_map(|&after| {
+            let part: Vec<(f64, f64)> = offsets
+                .iter()
+                .filter(|o| o.2 == after)
+                .map(|o| (o.0, o.1))
+                .collect();
+            let (first, last) = (*part.first()?, *part.last()?);
+            let slope = if part.len() > 1 {
+                (last.1 - first.1) / (last.0 - first.0)
+            } else {
+                0.0
+            };
+            Some((first.1 - slope * first.0, slope, first.0, last.0))
+        })
+        .collect();
+    let mut all: Vec<Expected> = streams
+        .iter()
+        .map(|s| {
+            let tdiff = 1.0 / spec.rate(s.channels[0]);
+            let stamps = written_stamps(spec, s);
+            let (q, first) = stamps
+                .iter()
+                .enumerate()
+                .find_map(|(i, t)| t.map(|t| (i, t)))
+                .unwrap();
+            let mut raw: Vec<f64> = Vec::with_capacity(stamps.len());
+            for (i, stamp) in stamps.iter().enumerate() {
+                let t = match (stamp, raw.last()) {
+                    (Some(t), _) => *t,
+                    (None, Some(p)) => p + tdiff,
+                    (None, None) => first - (q - i) as f64 * tdiff,
+                };
+                raw.push(t);
+            }
+            // Synchronized, each in the range pyxdf's rule puts it in.
+            let mut range = 0;
+            let synced: Vec<f64> = raw
+                .iter()
+                .map(|&t| {
+                    if ranges.is_empty() {
+                        return t;
+                    }
+                    while range + 1 < ranges.len()
+                        && (t - ranges[range].3).abs() >= (t - ranges[range + 1].2).abs()
+                    {
+                        range += 1;
+                    }
+                    let (a, b, _, _) = ranges[range];
+                    t + (a + b * t)
+                })
+                .collect();
+            // Segments between breaks, each replaced by its least-squares line.
+            let threshold = 1f64.max(500.0 * tdiff);
+            let mut times = synced.clone();
+            let mut segments = Vec::new();
+            let (mut samples, mut seconds) = (0.0, 0.0);
+            let mut start = 0;
+            for i in 1..=synced.len() {
+                if i < synced.len() && (synced[i] - synced[i - 1]).abs() <= threshold {
+                    continue;
+                }
+                let y = &synced[start..i];
+                let n = y.len() as f64;
+                if y.len() > 1 {
+                    let mean = y.iter().sum::<f64>() / n;
+                    let idx = |k: usize| k as f64 - (n - 1.0) / 2.0;
+                    let slope = (0..y.len()).map(|k| idx(k) * (y[k] - mean)).sum::<f64>()
+                        / (n * (n * n - 1.0) / 12.0);
+                    for k in 0..y.len() {
+                        times[start + k] = mean + slope * idx(k);
+                    }
+                    samples += n - 1.0;
+                    seconds += slope * (n - 1.0);
+                }
+                segments.push(y.len() as u64);
+                start = i;
+            }
+            let rate = if samples > 0.0 {
+                samples / seconds
+            } else {
+                1.0 / tdiff
+            };
+            Expected {
+                times,
+                rate,
+                segments,
+            }
+        })
+        .collect();
+    let t0 = all.iter().map(|e| e.times[0]).fold(f64::INFINITY, f64::min);
+    for e in &mut all {
+        for t in &mut e.times {
+            *t -= t0;
+        }
+    }
+    (all, t0)
+}
+
+/// The grid slot of each of a grid's samples, its segments holding them in order.
+fn slots(grid: &kymo_core::Grid) -> Vec<u64> {
+    grid.segments().iter().flat_map(|s| s.clone()).collect()
+}
+
 /// The annotations kymo should read from `spec`'s marker streams, as (onset, description),
 /// sorted: string texts as they are, numeric ones without NaN values, irregular streams
 /// with several channels left out.
 fn expected_annotations(spec: &Spec) -> Vec<(f64, String)> {
-    let first = streams(spec)
-        .iter()
-        .map(|s| s.start)
-        .fold(f64::INFINITY, f64::min);
+    // Markers are written at their true times, which synchronization restores.
+    let first = timeline(spec).1 - spec.xdf.clock;
     let mut expected = Vec::new();
     for m in &spec.xdf.markers {
         if let MarkerValues::Numeric(_, n) = m.values
@@ -113,28 +246,40 @@ fn same_annotations(spec: &Spec, annotations: &[AnnotationData]) -> bool {
             .all(|(g, e)| (g.0 - e.0).abs() <= tolerance && g.1 == e.1)
 }
 
-/// Checks every grid of `rec` against `spec`'s streams: rate, length, start, sample type
-/// and the samples over `reads` (or everything).
+/// Checks every grid of `rec` against `spec`'s streams: rate, segments, every sample's
+/// time, sample type, and the samples over `reads` (grid slots; or everything).
 fn check_grids(spec: &Spec, rec: &Recording, reads: Option<&[(usize, Range<u64>)]>) {
     let mut streams = streams(spec);
     streams.sort_by_key(|s| s.id);
     assert_eq!(rec.grids().len(), streams.len());
-    let first = streams
-        .iter()
-        .map(|s| s.start)
-        .fold(f64::INFINITY, f64::min);
-    let tolerance = 1e-9 * spec.xdf.clock.abs().max(1.0);
+    let (expected, _) = timeline(spec);
     for (g, (grid, stream)) in rec.grids().iter().zip(&streams).enumerate() {
         let c = stream.channels[0];
-        assert_eq!(grid.rate(), spec.rate(c));
-        assert_eq!(grid.len(), spec.len(c));
-        assert_eq!(grid.segments(), &[0..spec.len(c)]);
-        let start = grid.time_of(0);
+        let e = &expected[g];
         assert!(
-            (start - (stream.start - first)).abs() <= tolerance,
-            "stream {}: start {start}",
+            (grid.rate() - e.rate).abs() <= 1e-9 * e.rate,
+            "stream {}: rate {} vs {}",
+            stream.id,
+            grid.rate(),
+            e.rate
+        );
+        let slots = slots(grid);
+        assert_eq!(slots.len() as u64, spec.len(c), "stream {}", stream.id);
+        assert_eq!(
+            grid.segments().len(),
+            e.segments.len(),
+            "stream {}",
             stream.id
         );
+        for (i, &slot) in slots.iter().enumerate() {
+            let t = grid.time_of(slot);
+            assert!(
+                (t - e.times[i]).abs() < 1e-6,
+                "stream {} sample {i}: {t} vs {}",
+                stream.id,
+                e.times[i]
+            );
+        }
         let native = match stream.format {
             XdfFormat::I8 | XdfFormat::I16 => SampleType::I16,
             XdfFormat::I32 => SampleType::I32,
@@ -144,14 +289,12 @@ fn check_grids(spec: &Spec, rec: &Recording, reads: Option<&[(usize, Range<u64>)
         let ids = grid.channels().to_vec();
         let all = [(g, 0..grid.len())];
         for (_, range) in reads.unwrap_or(&all).iter().filter(|(k, _)| *k == g) {
-            if range.is_empty() {
-                continue;
+            for piece in grid.present_in(range.clone()).collect::<Vec<_>>() {
+                let got = physical(rec, GridId(g as u32), &ids, piece.clone());
+                let first = slots.partition_point(|&s| s < piece.start) as u64;
+                let samples = first..first + (piece.end - piece.start);
+                assert!(matches(spec, &ids, samples, &got), "{piece:?}: {got:?}");
             }
-            let got = physical(rec, GridId(g as u32), &ids, range.clone());
-            assert!(
-                matches(spec, &ids, range.clone(), &got),
-                "{range:?}: {got:?}"
-            );
             rec.prefetch(GridId(g as u32), range.clone());
         }
     }
@@ -175,9 +318,25 @@ fn stamps() -> impl Strategy<Value = XdfStamps> {
     ]
 }
 
+/// A stream's time: how far its rate is off nominal, its jitter (in sample periods), and
+/// maybe a break (where, how much longer than the threshold, the rate error after it).
+type Timing = (f64, f64, Option<(prop::sample::Index, f64, f64)>);
+
 /// One stream: its format, rate, channel kinds (EEG or trigger), start, timestamps,
-/// chunking and whether it describes its channels.
-fn stream() -> impl Strategy<Value = (XdfFormat, u32, Vec<bool>, f64, XdfStamps, u64, bool, bool)> {
+/// chunking, whether it describes its channels, and its time.
+type StreamCase = (
+    XdfFormat,
+    u32,
+    Vec<bool>,
+    f64,
+    XdfStamps,
+    u64,
+    bool,
+    bool,
+    Timing,
+);
+
+fn stream() -> impl Strategy<Value = StreamCase> {
     (
         proptest::sample::select(XdfFormat::ALL.to_vec()),
         proptest::sample::select(vec![1u32, 3, 50, 256]),
@@ -187,6 +346,15 @@ fn stream() -> impl Strategy<Value = (XdfFormat, u32, Vec<bool>, f64, XdfStamps,
         1u64..60,
         any::<bool>(),
         any::<bool>(),
+        (
+            proptest::sample::select(vec![0.0, 1e-4, -5e-3]),
+            proptest::sample::select(vec![0.0, 0.2]),
+            proptest::option::of((
+                any::<prop::sample::Index>(),
+                0.5f64..20.0,
+                proptest::sample::select(vec![0.0, 3e-3]),
+            )),
+        ),
     )
 }
 
@@ -209,12 +377,28 @@ fn case() -> impl Strategy<Value = Case> {
     )
         .prop_map(
             |(defs, records, duration, clock, (wide, offsets, boundaries), seed, reads)| {
+                let length = records;
                 let ids = [42u32, 7, 0xDEAD_BEEF];
                 let mut channels = Vec::new();
                 let mut xdf_streams = Vec::new();
-                for (k, (format, spr, triggers, start, stamps, chunk, varying, described)) in
-                    defs.into_iter().enumerate()
+                for (
+                    k,
+                    (format, spr, triggers, start, stamps, chunk, varying, described, timing),
+                ) in defs.into_iter().enumerate()
                 {
+                    let (rate_error, jitter, gap) = timing;
+                    let tdiff = duration / f64::from(spr);
+                    let len = length * u64::from(spr);
+                    // A break longer than pyxdf's threshold (1 s or 500 samples).
+                    let breaks = gap
+                        .filter(|_| len > 1)
+                        .map(|(at, extra, rate_error)| XdfBreak {
+                            before: 1 + at.index(len as usize - 1) as u64,
+                            seconds: 1f64.max(500.0 * tdiff) + extra,
+                            rate_error,
+                        })
+                        .into_iter()
+                        .collect();
                     let mut members = Vec::new();
                     for (i, trigger) in triggers.into_iter().enumerate() {
                         let label = format!("S{k}C{i}");
@@ -239,6 +423,9 @@ fn case() -> impl Strategy<Value = Case> {
                         chunk,
                         varying_chunks: varying,
                         described,
+                        rate_error,
+                        jitter: jitter * tdiff,
+                        breaks,
                         ..XdfStream::new(ids[k], &format!("stream {k}"), "EEG", members)
                     });
                 }
@@ -250,6 +437,10 @@ fn case() -> impl Strategy<Value = Case> {
                 spec.xdf.clock = clock;
                 spec.xdf.wide_lengths = wide;
                 spec.xdf.clock_offsets = offsets;
+                // Drifting clocks, which the offsets correct (without them, kymo reads the
+                // time stamps as they are).
+                spec.xdf.clock_offset = -0.75;
+                spec.xdf.clock_drift = 3e-6;
                 spec.xdf.boundaries = boundaries;
                 Case { spec, reads }
             },
@@ -259,7 +450,9 @@ fn case() -> impl Strategy<Value = Case> {
 proptest! {
     /// Every value format reads back the truth function for any range, with timestamps on
     /// all, some or the first sample of each chunk, chunks of any (and varying) length,
-    /// streams starting at different times, and lengths of every width.
+    /// streams starting at different times, and lengths of every width; every sample is at
+    /// the time pyxdf's synchronization and dejittering give it (drifting clocks, rates off
+    /// nominal, jitter, breaks as gaps with the rate changing after them).
     #[test]
     fn random_reads_match_the_truth(case in case()) {
         let spec = &case.spec;
@@ -298,7 +491,12 @@ proptest! {
 #[test]
 fn presets_open_with_their_channels() {
     use ChannelKind::*;
-    for (preset, warnings) in [("xdf-float32", 0), ("xdf-mixed", 1), ("xdf-events", 1)] {
+    for (preset, warnings) in [
+        ("xdf-float32", 0),
+        ("xdf-mixed", 1),
+        ("xdf-events", 1),
+        ("xdf-clocks", 0),
+    ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
         assert_eq!(
@@ -338,7 +536,10 @@ fn presets_open_with_their_channels() {
     assert_eq!(extra(&rec, "XDF version").as_deref(), Some("1.0"));
     assert_eq!(
         extra(&rec, "stream 1").as_deref(),
-        Some("\"BrainAmp\" (EEG), 8 × float32, 500 Hz, 30000 samples: channels")
+        Some(
+            "\"BrainAmp\" (EEG), 8 × float32, 500 Hz, 30000 samples: channels; effective \
+             rate 500.000000 Hz, 1 segment"
+        )
     );
     assert_eq!(
         extra(&rec, "stream 2").as_deref(),
@@ -348,6 +549,17 @@ fn presets_open_with_their_channels() {
         assert_eq!((channel.kind, channel.unit.to_si), (Eeg, Some(1e-6)));
         assert_eq!(channel.unit.quantity(), Some(Quantity::Voltage));
     }
+
+    // Drifting clocks with a reset, and a break in each stream.
+    let rec = open(TempFile::preset("xdf-clocks").path());
+    for id in [1, 2] {
+        let field = extra(&rec, &format!("stream {id}")).unwrap();
+        assert!(field.ends_with("Hz, 2 segments, 1 clock reset"), "{field}");
+    }
+    assert!(matches!(
+        rec.grids()[1].timebase(),
+        kymo_core::Timebase::Segmented { pieces, .. } if pieces.len() == 2
+    ));
 
     let rec = open(TempFile::preset("xdf-mixed").path());
     assert_eq!(rec.start_time(), None);
@@ -615,10 +827,12 @@ fn first_sample(bytes: &[u8]) -> usize {
 
 #[test]
 fn chunks_out_of_place_and_unknown() {
-    // Samples before their stream's header, an unknown tag, a clock offset, a boundary.
+    // Samples before their stream's header; a tag XDF doesn't have, after which the walk
+    // goes on after the next boundary chunk (skipping the clock offset before it).
     let mut c = Chunks::new(None);
     c.numeric(1, XdfFormat::I16, &eeg_samples(0..2));
     eeg_header(&mut c, 1);
+    let at = c.bytes.len();
     c.raw(77, b"whatever");
     c.clock_offset(1, 10.0, -0.5);
     c.boundary();
@@ -629,7 +843,18 @@ fn chunks_out_of_place_and_unknown() {
         &rec,
         "samples of stream 1 come before its header"
     ));
-    assert!(has_warning(&rec, "unknown tag 77"));
+    let skipped = (1 + 1 + 2 + 8) + (1 + 1 + 2 + 20) + (1 + 1 + 2 + 16);
+    assert!(
+        has_warning(
+            &rec,
+            &format!(
+                "the chunk at byte {at} has the tag 77, which XDF doesn't have; the \
+                 {skipped} bytes up to and including the next boundary chunk are skipped"
+            )
+        ),
+        "{:?}",
+        rec.warnings()
+    );
     assert_eq!(rec.warnings().len(), 2, "{:?}", rec.warnings());
     assert_eq!(values(&rec, 0), [2.0, 3.0, 4.0]);
     // The first sample is at its own timestamp.
@@ -917,6 +1142,17 @@ fn annotations_from_strings_and_numbers() {
         content.extend_from_slice(&(i64::MAX - 1).to_le_bytes());
         c.raw(tag::SAMPLES, &content);
         c.stream_header(5, &header_xml("F", "Markers", 1, 0.0, "float32", None));
+        // Markers at a nominal rate keep their own (jittered) times: not dejittered.
+        c.stream_header(6, &header_xml("Ticks", "Markers", 1, 10.0, "string", None));
+        c.strings(
+            6,
+            &[
+                (Some(9.0), vec!["t0".into()]),
+                (Some(9.13), vec!["t1".into()]),
+                (Some(9.2), vec!["t2".into()]),
+            ],
+        );
+        c.footer(6, "<info/>");
         // A float32 marker stream: numpy prints float32 positionally only from 1e-4 to 1e6.
         c.numeric(
             5,
@@ -949,6 +1185,9 @@ fn annotations_from_strings_and_numbers() {
         (2.75, "1e+06"),
         (2.75, "999999.0"),
         (3.0, "1e-04"),
+        (4.0, "t0"),
+        (4.13, "t1"),
+        (4.2, "t2"),
     ];
     assert_eq!(got.len(), expected.len(), "{got:?}");
     for (g, e) in got.iter().zip(&expected) {
@@ -1031,4 +1270,129 @@ fn marker_streams_of_the_generator() {
     let (rec, annotations) = open_with(TempFile::written(&spec).path());
     assert!(same_annotations(&spec, &annotations));
     assert_eq!(rec.grids().len(), 2);
+}
+
+/// A spec of one 100 Hz stream (time stamps on every sample) with `breaks`.
+fn broken(breaks: Vec<XdfBreak>) -> Spec {
+    let channels = vec![ChannelSpec::xdf(
+        "A",
+        "EEG",
+        "microvolts",
+        100,
+        XdfFormat::F32,
+    )];
+    let mut spec = Spec::new(Format::Xdf, channels, 1.0, 30);
+    spec.xdf.streams = vec![XdfStream {
+        stamps: XdfStamps::All,
+        breaks,
+        ..XdfStream::new(1, "Amp", "EEG", vec![0])
+    }];
+    spec.xdf.clock = 100.0;
+    spec
+}
+
+#[test]
+fn breaks_backwards_and_far_away() {
+    // Time jumps back by 7 s (more than the 5 s threshold at 100 Hz): the segment after
+    // it follows the first directly.
+    let spec = broken(vec![XdfBreak {
+        before: 1000,
+        seconds: -17.0,
+        rate_error: 0.0,
+    }]);
+    let rec = open(TempFile::written(&spec).path());
+    assert!(
+        has_warning(&rec, "1 of its segments start before the previous one ends"),
+        "{:?}",
+        rec.warnings()
+    );
+    let grid = &rec.grids()[0];
+    // Touching segments merge, but each keeps its own piece of the time base.
+    assert_eq!(grid.segments(), [0..3000]);
+    assert!((grid.time_of(999) - 9.99).abs() < 1e-9);
+    assert!((grid.time_of(1000) - 10.0).abs() < 1e-9);
+    assert_eq!(grid.regular_run(1000).samples.start, 1000);
+    assert_eq!(values(&rec, 0).len(), 3000);
+
+    // Time jumps 40 days ahead: taken for damage, the segment follows directly too.
+    let spec = broken(vec![XdfBreak {
+        before: 1000,
+        seconds: 40.0 * 86_400.0,
+        rate_error: 0.0,
+    }]);
+    let rec = open(TempFile::written(&spec).path());
+    assert!(has_warning(
+        &rec,
+        "more than 30 days after the previous one"
+    ));
+    assert_eq!(rec.grids()[0].len(), 3000);
+    assert!((rec.duration() - 30.0).abs() < 1e-6);
+
+    // 3 s ahead: a gap of 2.99 s after the next sample, 299 whole slots.
+    let spec = broken(vec![XdfBreak {
+        before: 1000,
+        seconds: 7.0,
+        rate_error: 0.0,
+    }]);
+    let rec = open(TempFile::written(&spec).path());
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+    check_grids(&spec, &rec, None);
+    assert_eq!(rec.grids()[0].segments(), [0..1000, 1700..3700]);
+}
+
+#[test]
+fn garbage_is_skipped_to_the_next_boundary_chunk() {
+    let mut spec = Spec::preset("xdf-float32").unwrap();
+    spec.xdf.garbage = true;
+    let (rec, annotations) = open_with(TempFile::written(&spec).path());
+    assert!(
+        has_warning(
+            &rec,
+            "has an invalid length; the 57 bytes up to and including the next boundary chunk"
+        ),
+        "{:?}",
+        rec.warnings()
+    );
+    assert_eq!(rec.warnings().len(), 1);
+    check_grids(&spec, &rec, None);
+    assert!(same_annotations(&spec, &annotations));
+}
+
+#[test]
+fn streams_that_can_drop_samples_and_stamps_that_are_not_numbers() {
+    let mut c = Chunks::new(None);
+    let xml = header_xml("Glasses", "Gaze", 1, 10.0, "float32", None).replace(
+        "<desc>",
+        "<desc><synchronization><can_drop_samples>true</can_drop_samples>\
+         </synchronization>",
+    );
+    c.stream_header(1, &xml);
+    // The third time stamp isn't a number: deduced from the second.
+    let samples: Vec<(Option<f64>, Vec<f64>)> = (0..6)
+        .map(|i| {
+            let t = if i == 2 {
+                f64::NAN
+            } else {
+                3.0 + i as f64 / 10.0
+            };
+            (Some(t), vec![i as f64])
+        })
+        .collect();
+    c.numeric(1, XdfFormat::F32, &samples);
+    c.clock_offset(1, 3.0, f64::NAN);
+    c.footer(1, "<info/>");
+    let rec = Built::new(&c.bytes).open();
+    assert!(has_warning(
+        &rec,
+        "can drop samples, so pyxdf doesn't dejitter it"
+    ));
+    assert!(has_warning(
+        &rec,
+        "1 clock offsets that aren't numbers are ignored"
+    ));
+    assert_eq!(rec.warnings().len(), 2, "{:?}", rec.warnings());
+    let grid = &rec.grids()[0];
+    assert_eq!(grid.segments(), [0..6]);
+    assert!((grid.rate() - 10.0).abs() < 1e-9);
+    assert!((grid.time_of(5) - 0.5).abs() < 1e-9);
 }

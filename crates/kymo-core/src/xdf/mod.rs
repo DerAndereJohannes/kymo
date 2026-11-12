@@ -17,13 +17,18 @@
 //! - A label two streams share is prefixed by its stream's name, or, where streams share
 //!   the name, its type, or else its id ("ACC X", "GYRO X"); labels left empty are named
 //!   as unlabeled channels are (`"{stream name}_{n}"`).
-//! - Regular streams are placed at their nominal rate from their first timestamp; clock
-//!   offsets and the timestamps' jitter are not applied yet.
+//! - Time stamps are synchronized and dejittered as pyxdf does by default (see `time`),
+//!   and each stream's segments between breaks keep their own rate: a grid with a segmented
+//!   time base, its breaks gaps (mnextend joins the segments). Samples before a stream's
+//!   first time stamp count back from it (pyxdf counts them on from 0). Marker streams
+//!   with a nominal rate are not dejittered (pyxdf dejitters them like signals): their
+//!   events are irregular.
 //! - Annotation samples without a timestamp take the previous one's plus a sample period
 //!   (as in pyxdf); those before a stream's first timestamp are left out.
 
 mod reader;
 mod scan;
+mod time;
 mod xml;
 
 use crate::ModelError;

@@ -10,7 +10,7 @@ use kymo::render::{
 };
 use kymo::view::ViewState;
 use kymo_core::tile::{Level, TILE_LEN, TileData, query, tiles_for_view};
-use kymo_core::{ChannelId, ChannelKind, SampleType};
+use kymo_core::{ChannelId, ChannelKind, Grid, Piece, SampleType, Timebase};
 use proptest::prelude::*;
 
 fn row(center: f64, px_per_unit: f64, baseline: f64) -> Row {
@@ -224,6 +224,90 @@ proptest! {
             prop_assert_eq!(draws[0].columns.start, 0);
             prop_assert_eq!(draws.last().unwrap().columns.end, right);
         }
+    }
+}
+
+/// 5 s at 1000 Hz, a gap of 1000 slots, then 14,000 samples at 990 Hz from 6.5 s (a
+/// segmented time base, as XDF streams with breaks have).
+fn segmented_fixture() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let mut rng = Rng::new(11);
+        let n = 20_000u64;
+        let pieces = vec![
+            Piece {
+                first: 0,
+                start: 0.0,
+                rate: 1000.0,
+            },
+            Piece {
+                first: 6000,
+                start: 6.5,
+                rate: 990.0,
+            },
+        ];
+        let grid = Grid::new(
+            Timebase::Segmented {
+                rate: 995.0,
+                pieces,
+            },
+            n,
+            vec![0..5000, 6000..n],
+            SampleType::I16,
+            vec![ChannelId(0)],
+        )
+        .unwrap();
+        Fixture::new(
+            vec![channel("seg", 0, 1.0, 0.0)],
+            vec![grid],
+            vec![i16_rows(vec![walk(
+                &mut rng, n as usize, 50.0, -3000.0, 3000.0,
+            )])],
+        )
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// With a segmented time base, every item whose first sample holds data lies where its
+    /// time puts it, at every zoom: draws are cut where a piece starts, and each places its
+    /// items at its own piece's rate.
+    #[test]
+    fn items_of_segmented_grids_land_at_their_times(
+        start in 0.0f64..20.0,
+        span_log in -2.0f64..1.5,
+        width in 50u32..3000,
+    ) {
+        let fx = segmented_fixture();
+        let grid = fx.grid_of(ChannelId(0));
+        let end = grid.time_of(grid.len());
+        let span = 10f64.powf(span_log).min(end);
+        let start = start.min(end - span);
+        let scene = fx.scene(ChannelId(0), start..start + span, [width, 100]);
+        let cache = fx.cache(tiles_for_view(&fx.recording, &view(&scene)));
+        let frame = Frame::new(&fx.recording, &scene, &query(&fx.recording, &view(&scene), &cache));
+        let per_px = f64::from(width) / span;
+        let present = |i: u64| grid.segments().iter().any(|s| s.contains(&i));
+        let mut checked = 0;
+        for draw in &frame.draws {
+            let key = draw.part.tile.key();
+            let bucket = key.level.bucket_len();
+            for item in draw.part.items.clone() {
+                let sample = key.sample_range().start + u64::from(item) * bucket;
+                let exact = (grid.time_of(sample) - start) * per_px;
+                if !present(sample) || !(-2.0..f64::from(width) + 2.0).contains(&exact) {
+                    continue;
+                }
+                let placed = f64::from(draw.part.anchor_x)
+                    + (f64::from(item) - f64::from(draw.part.anchor)) * f64::from(draw.part.item_width);
+                prop_assert!((placed - exact).abs() < 1e-3, "{key:?} item {item}: {placed} vs {exact}");
+                checked += 1;
+            }
+        }
+        // Something was on screen unless the view lies inside the gap.
+        let in_gap = start > grid.time_of(4999) && start + span < 6.5;
+        prop_assert!(checked > 0 || in_gap);
     }
 }
 

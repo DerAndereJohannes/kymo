@@ -325,6 +325,7 @@ fn pyramids_of_generated_files() {
         "xdf-float32",
         "xdf-mixed",
         "xdf-events",
+        "xdf-clocks",
     ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);

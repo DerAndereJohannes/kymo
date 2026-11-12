@@ -112,6 +112,23 @@ pub struct XdfStream {
     /// The header describes the channels (label, type, unit).
     pub described: bool,
     pub footer: bool,
+    /// How far the true rate is off the nominal one, relatively (until the first break).
+    pub rate_error: f64,
+    /// Time stamps are off their sample's true time by up to this many seconds (a
+    /// deterministic hash of the sample).
+    pub jitter: f64,
+    /// Breaks in the stream's time, in order.
+    pub breaks: Vec<XdfBreak>,
+}
+
+/// A break in a stream's time: before sample `before`, time jumps by `seconds` (backwards
+/// if negative) from where the next sample would have been, and the true rate is off the
+/// nominal one by `rate_error` from there on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XdfBreak {
+    pub before: u64,
+    pub seconds: f64,
+    pub rate_error: f64,
 }
 
 impl XdfStream {
@@ -130,6 +147,9 @@ impl XdfStream {
             varying_chunks: false,
             described: true,
             footer: true,
+            rate_error: 0.0,
+            jitter: 0.0,
+            breaks: Vec::new(),
         }
     }
 }
@@ -166,14 +186,124 @@ pub struct XdfOptions {
     pub markers: Vec<XdfMarkers>,
     /// The file header's `datetime`, as written; none writes none.
     pub datetime: Option<String>,
-    /// The LSL time (seconds) of the earliest stream's first sample.
+    /// The recording's time (seconds) of the earliest stream's first sample.
     pub clock: f64,
-    /// A ClockOffset chunk (offset 0) for each stream every 8 of its chunks.
+    /// A ClockOffset chunk for each stream every second, from its clock's time and the
+    /// offset that brings it to the recording's: [`clock_offset`](Self::clock_offset) plus
+    /// [`clock_drift`](Self::clock_drift) per second since [`clock`](Self::clock). Time
+    /// stamps are written on the streams' clocks (`local_time`).
     pub clock_offsets: bool,
+    pub clock_offset: f64,
+    pub clock_drift: f64,
+    /// At this many seconds after [`clock`](Self::clock), the streams' clocks are reset:
+    /// they jump back by the second number of seconds (and the offsets up by it).
+    pub clock_reset: Option<(f64, f64)>,
+    /// Garbage bytes (starting with an invalid length) and a Boundary chunk after the
+    /// third chunk of samples, where a reader has to find its place again.
+    pub garbage: bool,
     /// A Boundary chunk every 16 chunks.
     pub boundaries: bool,
     /// Chunk lengths and sample counts as 8-byte numbers, rather than the smallest width.
     pub wide_lengths: bool,
+}
+
+/// The true time (on the recording's clock) of sample `i` of stream `s`, without jitter.
+pub fn true_time(spec: &Spec, s: &XdfStream, i: u64) -> f64 {
+    let nominal = spec.rate(s.channels[0]);
+    let (mut start, mut first, mut error) = (spec.xdf.clock + s.start, 0u64, s.rate_error);
+    for b in s.breaks.iter().filter(|b| b.before <= i) {
+        start += (b.before - first) as f64 / (nominal * (1.0 + error)) + b.seconds;
+        first = b.before;
+        error = b.rate_error;
+    }
+    start + (i - first) as f64 / (nominal * (1.0 + error))
+}
+
+/// The time stamp written for sample `i` of stream `s`: its true time plus jitter, on the
+/// stream's clock.
+pub fn written_time(spec: &Spec, s: &XdfStream, i: u64) -> f64 {
+    let h = (u64::from(s.id) ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let unit = (h >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
+    local_time(spec, true_time(spec, s, i) + s.jitter * unit)
+}
+
+/// The Samples chunks of stream `s`, as sample ranges.
+pub fn sample_chunks(spec: &Spec, s: &XdfStream) -> Vec<Range<u64>> {
+    let len = spec.len(s.channels[0]);
+    let mut chunks = Vec::new();
+    let mut first = 0;
+    while first < len {
+        let size = if s.varying_chunks && chunks.len() % 2 == 1 {
+            (s.chunk / 3).max(1)
+        } else {
+            s.chunk
+        };
+        let end = (first + size).min(len);
+        chunks.push(first..end);
+        first = end;
+    }
+    chunks
+}
+
+/// The time stamp written with each sample of stream `s` (on its clock), `None` where it
+/// has none.
+pub fn written_stamps(spec: &Spec, s: &XdfStream) -> Vec<Option<f64>> {
+    sample_chunks(spec, s)
+        .into_iter()
+        .flat_map(|chunk| {
+            let first = chunk.start;
+            chunk.map(move |i| {
+                let stamped = match s.stamps {
+                    XdfStamps::All => true,
+                    XdfStamps::FirstOfChunk => i == first,
+                    XdfStamps::Every(e) => i % e.max(1) == 0,
+                    XdfStamps::None => false,
+                };
+                stamped.then(|| written_time(spec, s, i))
+            })
+        })
+        .collect()
+}
+
+/// The true times at which ClockOffset chunks are written (for every stream): each second
+/// from [`XdfOptions::clock`] to a second after the last sample or marker.
+pub fn offset_times(spec: &Spec) -> Vec<f64> {
+    if !spec.xdf.clock_offsets {
+        return Vec::new();
+    }
+    let streams = streams(spec);
+    let end = streams
+        .iter()
+        .map(|s| true_time(spec, s, spec.len(s.channels[0]).saturating_sub(1)))
+        .chain(spec.xdf.markers.iter().flat_map(|m| {
+            spec.annotations[m.annotations.clone()]
+                .iter()
+                .map(|a| spec.xdf.clock + a.onset)
+        }))
+        .fold(spec.xdf.clock, f64::max);
+    let mut times = Vec::new();
+    let mut t = spec.xdf.clock;
+    while t <= end + 1.0 {
+        times.push(t);
+        t += 1.0;
+    }
+    times
+}
+
+/// The offset from the streams' clocks to the recording's at true time `t`.
+pub fn clock_offset_at(spec: &Spec, t: f64) -> f64 {
+    let o = &spec.xdf;
+    let reset = o
+        .clock_reset
+        .filter(|&(at, _)| t >= o.clock + at)
+        .map_or(0.0, |r| r.1);
+    o.clock_offset + o.clock_drift * (t - o.clock) + reset
+}
+
+/// The streams' clock's time at true time `t`.
+pub fn local_time(spec: &Spec, t: f64) -> f64 {
+    t - clock_offset_at(spec, t)
 }
 
 /// The regular streams written: [`XdfOptions::streams`], or one per rate.
@@ -246,6 +376,23 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
         if s.channels.is_empty() || s.chunk == 0 || !(s.start.is_finite() && s.start >= 0.0) {
             return Err(invalid(format!(
                 "stream {} needs channels, chunks of at least one sample and a start >= 0",
+                s.id
+            )));
+        }
+        let len = spec.len(s.channels[0]);
+        let ordered = s
+            .breaks
+            .iter()
+            .scan(0, |prev, b| {
+                let ok = b.before > *prev && b.before < len && b.rate_error > -1.0;
+                *prev = b.before;
+                Some(ok && b.seconds.is_finite())
+            })
+            .all(|ok| ok);
+        if !ordered || s.rate_error <= -1.0 || !(s.jitter.is_finite() && s.jitter >= 0.0) {
+            return Err(invalid(format!(
+                "stream {}: breaks must be sorted inside the stream, rate errors above -1 \
+                 and jitter finite and >= 0",
                 s.id
             )));
         }
@@ -519,8 +666,10 @@ struct Planned {
 }
 
 enum Plan {
-    Data(usize, Range<u64>, usize),
+    Data(usize, Range<u64>),
     Marker(usize, usize),
+    /// A ClockOffset chunk of the stream with this id.
+    Offset(u32),
 }
 
 fn write_to<W: Write>(spec: &Spec, out: &mut W) -> Result<(), Error> {
@@ -563,66 +712,68 @@ fn write_to<W: Write>(spec: &Spec, out: &mut W) -> Result<(), Error> {
 
     // Every chunk, by time.
     let mut plan = Vec::new();
+    let stamps: Vec<Vec<Option<f64>>> = streams.iter().map(|s| written_stamps(spec, s)).collect();
     for (k, s) in streams.iter().enumerate() {
-        let len = spec.len(s.channels[0]);
-        let mut first = 0;
-        let mut n = 0;
-        while first < len {
-            let size = if s.varying_chunks && n % 2 == 1 {
-                (s.chunk / 3).max(1)
-            } else {
-                s.chunk
-            };
-            let end = (first + size).min(len);
+        // A stream's chunks stay in order, also where its time runs backwards.
+        let mut time = f64::NEG_INFINITY;
+        for chunk in sample_chunks(spec, s) {
+            time = time.max(true_time(spec, s, chunk.start));
             plan.push(Planned {
-                time: s.start + first as f64 / rate(s),
-                what: Plan::Data(k, first..end, n),
+                time,
+                what: Plan::Data(k, chunk),
             });
-            first = end;
-            n += 1;
         }
     }
     for (k, m) in opts.markers.iter().enumerate() {
         for a in m.annotations.clone() {
             plan.push(Planned {
-                time: spec.annotations[a].onset,
+                time: opts.clock + spec.annotations[a].onset,
                 what: Plan::Marker(k, a),
             });
         }
     }
+    let ids: Vec<u32> = streams
+        .iter()
+        .map(|s| s.id)
+        .chain(opts.markers.iter().map(|m| m.id))
+        .collect();
+    for t in offset_times(spec) {
+        plan.extend(ids.iter().map(|&id| Planned {
+            time: t,
+            what: Plan::Offset(id),
+        }));
+    }
     plan.sort_by(|a, b| a.time.total_cmp(&b.time));
 
+    let mut data_chunks = 0;
     for (n, p) in plan.iter().enumerate() {
         if opts.boundaries && n % 16 == 0 {
             chunks.boundary();
         }
         match &p.what {
-            Plan::Data(k, range, chunk) => {
+            Plan::Offset(id) => {
+                chunks.clock_offset(*id, local_time(spec, p.time), clock_offset_at(spec, p.time));
+            }
+            Plan::Data(k, range) => {
                 let s = &streams[*k];
-                let r = rate(s);
                 let samples: Vec<(Option<f64>, Vec<f64>)> = range
                     .clone()
                     .map(|i| {
-                        let stamped = match s.stamps {
-                            XdfStamps::All => true,
-                            XdfStamps::FirstOfChunk => i == range.start,
-                            XdfStamps::Every(e) => i % e.max(1) == 0,
-                            XdfStamps::None => false,
-                        };
-                        let time = opts.clock + s.start + i as f64 / r;
                         let values = s.channels.iter().map(|&c| spec.physical(c, i)).collect();
-                        (stamped.then_some(time), values)
+                        (stamps[*k][i as usize], values)
                     })
                     .collect();
                 chunks.numeric(s.id, s.format, &samples);
-                if opts.clock_offsets && chunk % 8 == 0 {
-                    chunks.clock_offset(s.id, opts.clock + p.time, 0.0);
+                data_chunks += 1;
+                if opts.garbage && data_chunks == 3 {
+                    chunks.bytes.extend_from_slice(&[3; 37]);
+                    chunks.boundary();
                 }
             }
             Plan::Marker(k, a) => {
                 let m = &opts.markers[*k];
                 let tal = &spec.annotations[*a];
-                let time = Some(opts.clock + tal.onset);
+                let time = Some(local_time(spec, opts.clock + tal.onset));
                 match m.values {
                     MarkerValues::Strings => {
                         let samples: Vec<_> =
@@ -648,8 +799,8 @@ fn write_to<W: Write>(spec: &Spec, out: &mut W) -> Result<(), Error> {
 
     for s in streams.iter().filter(|s| s.footer) {
         let len = spec.len(s.channels[0]);
-        let first = opts.clock + s.start;
-        let last = first + len.saturating_sub(1) as f64 / rate(s);
+        let first = written_time(spec, s, 0);
+        let last = written_time(spec, s, len.saturating_sub(1));
         chunks.footer(s.id, &footer_xml(first, last, len));
     }
     for m in &opts.markers {

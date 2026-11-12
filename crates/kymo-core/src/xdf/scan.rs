@@ -89,6 +89,9 @@ pub(crate) struct Info {
     pub rate: f64,
     /// One per channel, or none if the header describes none (or not as many as it has).
     pub channels: Vec<ChannelInfo>,
+    /// The header says the stream can drop samples (`desc/synchronization/can_drop_samples`),
+    /// so pyxdf doesn't dejitter it.
+    pub can_drop: bool,
 }
 
 /// How a stream is read.
@@ -209,23 +212,51 @@ fn u32_at(data: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn f64_at(data: &[u8], at: usize) -> Option<f64> {
+pub(crate) fn f64_at(data: &[u8], at: usize) -> Option<f64> {
     Some(f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
 }
 
-/// Walks the chunks of `map` (which starts with [`MAGIC`]).
+/// A Boundary chunk's content, which lets a reader find its place again in a damaged file.
+const BOUNDARY: [u8; 16] = [
+    0x43, 0xA5, 0x46, 0xDC, 0xCB, 0xF5, 0x41, 0x0F, 0xB3, 0x0E, 0xD5, 0x46, 0x73, 0x83, 0xCB, 0xE4,
+];
+
+/// The position after the first Boundary chunk's content after `from`, if there is one.
+fn after_boundary(map: &[u8], from: usize) -> Option<usize> {
+    map.get(from..)?
+        .windows(BOUNDARY.len())
+        .position(|w| w == BOUNDARY)
+        .map(|k| from + k + BOUNDARY.len())
+}
+
+/// Walks the chunks of `map` (which starts with [`MAGIC`]). Where the walk loses its place
+/// (an invalid length or a tag XDF doesn't have), it goes on after the next Boundary chunk.
 pub(crate) fn scan(map: &[u8]) -> Scan {
     let mut scan = Scan::default();
     let mut index: HashMap<u32, usize> = HashMap::new();
-    let mut unknown_tags: Vec<u16> = Vec::new();
     let mut headless: Vec<u32> = Vec::new();
     let mut pos = MAGIC.len();
+    let lost = |pos: usize, what: &str, warnings: &mut Vec<String>| -> Option<usize> {
+        let next = after_boundary(map, pos + 1);
+        warnings.push(match next {
+            Some(next) => format!(
+                "the chunk at byte {pos} has {what}; the {} bytes up to and including the \
+                 next boundary chunk are skipped",
+                next - pos
+            ),
+            None => format!("the chunk at byte {pos} has {what}; the rest of the file is not read"),
+        });
+        next
+    };
     while pos < map.len() {
         let Some((len, content)) = varlen(map, pos).filter(|&(len, _)| len >= 2) else {
-            scan.warnings.push(format!(
-                "the chunk at byte {pos} has an invalid length; the rest of the file is not read"
-            ));
-            break;
+            match lost(pos, "an invalid length", &mut scan.warnings) {
+                Some(next) => {
+                    pos = next;
+                    continue;
+                }
+                None => break,
+            }
         };
         let end = content.saturating_add(usize::try_from(len).unwrap_or(usize::MAX));
         let truncated = end > map.len();
@@ -239,6 +270,16 @@ pub(crate) fn scan(map: &[u8]) -> Scan {
                 .push("the file ends inside its last chunk, which is ignored".into());
             break;
         };
+        if !(tag::FILE_HEADER..=tag::STREAM_FOOTER).contains(&tag) {
+            let what = format!("the tag {tag}, which XDF doesn't have");
+            match lost(pos, &what, &mut scan.warnings) {
+                Some(next) => {
+                    pos = next;
+                    continue;
+                }
+                None => break,
+            }
+        }
         let body = &map[content + 2..end];
         let body_at = content + 2;
         let mut stream_of = |scan: &mut Scan, id: u32| -> usize {
@@ -303,14 +344,8 @@ pub(crate) fn scan(map: &[u8]) -> Scan {
                 }
             }
             tag::BOUNDARY => {}
-            tag::FILE_HEADER | tag::STREAM_HEADER | tag::CLOCK_OFFSET | tag::STREAM_FOOTER => {}
-            other => {
-                if !unknown_tags.contains(&other) {
-                    unknown_tags.push(other);
-                    scan.warnings
-                        .push(format!("chunks with the unknown tag {other} are skipped"));
-                }
-            }
+            // Chunks the file ends inside.
+            _ => {}
         }
         if truncated {
             let reported = tag == tag::SAMPLES
@@ -390,6 +425,11 @@ fn header(stream: &mut Stream, xml_bytes: &[u8], warnings: &mut Vec<String>) {
         ValueFormat::Numeric(_) if count > 1 && !is_event_type(&kind) => Mode::Irregular,
         ValueFormat::Numeric(_) => Mode::Annotations,
     };
+    let can_drop = root
+        .child("desc")
+        .and_then(|d| d.child("synchronization"))
+        .and_then(|s| s.text_of("can_drop_samples"))
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
     stream.info = Some(Info {
         name,
         kind,
@@ -397,6 +437,7 @@ fn header(stream: &mut Stream, xml_bytes: &[u8], warnings: &mut Vec<String>) {
         count,
         rate,
         channels,
+        can_drop,
     });
 }
 
@@ -409,6 +450,7 @@ fn placeholder(name: String, kind: String) -> Info {
         count: 0,
         rate: 0.0,
         channels: Vec::new(),
+        can_drop: false,
     }
 }
 
@@ -478,7 +520,9 @@ fn index_chunk(
         _ if count == 0 => (0, Stamps::None, None, None),
         Some(0) if flag == Some(0) => (count, Stamps::None, None, None),
         Some(m) if m == count && flag == Some(8) => {
-            let first = f64_at(data, start + 1).map(|t| (0, t));
+            let first = f64_at(data, start + 1)
+                .filter(|t| t.is_finite())
+                .map(|t| (0, t));
             (count, Stamps::All, first, None)
         }
         _ => {
@@ -585,7 +629,9 @@ fn walk(data: &[u8], start: usize, count: u64, frame: usize, stamped: Option<u64
         if size > frame {
             w.positions.push(i as u32);
             if w.first.is_none() {
-                w.first = f64_at(data, pos + 1).map(|t| (i, t));
+                w.first = f64_at(data, pos + 1)
+                    .filter(|t| t.is_finite())
+                    .map(|t| (i, t));
             }
         }
         pos += size;
@@ -619,8 +665,9 @@ fn decode_events(
         let Some(&flag) = data.get(pos) else { break };
         let stamp = match flag {
             0 => None,
+            // A time stamp that isn't a number is deduced instead.
             8 => match f64_at(data, pos + 1) {
-                Some(t) => Some(t),
+                Some(t) => Some(t).filter(|t| t.is_finite()),
                 None => break,
             },
             _ => {
@@ -633,7 +680,7 @@ fn decode_events(
                 return;
             }
         };
-        pos += if stamp.is_some() { 9 } else { 1 };
+        pos += if flag == 8 { 9 } else { 1 };
         texts.clear();
         let mut complete = true;
         for _ in 0..info.count {

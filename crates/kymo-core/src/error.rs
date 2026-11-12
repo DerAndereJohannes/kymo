@@ -23,6 +23,11 @@ pub enum ModelError {
     InvalidRate(f64),
     #[error("time base start {0} is not finite")]
     InvalidStart(f64),
+    #[error(
+        "piece {0} of the time base is out of order: pieces start at sample 0, then later in \
+         samples and after the previous piece's samples in time"
+    )]
+    InvalidPiece(usize),
     #[error("segment {0:?} is empty")]
     EmptySegment(Range<u64>),
     #[error("segment {segment:?} ends past the grid length {len}")]

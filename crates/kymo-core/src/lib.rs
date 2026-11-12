@@ -33,7 +33,7 @@ pub use annotation::{
 };
 pub use channel::{Channel, ChannelId, ChannelKind, Quantity, Unit};
 pub use error::{AnnotationError, ModelError, OpenError, ReadError, TileError};
-pub use grid::{Grid, GridId, Timebase};
+pub use grid::{Grid, GridId, Piece, RegularRun, Timebase};
 pub use open::open;
 pub use recording::{BlockReader, Header, Opened, Recording};
 pub use sample::{Sample, SampleType, SamplesMut};

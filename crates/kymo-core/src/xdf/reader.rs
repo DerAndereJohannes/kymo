@@ -10,6 +10,7 @@ use memmap2::Mmap;
 
 use super::XdfError;
 use super::scan::{self, Chunk, Info, MAGIC, Mode, Stamps, Stream, ValueFormat};
+use super::time::{self, Clock, Corrector, Dejitter, Layout, Segment};
 use crate::decode::{ByteOrder, Decoder, frames_into};
 use crate::mapped::{self, map_read_only};
 use crate::{
@@ -29,6 +30,9 @@ pub struct XdfReader {
 /// A stream shown as channels: its chunks and how its samples decode.
 #[derive(Debug)]
 struct GridStream {
+    /// Per segment of the stream: its first slot in the grid, its first sample in the
+    /// stream, its length; in order.
+    map: Vec<(u64, u64, u64)>,
     chunks: Vec<Chunk>,
     positions: Vec<u32>,
     /// Bytes of a sample without a timestamp: the flag and the values.
@@ -71,12 +75,28 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let mut streams = scan.streams;
     streams.sort_by_key(|s| s.id);
 
+    // Time stamps: each stream's clock correction, and the segments of those shown.
+    let clocks: Vec<Option<Clock>> = streams
+        .iter()
+        .map(|s| Clock::new(&s.clock_offsets, &s.describe(), &mut warnings))
+        .collect();
+    let timing: Vec<Option<Timing>> = streams
+        .iter()
+        .zip(&clocks)
+        .map(|(s, clock)| {
+            (s.mode == Mode::Channels && s.len > 0).then(|| timing(s, &map, clock.as_ref()))
+        })
+        .collect();
+
     let mut extra = Vec::new();
     if let Some(version) = &scan.version {
         extra.push(("XDF version".to_owned(), version.clone()));
     }
-    for stream in &streams {
-        extra.push((format!("stream {}", stream.id), describe(stream)));
+    for ((stream, clock), timing) in streams.iter().zip(&clocks).zip(&timing) {
+        extra.push((
+            format!("stream {}", stream.id),
+            describe(stream, clock.as_ref(), timing.as_ref()),
+        ));
         match &stream.mode {
             Mode::Unreadable(reason) if stream.info.is_some() => {
                 warnings.push(format!("{} is not read: {reason}", stream.describe()));
@@ -94,16 +114,25 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 stream.describe()
             ));
         }
+        if timing.is_some() && stream.info.as_ref().is_some_and(|i| i.can_drop) {
+            warnings.push(format!(
+                "{} can drop samples, so pyxdf doesn't dejitter it; kymo does until it reads \
+                 such streams on their own timestamps",
+                stream.describe()
+            ));
+        }
     }
 
-    let shown: Vec<&Stream> = streams
+    let shown: Vec<(&Stream, &Timing)> = streams
         .iter()
-        .filter(|s| s.mode == Mode::Channels && s.len > 0)
+        .zip(&timing)
+        .filter_map(|(s, t)| Some((s, t.as_ref()?)))
         .collect();
     if shown.is_empty() {
         let listed: Vec<String> = streams
             .iter()
-            .map(|s| format!("{}: {}", s.describe(), describe(s)))
+            .zip(&clocks)
+            .map(|(s, c)| format!("{}: {}", s.describe(), describe(s, c.as_ref(), None)))
             .collect();
         let listed = if listed.is_empty() {
             String::new()
@@ -113,16 +142,14 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         return Err(error(XdfError::NoChannels(listed)));
     }
 
-    // t = 0 is the earliest first timestamp of the streams shown.
-    let firsts: Vec<Option<f64>> = shown.iter().map(|s| first_time(s)).collect();
-    let t0 = firsts
+    // t = 0 is the earliest first (synchronized, dejittered) time of the streams shown.
+    let t0 = shown
         .iter()
-        .flatten()
-        .copied()
+        .filter_map(|(_, t)| t.segments.first().filter(|_| t.stamped).map(|s| s.start))
         .fold(f64::INFINITY, f64::min);
     let t0 = if t0.is_finite() { t0 } else { 0.0 };
-    for (stream, first) in shown.iter().zip(&firsts) {
-        if first.is_none() {
+    for (stream, timing) in &shown {
+        if !timing.stamped {
             warnings.push(format!(
                 "{} has no timestamps; it is placed at the start",
                 stream.describe()
@@ -130,12 +157,13 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         }
     }
 
-    let names = labels(&shown);
+    let streams_shown: Vec<&Stream> = shown.iter().map(|(s, _)| *s).collect();
+    let names = labels(&streams_shown);
     let mut channels = Vec::new();
     let mut grids = Vec::new();
     let mut readers = Vec::new();
     let mut unknown_units: Vec<String> = Vec::new();
-    for (g, (stream, first)) in shown.iter().zip(&firsts).enumerate() {
+    for (g, (stream, timing)) in shown.iter().enumerate() {
         let Some(info) = &stream.info else { continue };
         let ValueFormat::Numeric(encoding) = info.format else {
             continue;
@@ -143,7 +171,28 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         let grid_id = GridId(g as u32);
         let first_channel = channels.len() as u32;
         let event_stream = scan::is_event_type(&info.kind);
+        // A stream without time stamps starts at t = 0.
+        let origin = if timing.stamped { t0 } else { 0.0 };
+        let layout = time::layout(&timing.segments, timing.rate, origin);
+        if layout.damaged > 0 {
+            warnings.push(format!(
+                "{}: {} of its segments start more than 30 days after the previous one, or \
+                 at a time that isn't a number, which is taken for damaged time stamps; each \
+                 follows the previous one directly",
+                stream.describe(),
+                layout.damaged
+            ));
+        }
+        if layout.moved > 0 {
+            warnings.push(format!(
+                "{}: {} of its segments start before the previous one ends; each follows the \
+                 previous one directly",
+                stream.describe(),
+                layout.moved
+            ));
+        }
         let reader = GridStream {
+            map: layout.map.clone(),
             chunks: stream.chunks.clone(),
             positions: stream.positions.clone(),
             frame: 1 + info.count * encoding.size(),
@@ -185,13 +234,9 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             decoders.push(decoder);
             channels.push(channel);
         }
-        let start = first.map_or(0.0, |t| t - t0);
-        let grid = Grid::continuous(
-            Timebase::Regular {
-                rate: info.rate,
-                start,
-            },
-            stream.len,
+        let grid = grid_of(
+            &layout,
+            timing.rate,
             reader.native,
             (first_channel..channels.len() as u32)
                 .map(ChannelId)
@@ -212,15 +257,31 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         ));
     }
 
+    // Annotations at their synchronized times (irregular streams aren't dejittered).
     let mut annotations = Vec::new();
-    for stream in streams.iter().filter(|s| s.mode == Mode::Annotations) {
-        annotations.extend(stream.events.iter().map(|(t, text)| AnnotationData {
-            onset: t - t0,
-            duration: 0.0,
-            description: text.clone(),
-            channels: Vec::new(),
-            origin: Origin::File,
+    for (stream, clock) in streams.iter().zip(&clocks) {
+        if stream.mode != Mode::Annotations {
+            continue;
+        }
+        let mut corrector = Corrector::new(clock.as_ref());
+        let before = annotations.len();
+        annotations.extend(stream.events.iter().filter_map(|(t, text)| {
+            let onset = corrector.correct(*t) - t0;
+            onset.is_finite().then(|| AnnotationData {
+                onset,
+                duration: 0.0,
+                description: text.clone(),
+                channels: Vec::new(),
+                origin: Origin::File,
+            })
         }));
+        let lost = stream.events.len() - (annotations.len() - before);
+        if lost > 0 {
+            warnings.push(format!(
+                "{}: {lost} annotations at times that aren't numbers are left out",
+                stream.describe()
+            ));
+        }
     }
 
     let start_time = scan
@@ -248,8 +309,117 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     })
 }
 
-/// A stream for the info view: name, type, channels, rate, samples and how it is read.
-fn describe(stream: &Stream) -> String {
+/// The time stamps of a stream shown as channels: its dejittered segments (times absolute)
+/// and its effective rate.
+struct Timing {
+    segments: Vec<Segment>,
+    rate: f64,
+    /// Whether the stream has time stamps at all; without, one segment from 0 at the
+    /// nominal rate.
+    stamped: bool,
+}
+
+/// Synchronizes and dejitters the time stamps of a stream shown as channels.
+fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
+    let nominal = stream.info.as_ref().map_or(1.0, |i| i.rate);
+    let frame = stream.info.as_ref().map_or(1, |i| match i.format {
+        ValueFormat::Numeric(e) => 1 + i.count * e.size(),
+        ValueFormat::String => 1,
+    });
+    if stream.first_stamp.is_none() {
+        return Timing {
+            segments: vec![Segment {
+                first: 0,
+                len: stream.len,
+                start: 0.0,
+                step: Some(1.0 / nominal),
+            }],
+            rate: nominal,
+            stamped: false,
+        };
+    }
+    let mut corrector = Corrector::new(clock);
+    let mut dejitter = Dejitter::new(nominal);
+    timestamps(stream, map, frame, 1.0 / nominal, |i, t| {
+        dejitter.push(i, corrector.correct(t));
+    });
+    let segments = dejitter.segments();
+    let rate = time::effective_rate(&segments).unwrap_or(nominal);
+    Timing {
+        segments,
+        rate,
+        stamped: true,
+    }
+}
+
+/// Feeds `f` the raw time stamp of each sample of a stream shown as channels, in order: its
+/// own where it has one, else the previous sample's plus a sample period (as pyxdf deduces
+/// them); samples before the first time stamp count back from it.
+fn timestamps(stream: &Stream, map: &[u8], frame: usize, tdiff: f64, mut f: impl FnMut(u64, f64)) {
+    let Some((q, first)) = stream.first_stamp else {
+        return;
+    };
+    let mut previous: Option<f64> = None;
+    for chunk in &stream.chunks {
+        let positions: &[u32] = match &chunk.stamps {
+            Stamps::Some(r) => &stream.positions[r.clone()],
+            _ => &[],
+        };
+        let mut next = 0;
+        for k in 0..chunk.len {
+            let i = chunk.first + k;
+            let before = match &chunk.stamps {
+                Stamps::All => Some(k as usize),
+                Stamps::None => None,
+                Stamps::Some(_) => (positions.get(next) == Some(&(k as u32))).then(|| {
+                    next += 1;
+                    next - 1
+                }),
+            };
+            // A time stamp that isn't a number is deduced instead.
+            let own = before
+                .and_then(|b| scan::f64_at(map, chunk.offset + k as usize * frame + 8 * b + 1))
+                .filter(|t| t.is_finite());
+            let t = match (own, previous) {
+                (Some(t), _) => t,
+                (None, Some(p)) => p + tdiff,
+                (None, None) => first - (q - i) as f64 * tdiff,
+            };
+            f(i, t);
+            previous = Some(t);
+        }
+    }
+}
+
+/// The grid of a stream laid out as `layout`: a regular time base for one segment, a
+/// segmented one for several.
+fn grid_of(
+    layout: &Layout,
+    rate: f64,
+    native: SampleType,
+    channels: Vec<ChannelId>,
+) -> Result<Grid, crate::ModelError> {
+    let timebase = match layout.pieces.as_slice() {
+        [one] => Timebase::Regular {
+            rate: one.rate,
+            start: one.start,
+        },
+        pieces => Timebase::Segmented {
+            rate,
+            pieces: pieces.to_vec(),
+        },
+    };
+    let segments = layout
+        .map
+        .iter()
+        .map(|&(slot, _, len)| slot..slot + len)
+        .collect();
+    Grid::new(timebase, layout.len, segments, native, channels)
+}
+
+/// A stream for the info view: name, type, channels, rate, samples and how it is read;
+/// for streams shown as channels, the effective rate, segments and clock resets.
+fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> String {
     let Some(info) = &stream.info else {
         return "no header".to_owned();
     };
@@ -270,19 +440,26 @@ fn describe(stream: &Stream) -> String {
     } else {
         "irregular".to_owned()
     };
-    format!(
+    let mut text = format!(
         "{name}, {} × {}, {rate}, {} samples: {how}",
         info.count,
         info.format.name(),
         stream.len
-    )
-}
-
-/// The time of a stream's first sample, from its first timestamp; `None` without one.
-fn first_time(stream: &Stream) -> Option<f64> {
-    let info = stream.info.as_ref()?;
-    let (k, t) = stream.first_stamp?;
-    Some(t - k as f64 / info.rate)
+    );
+    if let Some(timing) = timing.filter(|t| t.stamped) {
+        text.push_str(&format!(
+            "; effective rate {:.6} Hz, {} segment{}",
+            timing.rate,
+            timing.segments.len(),
+            if timing.segments.len() == 1 { "" } else { "s" }
+        ));
+    }
+    match clock.map(Clock::resets) {
+        Some(0) | None => {}
+        Some(1) => text.push_str(", 1 clock reset"),
+        Some(n) => text.push_str(&format!(", {n} clock resets")),
+    }
+    text
 }
 
 /// The kind of a channel: stim in streams of an event type and for the types "stim" and
@@ -550,8 +727,24 @@ impl GridStream {
         }
     }
 
-    /// Decodes `range` of the channels at `locals` into `dst`, channel-major, chunk by
-    /// chunk and run by run.
+    /// The stream's samples in grid slots `range`: (their first slot, the samples), segment
+    /// by segment; slots in gaps have none.
+    fn samples_in(&self, range: Range<u64>) -> impl Iterator<Item = (u64, Range<u64>)> + '_ {
+        let first = self
+            .map
+            .partition_point(|&(slot, _, len)| slot + len <= range.start);
+        self.map[first..]
+            .iter()
+            .take_while(move |&&(slot, _, _)| slot < range.end)
+            .filter_map(move |&(slot, sample, len)| {
+                let from = range.start.max(slot);
+                let to = range.end.min(slot + len);
+                (from < to).then(|| (from, sample + (from - slot)..sample + (to - slot)))
+            })
+    }
+
+    /// Decodes grid slots `range` of the channels at `locals` into `dst`, channel-major,
+    /// segment by segment.
     fn copy<T: Sample>(
         &self,
         map: &[u8],
@@ -561,6 +754,31 @@ impl GridStream {
         dst: &mut [T],
     ) -> Result<(), ReadError> {
         let n = (range.end - range.start) as usize;
+        let mut covered = 0;
+        for (slot, samples) in self.samples_in(range.clone()) {
+            covered += samples.end - samples.start;
+            let at = (slot - range.start) as usize;
+            self.copy_samples(map, grid, locals, samples, dst, n, at)?;
+        }
+        if covered < range.end - range.start {
+            return Err(ReadError::NotPresent { grid, range });
+        }
+        Ok(())
+    }
+
+    /// Decodes the stream's samples `range` of the channels at `locals` into `dst`, channel
+    /// `k`'s at `dst[k * stride + at..]`, chunk by chunk and run by run.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_samples<T: Sample>(
+        &self,
+        map: &[u8],
+        grid: GridId,
+        locals: &[usize],
+        range: Range<u64>,
+        dst: &mut [T],
+        stride: usize,
+        base: usize,
+    ) -> Result<(), ReadError> {
         let columns = |base: usize| -> Vec<(usize, Decoder)> {
             locals
                 .iter()
@@ -591,8 +809,8 @@ impl GridStream {
                     (self.frame, &plain)
                 };
                 let data = map.get(run.byte..).unwrap_or_default();
-                let at = (chunk.first + run.start - range.start) as usize;
-                frames_into(data, frame, columns, 0..run.len, dst, n, at)
+                let at = base + (chunk.first + run.start - range.start) as usize;
+                frames_into(data, frame, columns, 0..run.len, dst, stride, at)
             })?;
             i += take;
             b += 1;
@@ -660,18 +878,22 @@ impl BlockReader for XdfReader {
         let Some(stream) = self.grids.get(grid.0 as usize) else {
             return;
         };
-        let first = stream
-            .chunks
-            .partition_point(|c| c.first + c.len <= range.start);
-        let ranges: Vec<Range<u64>> = stream.chunks[first..]
-            .iter()
-            .take_while(|c| c.first < range.end)
-            .map(|c| {
-                let from = range.start.max(c.first) - c.first;
-                let to = range.end.min(c.first + c.len) - c.first;
-                stream.byte_of(c, from)..stream.byte_of(c, to)
-            })
-            .collect();
+        let mut ranges: Vec<Range<u64>> = Vec::new();
+        for (_, samples) in stream.samples_in(range) {
+            let first = stream
+                .chunks
+                .partition_point(|c| c.first + c.len <= samples.start);
+            ranges.extend(
+                stream.chunks[first..]
+                    .iter()
+                    .take_while(|c| c.first < samples.end)
+                    .map(|c| {
+                        let from = samples.start.max(c.first) - c.first;
+                        let to = samples.end.min(c.first + c.len) - c.first;
+                        stream.byte_of(c, from)..stream.byte_of(c, to)
+                    }),
+            );
+        }
         mapped::prefetch(&self.file, self.map.len() as u64, ranges);
     }
 }

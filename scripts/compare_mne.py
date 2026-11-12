@@ -139,13 +139,17 @@ FIFF, where Kymo deliberately differs from MNE:
 - Channel kinds and filters are not compared.
 
 XDF, which MNE doesn't read: values and timestamps are compared with pyxdf's (load_xdf
-without clock synchronization and dejittering, as Kymo doesn't apply them yet), stream
+with its defaults: clocks synchronized, resets handled, regular streams dejittered), stream
 modes with mnextend's stream_modes, annotation texts with mnextend's read_raw_xdf, the
 start time with the file header's datetime as mnextend reads it. Where Kymo deliberately
 differs:
 - No resampling: every stream shown as channels is a grid of its own, compared with its
-  pyxdf stream sample by sample. Its start must be its first timestamp minus the earliest
-  first timestamp of these streams.
+  pyxdf stream sample by sample. Each sample's time (from the grid's pieces: a rate and
+  start per segment between breaks) must be pyxdf's dejittered time stamp minus the
+  earliest first one of these streams, within 1 us; breaks are gaps in Kymo (mnextend
+  joins the segments). The grid's rate must be pyxdf's effective rate.
+- Samples before a stream's first time stamp count back from it in Kymo; pyxdf counts
+  them on from 0. No file seen has any.
 - Irregular numeric streams with several channels that are not of an event type become
   channels in Kymo (left out until it reads irregular time bases), annotations in
   mnextend.
@@ -156,8 +160,10 @@ differs:
 - Int64 and double64 values are read relative to each channel's first sample (unless it
   is beyond float32's range); Kymo's values must equal that float32 reading exactly.
   Stim channels' NaN reads as 0.
-- Annotation onsets are compared with pyxdf's raw timestamps; mnextend's are
-  synchronized and dejittered, so only its texts (and their number) are compared.
+- Annotation onsets are compared with pyxdf's synchronized time stamps. pyxdf dejitters
+  marker streams with a nominal rate too, as if they were signals; Kymo doesn't (their
+  events are irregular), so theirs are compared without dejittering. Only mnextend's
+  texts (and their number) are compared.
 - Stim events are not compared.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
@@ -169,6 +175,7 @@ and MNE's CSV of them (`Annotations.save`) loaded by Kymo equals Kymo's own read
 import argparse
 import datetime
 import json
+import logging
 import subprocess
 import sys
 import tempfile
@@ -481,18 +488,16 @@ def compare_xdf(path, tmp, header, annotations, windows):
     from mnextend.io import xdf as mnextend_xdf
 
     problems, notes = [], []
-    streams, file_header = pyxdf.load_xdf(
-        str(path),
-        synchronize_clocks=False,
-        handle_clock_resets=False,
-        dejitter_timestamps=False,
-        verbose=False,
-    )
+    # pyxdf's defaults: clocks synchronized (with resets), regular streams dejittered.
+    logging.getLogger("pyxdf").setLevel(logging.ERROR)
+    streams, file_header = pyxdf.load_xdf(str(path), verbose=False)
     by_id = {s["info"]["stream_id"]: s for s in streams}
     kymo_modes = {}
     for key, value in header["extra"]:
         if key.startswith("stream "):
-            mode = "not read" if ", not read: " in value else value.rsplit(": ", 1)[-1]
+            # "...: channels; effective rate ... Hz, 2 segments, 1 clock reset"
+            tail = value.rsplit(": ", 1)[-1].split("; ")[0].split(", ")[0]
+            mode = "not read" if ", not read: " in value else tail
             kymo_modes[int(key.split()[1])] = mode
 
     # Stream modes, against Kymo's rule and mnextend's defaults.
@@ -512,9 +517,9 @@ def compare_xdf(path, tmp, header, annotations, windows):
         shown = shown[: len(header["grids"])]
     t0 = min(by_id[sid]["time_stamps"][0] for sid in shown) if shown else 0.0
 
-    # Grids: rate, length, start, names, kinds, units and values.
+    # Grids: rate, length, every sample's time, names, kinds, units and values.
     channels = header["channels"]
-    worst, compared = 0.0, 0
+    worst, compared, worst_time = 0.0, 0, 0.0
     for g, (grid, sid) in enumerate(zip(header["grids"], shown)):
         stream = by_id[sid]
         info = stream["info"]
@@ -522,14 +527,33 @@ def compare_xdf(path, tmp, header, annotations, windows):
         data = np.asarray(stream["time_series"])
         stamps = stream["time_stamps"]
         name = str(xdf_field(info, "name"))
-        if grid["rate"] != float(xdf_field(info, "nominal_srate")) or grid["len"] != len(
-            stamps
-        ):
-            problems.append(f"stream {sid}: rate or length differs")
+        # The grid's segments hold the stream's samples one after another; gaps between
+        # them stand for pyxdf's breaks.
+        segments = np.array(grid["segments"], dtype=np.int64).reshape(-1, 2)
+        lengths = segments[:, 1] - segments[:, 0]
+        if lengths.sum() != len(stamps):
+            problems.append(f"stream {sid}: {lengths.sum()} samples, pyxdf {len(stamps)}")
             continue
-        if abs(grid["start"] - (stamps[0] - t0)) > 1e-6:
+        effective = float(info["effective_srate"]) or float(xdf_field(info, "nominal_srate"))
+        if not np.isclose(grid["rate"], effective, rtol=1e-9, atol=0):
+            problems.append(f"stream {sid}: rate {grid['rate']}, pyxdf {effective}")
+        n_segments = len(info["segments"])
+        if n_segments > 1:
+            notes.append(f"stream {sid}: {n_segments} segments")
+        before = np.concatenate([[0], np.cumsum(lengths)[:-1]])
+        slots = np.concatenate(
+            [np.arange(a, b) for a, b in segments]
+        ) if len(segments) else np.zeros(0, dtype=np.int64)
+        pieces = np.array(grid["pieces"], dtype=np.float64).reshape(-1, 3)
+        piece = np.searchsorted(pieces[:, 0], slots, side="right") - 1
+        times = pieces[piece, 1] + (slots - pieces[piece, 0]) / pieces[piece, 2]
+        error = np.abs(times - (stamps - t0))
+        worst_time = max(worst_time, float(error.max()) if len(error) else 0.0)
+        if len(error) and error.max() > 1e-6:
+            i = int(error.argmax())
             problems.append(
-                f"stream {sid}: starts at {grid['start']}, pyxdf at {stamps[0] - t0}"
+                f"stream {sid}: sample {i} at {times[i]} s, pyxdf at {stamps[i] - t0} s "
+                f"({(error > 1e-6).sum()} differ by more than 1 us)"
             )
         discrete = mnextend_xdf.stream_modes(
             {
@@ -569,7 +593,15 @@ def compare_xdf(path, tmp, header, annotations, windows):
             n = b - a
             ours = ours_all[offset : offset + len(ids) * n].reshape(len(ids), n)
             offset += len(ids) * n
-            theirs = data[a:b].T.astype(np.float64)
+            # The stream's sample in each slot; gaps read as NaN in Kymo.
+            slot = np.arange(a, b)
+            seg = np.searchsorted(segments[:, 0], slot, side="right") - 1
+            inside = (seg >= 0) & (slot < segments[np.maximum(seg, 0), 1])
+            if (~np.isnan(ours[:, ~inside])).any():
+                problems.append(f"stream {sid}: values in gaps")
+            ours = ours[:, inside]
+            sample = before[seg[inside]] + slot[inside] - segments[seg[inside], 0]
+            theirs = data[sample].T.astype(np.float64)
             theirs = np.where(stim & np.isnan(theirs), 0.0, theirs)
             # Kymo's reading: float32 relative to the reference, back in float64.
             with np.errstate(over="ignore", invalid="ignore"):
@@ -591,11 +623,28 @@ def compare_xdf(path, tmp, header, annotations, windows):
                 worst = max(worst, float(np.nanmax(rel)))
             compared += ours.size
 
-    # Annotations: onsets from pyxdf's raw timestamps, texts as mnextend writes them.
+    # Annotations: onsets from pyxdf's synchronized timestamps, texts as mnextend writes
+    # them.
     annotation_ids = sorted(sid for sid, m in kymo_modes.items() if m == "annotations")
+    # pyxdf dejitters marker streams with a nominal rate as if they were signals; Kymo
+    # keeps their synchronized time stamps, so those come from a load without dejittering.
+    regular_markers = [
+        sid
+        for sid in annotation_ids
+        if float(xdf_field(by_id[sid]["info"], "nominal_srate")) > 0
+    ]
+    undejittered = {}
+    if regular_markers:
+        loaded, _ = pyxdf.load_xdf(
+            str(path),
+            select_streams=regular_markers,
+            dejitter_timestamps=False,
+            verbose=False,
+        )
+        undejittered = {s["info"]["stream_id"]: s for s in loaded}
     expected = []
     for sid in annotation_ids:
-        stream = by_id[sid]
+        stream = undejittered.get(sid, by_id[sid])
         string = xdf_field(stream["info"], "channel_format") == "string"
         for t, sample in zip(stream["time_stamps"], stream["time_series"]):
             if string:
@@ -656,7 +705,8 @@ def compare_xdf(path, tmp, header, annotations, windows):
     print(f"{status}: {path}")
     print(
         f"  XDF, {len(channels)} channels in {len(shown)} streams, {compared} samples "
-        f"compared, max relative error {worst:.1e}, {len(annotations)} annotations"
+        f"compared, max relative error {worst:.1e}, sample times within "
+        f"{worst_time * 1e6:.3f} us, {len(annotations)} annotations"
     )
     for w in header["warnings"]:
         print(f"  Kymo warning: {w}")
@@ -1297,6 +1347,7 @@ def testgen_files(directory):
         ("xdf-float32", "xdf", []),
         ("xdf-mixed", "xdf", []),
         ("xdf-events", "xdf", []),
+        ("xdf-clocks", "xdf", []),
     ]
     files = []
     for name, ext, extra in presets:

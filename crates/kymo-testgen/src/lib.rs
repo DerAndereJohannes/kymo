@@ -32,7 +32,7 @@ use std::ops::Range;
 pub use gdf::MANUFACTURER as GDF_MANUFACTURER;
 pub use temp::{TempDir, TempFile};
 pub use write::{write, write_to};
-pub use xdf::{MarkerValues, XdfFormat, XdfMarkers, XdfOptions, XdfStamps, XdfStream};
+pub use xdf::{MarkerValues, XdfBreak, XdfFormat, XdfMarkers, XdfOptions, XdfStamps, XdfStream};
 
 /// File format to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -991,8 +991,8 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 mod presets {
     use super::{
         Binary, ChannelSpec, EEG_AMPLITUDE, FiffSplit, FiffType, Format, GapSpec, GdfVersion,
-        Layout, MarkerValues, Orientation, Spec, SplitNaming, Storage, Stored, Tal, XdfFormat,
-        XdfMarkers, XdfStamps, XdfStream,
+        Layout, MarkerValues, Orientation, Spec, SplitNaming, Storage, Stored, Tal, XdfBreak,
+        XdfFormat, XdfMarkers, XdfStamps, XdfStream,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -1124,6 +1124,12 @@ mod presets {
              rate), an irregular two-channel stream (left out until irregular streams are \
              read), 1 min",
         ),
+        (
+            "xdf-clocks",
+            "XDF, 8 EEG channels at 500 Hz and an accelerometer at 52 Hz on drifting clocks \
+             with a reset, jittered time stamps, rates off nominal, breaks of 3 and 12 s (the \
+             second with the rate changing), string markers, 2 min",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -1153,6 +1159,7 @@ mod presets {
             "xdf-float32" => xdf_float32(),
             "xdf-mixed" => xdf_mixed(),
             "xdf-events" => xdf_events(),
+            "xdf-clocks" => xdf_clocks(),
             _ => return None,
         };
         Some(spec)
@@ -2000,6 +2007,64 @@ mod presets {
         ];
         spec.xdf.clock = 77.5;
         spec.seed = 22;
+        spec
+    }
+
+    fn xdf_clocks() -> Spec {
+        let f = Format::Xdf;
+        let mut channels: Vec<ChannelSpec> = ["Fz", "Cz", "Pz", "Oz", "C3", "C4", "P3", "P4"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 500, f))
+            .collect();
+        for axis in ["X", "Y", "Z"] {
+            channels.push(ChannelSpec {
+                amplitude: 1000.0,
+                ..ChannelSpec::xdf(axis, "accelerometer", "NA", 52, XdfFormat::I16)
+            });
+        }
+        let mut spec = Spec::new(f, channels, 1.0, 120);
+        let eeg = XdfStream {
+            chunk: 50,
+            rate_error: 2e-5,
+            jitter: 5e-4,
+            breaks: vec![XdfBreak {
+                before: 20_000,
+                seconds: 3.0,
+                rate_error: 2e-5,
+            }],
+            ..XdfStream::new(1, "Amp", "EEG", (0..8).collect())
+        };
+        let acc = XdfStream {
+            format: XdfFormat::I16,
+            start: 0.3,
+            stamps: XdfStamps::All,
+            chunk: 13,
+            rate_error: -3e-3,
+            jitter: 2e-3,
+            breaks: vec![XdfBreak {
+                before: 1500,
+                // More than 500 samples at 52 Hz, so a break.
+                seconds: 12.0,
+                rate_error: 1e-4,
+            }],
+            ..XdfStream::new(2, "Wristband", "ACC", vec![8, 9, 10])
+        };
+        spec.xdf.streams = vec![eeg, acc];
+        spec.annotations = xdf_markers(120.0, &["S  1", "S  2"]);
+        spec.xdf.markers = vec![XdfMarkers {
+            id: 3,
+            name: "Markers".into(),
+            kind: "Markers".into(),
+            values: MarkerValues::Strings,
+            rate: 0.0,
+            annotations: 0..spec.annotations.len(),
+        }];
+        spec.xdf.clock = 52_000.0;
+        spec.xdf.clock_offsets = true;
+        spec.xdf.clock_offset = -0.75;
+        spec.xdf.clock_drift = 3e-6;
+        spec.xdf.clock_reset = Some((70.0, 4000.0));
+        spec.seed = 23;
         spec
     }
 }
