@@ -20,6 +20,9 @@ pub struct Header {
     pub grids: Vec<Grid>,
     /// Format-specific fields (patient, equipment, ...) for an info view.
     pub extra: Vec<(String, String)>,
+    /// Channels the file marks as bad (FIFF); they start out bad in the viewer. The file
+    /// stays as it is.
+    pub bad_channels: Vec<ChannelId>,
 }
 
 /// What a reader produces when it opens a file.
@@ -126,6 +129,11 @@ impl Recording {
 
     pub fn start_time(&self) -> Option<jiff::civil::DateTime> {
         self.header.start_time
+    }
+
+    /// Channels the file marks as bad.
+    pub fn bad_channels(&self) -> &[ChannelId] {
+        &self.header.bad_channels
     }
 
     pub fn extra(&self) -> &[(String, String)] {
@@ -372,6 +380,14 @@ fn validate_header(header: &Header) -> Result<(), ModelError> {
                 offset: c.offset,
             });
         }
+    }
+
+    if let Some(&bad) = header
+        .bad_channels
+        .iter()
+        .find(|c| c.0 as usize >= channels.len())
+    {
+        return Err(ModelError::UnknownBadChannel(bad));
     }
 
     let mut listed = vec![false; channels.len()];

@@ -224,6 +224,10 @@ pub struct Channel {
     /// of a BDF status channel, whose upper bits are the amplifier's own status. `None`
     /// means all bits.
     pub trigger_mask: Option<u32>,
+    /// For stim channels: whether its value changes are events (stim annotations); the
+    /// pyramid build records changes only for those. Off for stim channels a combined one
+    /// covers (FIFF's STI001 to STI016 beside STI101), which are still drawn as codes.
+    pub events: bool,
 }
 
 impl Channel {
@@ -264,6 +268,7 @@ impl Channel {
             physical_range: None,
             digital_range: None,
             trigger_mask: None,
+            events: true,
         }
     }
 }

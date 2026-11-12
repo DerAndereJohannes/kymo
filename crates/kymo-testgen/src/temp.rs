@@ -43,7 +43,7 @@ impl TempFile {
     /// If the spec is invalid or the file can't be written.
     pub fn written(spec: &Spec) -> TempFile {
         let mut file = TempFile::new(spec.format.extension());
-        file.companions = spec.format.files(&file.path).split_off(1);
+        file.companions = spec.files(&file.path).split_off(1);
         if let Err(error) = write(spec, &file.path) {
             panic!("cannot write {}: {error}", file.path.display());
         }

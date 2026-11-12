@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
 
-use super::FiffError;
 use super::info::{self, Info};
 use super::tag::{self, Node, Tag, block, kind, types};
+use super::{FiffError, annotations};
 use crate::decode::{ByteOrder, Decoder, Encoding, frames_into};
 use crate::mapped::{self, map_read_only};
 use crate::{
@@ -54,37 +54,71 @@ enum Decoding {
     Mixed(Vec<f64>),
 }
 
-/// Opens a FIFF raw recording. The file is memory-mapped, never loaded; the tags are walked
-/// once at open to find the measurement info and the data buffers.
+/// Most files a split recording may have, against reference loops.
+const MAX_PARTS: usize = 10_000;
+
+/// Opens a FIFF raw recording, all its split parts: a later part opens the whole
+/// recording, from the first part on. The files are memory-mapped, never loaded; the tags
+/// of each are walked once at open to find the measurement info and the data buffers.
 pub fn open(path: &Path) -> Result<Opened, OpenError> {
-    let io = |path: &Path| {
-        let path = path.to_owned();
-        move |source| OpenError::Io { path, source }
-    };
     let error = |source| OpenError::Fiff {
         path: path.to_owned(),
         source,
     };
     let mut warnings = Vec::new();
-    let file = File::open(path).map_err(io(path))?;
-    let map = map_read_only(&file).map_err(io(path))?;
-    if !tag::is_fiff(&map) {
-        return Err(error(FiffError::NotFiff));
+    let parts = chain(Loaded::open(path)?, &mut warnings)?;
+    let several = parts.len() > 1;
+    for loaded in &parts {
+        for w in &loaded.warnings {
+            warnings.push(if several {
+                format!("{}: {w}", file_name(&loaded.path))
+            } else {
+                w.clone()
+            });
+        }
     }
-    let tree = tag::tree(&map, &mut warnings);
-    let part = Part::read(&tree, &map, &mut warnings).map_err(error)?;
-    let info = part.info;
-    let first_samp = part.first_samp;
-    let parts = vec![(map, file)];
-    let sources: Vec<PathBuf> = vec![path.to_owned()];
 
-    let mut buffers = part.buffers;
-    let len = buffers.last().map_or(0, |b| b.start + b.len);
+    // The parts' buffers on one grid, each part from its first sample on.
+    let first = &parts[0].part;
+    let info = &first.info;
+    let first_samp = first.first_samp;
+    let mut buffers = Vec::new();
+    let mut end = 0;
+    for (k, loaded) in parts.iter().enumerate() {
+        let part = &loaded.part;
+        if k > 0 {
+            if let Some(reason) = mismatch(info, &part.info) {
+                return Err(error(FiffError::SplitMismatch {
+                    file: file_name(&loaded.path),
+                    reason,
+                }));
+            }
+            if part.first_samp < first_samp + end {
+                return Err(error(FiffError::SplitMismatch {
+                    file: file_name(&loaded.path),
+                    reason: format!(
+                        "it starts at sample {}, before the previous part ends ({})",
+                        part.first_samp,
+                        first_samp + end
+                    ),
+                }));
+            }
+        }
+        let offset = part.first_samp - first_samp;
+        buffers.extend(part.buffers.iter().map(|b| Buffer {
+            start: b.start + offset,
+            part: k,
+            ..*b
+        }));
+        end = buffers.last().map_or(end, |b| b.start + b.len);
+    }
+    let len = end;
     if buffers.is_empty() {
         warnings.push("the file has no data buffers".to_owned());
     }
     let segments = segments(&buffers);
     let n = info.channels.len();
+    let sources: Vec<PathBuf> = parts.iter().map(|l| l.path.clone()).collect();
 
     // The grid's type holds every buffer's; a reference per channel for float64.
     let mut encodings: Vec<Encoding> = buffers.iter().map(|b| b.encoding).collect();
@@ -117,6 +151,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             channel.gain = 1.0;
         }
     }
+    stim(&mut channels);
+    let maps: Vec<&[u8]> = parts.iter().map(|l| &l.map[..]).collect();
     let float64 = buffers
         .iter()
         .find(|b| b.encoding == Encoding::F64)
@@ -127,8 +163,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             return 0.0;
         }
         let decoder = Decoder::new(Encoding::F64, ByteOrder::Big).with_reference(0.0);
-        let at = b.offset + c * 8;
-        let bytes = parts[b.part].0.get(at..).unwrap_or_default();
+        let bytes = maps[b.part].get(b.offset + c * 8..).unwrap_or_default();
         decoder.reference_from(bytes)
     };
     let references: Vec<f64> = channels
@@ -163,8 +198,47 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     )
     .map_err(|e| error(e.into()))?;
 
+    // Channels by name: the full name, or the struct's (cut to 15 bytes), which MNE writes
+    // in bad channel lists when names are longer.
+    let channel = |name: &str| -> Option<ChannelId> {
+        let find = |f: &dyn Fn(&info::ChInfo) -> &str| {
+            info.channels
+                .iter()
+                .position(|c| f(c) == name)
+                .map(|i| ChannelId(i as u32))
+        };
+        find(&|c| &c.name).or_else(|| find(&|c| &c.struct_name))
+    };
+    let mut bad_channels = Vec::new();
+    let mut unknown = Vec::new();
+    for name in &first.bads {
+        match channel(name) {
+            Some(id) if !bad_channels.contains(&id) => bad_channels.push(id),
+            Some(_) => {}
+            None => unknown.push(name.as_str()),
+        }
+    }
+    if !unknown.is_empty() {
+        warnings.push(format!(
+            "the file marks channels as bad that it doesn't have: {}",
+            unknown.join(", ")
+        ));
+    }
+    let annotations = match &first.annotations {
+        Some(node) => annotations::read(
+            node,
+            &parts[0].map,
+            first_samp as f64 / info.sfreq,
+            len as f64 / info.sfreq,
+            info.meas_date.map(|(s, us)| s as f64 + us as f64 * 1e-6),
+            &channel,
+            &mut warnings,
+        ),
+        None => Vec::new(),
+    };
+
     let mut extra = info.extra.clone();
-    if part.maxshield {
+    if first.maxshield {
         warnings.push(
             "this is a MaxShield (Internal Active Shielding) recording, which may be \
              distorted until processed with MaxFilter"
@@ -172,9 +246,13 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         );
         extra.push(("MaxShield".to_owned(), "yes".to_owned()));
     }
-    let start_time = start_time(&info, first_samp, &mut extra, &mut warnings);
+    let start_time = start_time(info, first_samp, &mut extra, &mut warnings);
     extra.push(("first sample".to_owned(), first_samp.to_string()));
+    if several {
+        extra.push(("split parts".to_owned(), parts.len().to_string()));
+    }
 
+    let parts = parts.into_iter().map(|l| (l.map, l.file)).collect();
     Ok(Opened {
         header: Header {
             format: "FIFF",
@@ -182,8 +260,9 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             channels,
             grids: vec![grid],
             extra,
+            bad_channels,
         },
-        annotations: Vec::new(),
+        annotations,
         warnings,
         sources,
         reader: Box::new(FiffReader {
@@ -196,6 +275,224 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     })
 }
 
+/// Stim channels: the combined channel (STI101, else STI 014), if there is one, holds the
+/// codes in its low 16 bits (Neuromag's STI016 sets bit 15, which a 16-bit sample reads as
+/// negative) and is the only one whose changes are events; the others are the bit lines it
+/// combines. Without one, every stim channel's changes are events.
+fn stim(channels: &mut [Channel]) {
+    let combined = ["STI101", "STI 014"].iter().find_map(|name| {
+        channels
+            .iter()
+            .position(|c| c.kind == ChannelKind::Stim && c.name == *name)
+    });
+    let Some(combined) = combined else { return };
+    for (c, channel) in channels.iter_mut().enumerate() {
+        if channel.kind == ChannelKind::Stim {
+            channel.events = c == combined;
+        }
+    }
+    channels[combined].trigger_mask = Some(0xffff);
+}
+
+/// Why `part`'s info can't continue `first`'s, if it can't.
+fn mismatch(first: &Info, part: &Info) -> Option<String> {
+    if part.sfreq != first.sfreq {
+        return Some(format!(
+            "its sampling rate ({} Hz) differs from the first part's ({} Hz)",
+            part.sfreq, first.sfreq
+        ));
+    }
+    if part.channels.len() != first.channels.len() {
+        return Some(format!(
+            "it has {} channels, the first part {}",
+            part.channels.len(),
+            first.channels.len()
+        ));
+    }
+    let differ = |a: &info::ChInfo, b: &info::ChInfo| {
+        a.name != b.name
+            || a.kind != b.kind
+            || a.unit != b.unit
+            || a.calibration() != b.calibration()
+    };
+    first
+        .channels
+        .iter()
+        .zip(&part.channels)
+        .find(|(a, b)| differ(a, b))
+        .map(|(a, _)| format!("its channel {:?} differs from the first part's", a.name))
+}
+
+/// The parts of the recording `given` belongs to, in order: back through the previous-part
+/// references to the first, then forward through the next-part references. A missing or
+/// unreadable part ends the chain there, with a warning.
+fn chain(given: Loaded, warnings: &mut Vec<String>) -> Result<Vec<Loaded>, OpenError> {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+    let mut first = given;
+    let mut seen = vec![canonical(&first.path)];
+    while let Some(r) = first.part.prev.clone() {
+        let here = file_name(&first.path);
+        match next_part(&first.path, &r, "previous", &here, &mut seen, warnings) {
+            Some(loaded) => first = loaded,
+            None => break,
+        }
+    }
+    let mut seen = vec![canonical(&first.path)];
+    let mut parts = vec![first];
+    while let Some(last) = parts.last()
+        && let Some(r) = last.part.next.clone()
+    {
+        let here = file_name(&last.path);
+        let path = last.path.clone();
+        match next_part(&path, &r, "next", &here, &mut seen, warnings) {
+            Some(loaded) => parts.push(loaded),
+            None => break,
+        }
+    }
+    Ok(parts)
+}
+
+/// The part `r` names from the part at `path` (`which`: "previous" or "next"), if it can
+/// be found and read and isn't one already in `seen`; a warning otherwise.
+fn next_part(
+    path: &Path,
+    r: &Reference,
+    which: &str,
+    here: &str,
+    seen: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
+) -> Option<Loaded> {
+    let shown = if which == "previous" {
+        format!("the recording is read from {here} on")
+    } else {
+        format!("the recording ends with {here}")
+    };
+    let Some(found) = resolve(path, r) else {
+        warnings.push(format!(
+            "the {which} part of the recording ({}) is missing; {shown}",
+            r.describe()
+        ));
+        return None;
+    };
+    let canonical = std::fs::canonicalize(&found).unwrap_or_else(|_| found.clone());
+    if seen.contains(&canonical) || seen.len() >= MAX_PARTS {
+        warnings.push(format!(
+            "the parts of the recording refer to each other in a loop; {shown}"
+        ));
+        return None;
+    }
+    match Loaded::open(&found) {
+        Ok(loaded) => {
+            seen.push(canonical);
+            Some(loaded)
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "the {which} part of the recording can't be read ({e}); {shown}"
+            ));
+            None
+        }
+    }
+}
+
+/// Where the part `r` names is, beside the part at `path`: by its name (as written, then
+/// its last path component beside `path`, since MNE may write a full path), else by its
+/// number (Neuromag's names: `rec.fif`, `rec-1.fif`, `rec-2.fif`); `None` if no such file
+/// exists.
+fn resolve(path: &Path, r: &Reference) -> Option<PathBuf> {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let mut candidates = Vec::new();
+    if let Some(name) = &r.name {
+        let named = Path::new(name);
+        if named.is_absolute() {
+            candidates.push(named.to_owned());
+        }
+        let last = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        candidates.push(dir.join(last));
+    }
+    if let (Some(num), Some(base)) = (r.num, path.file_name().and_then(|n| n.to_str())) {
+        candidates.push(dir.join(numbered(base, num)));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// `name` as Neuromag numbers split parts: the part number after a "-" before the first
+/// ".", none for part 0 (`rec.fif`, `rec-1.fif`).
+fn numbered(name: &str, num: i32) -> String {
+    let dot = name.find('.').unwrap_or(name.len());
+    let (stem, rest) = name.split_at(dot);
+    let stem = match stem.rsplit_once('-') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => stem,
+    };
+    if num > 0 {
+        format!("{stem}-{num}{rest}")
+    } else {
+        format!("{stem}{rest}")
+    }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Another part of a split recording, as a reference block names it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Reference {
+    name: Option<String>,
+    num: Option<i32>,
+}
+
+impl Reference {
+    fn describe(&self) -> String {
+        match (&self.name, self.num) {
+            (Some(name), _) => format!("{name:?}"),
+            (None, Some(num)) => format!("part {num}"),
+            (None, None) => "unnamed".to_owned(),
+        }
+    }
+}
+
+/// One file of a recording, mapped and read.
+struct Loaded {
+    path: PathBuf,
+    map: Mmap,
+    file: File,
+    part: Part,
+    warnings: Vec<String>,
+}
+
+impl Loaded {
+    fn open(path: &Path) -> Result<Loaded, OpenError> {
+        let io = |source| OpenError::Io {
+            path: path.to_owned(),
+            source,
+        };
+        let error = |source| OpenError::Fiff {
+            path: path.to_owned(),
+            source,
+        };
+        let file = File::open(path).map_err(io)?;
+        let map = map_read_only(&file).map_err(io)?;
+        if !tag::is_fiff(&map) {
+            return Err(error(FiffError::NotFiff));
+        }
+        let mut warnings = Vec::new();
+        let tree = tag::tree(&map, &mut warnings);
+        let part = Part::read(&tree, &map, &mut warnings).map_err(error)?;
+        Ok(Loaded {
+            path: path.to_owned(),
+            map,
+            file,
+            part,
+            warnings,
+        })
+    }
+}
+
 /// What one file of a recording holds.
 struct Part {
     info: Info,
@@ -203,6 +500,12 @@ struct Part {
     /// Starting at sample 0 of this part.
     buffers: Vec<Buffer>,
     maxshield: bool,
+    /// The names of the channels the file marks as bad.
+    bads: Vec<String>,
+    /// MNE's annotations block, if any.
+    annotations: Option<Node>,
+    prev: Option<Reference>,
+    next: Option<Reference>,
 }
 
 impl Part {
@@ -239,11 +542,46 @@ impl Part {
                 })
             })?;
         let (first_samp, buffers) = buffers(raw, map, info.channels.len(), warnings)?;
+
+        // The last list of bad channels, as MNE reads them.
+        let mut lists = Vec::new();
+        meas.find_all(block::MNE_BAD_CHANNELS, &mut lists);
+        let bads = lists
+            .iter()
+            .rev()
+            .find_map(|b| {
+                b.tag(kind::MNE_CH_NAME_LIST)
+                    .or_else(|| b.tag(kind::BAD_CHS))
+            })
+            .map(|t| t.names(map))
+            .unwrap_or_default();
+
+        let (mut prev, mut next) = (None, None);
+        let mut refs = Vec::new();
+        tree.find_all(block::REF, &mut refs);
+        for r in refs {
+            let reference = Reference {
+                name: r
+                    .tag(kind::REF_FILE_NAME)
+                    .map(|t| t.text(map))
+                    .filter(|n| !n.is_empty()),
+                num: r.tag(kind::REF_FILE_NUM).and_then(|t| t.int(map)),
+            };
+            match r.tag(kind::REF_ROLE).and_then(|t| t.int(map)) {
+                Some(1) => prev = Some(reference),
+                Some(2) => next = Some(reference),
+                _ => {}
+            }
+        }
         Ok(Part {
             info,
             first_samp,
             buffers,
             maxshield,
+            bads,
+            annotations: tree.find(block::MNE_ANNOTATIONS).cloned(),
+            prev,
+            next,
         })
     }
 }

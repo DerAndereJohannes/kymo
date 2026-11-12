@@ -73,6 +73,7 @@ pub fn recording(eeg: u32, seconds: u64) -> Recording {
             channels,
             grids,
             extra: vec![],
+            bad_channels: Vec::new(),
         },
         annotations: vec![],
         warnings: vec![],
@@ -745,4 +746,21 @@ fn set_amplitudes_takes_only_positive_finite_ones() {
     assert_eq!(after[..5], before[..5]);
     assert_eq!(after[5], 3e-6);
     assert_eq!(after[6..], before[6..]);
+}
+
+#[test]
+fn channels_the_file_marks_bad_start_out_bad() {
+    // A FIFF file with two bad channels: MEG 0113 and EEG 003.
+    let file = kymo_testgen::TempFile::preset("fif-float32-meg");
+    let rec = Recording::new(kymo_core::open(file.path()).unwrap())
+        .unwrap()
+        .0;
+    let mut view = ViewState::new(&rec);
+    assert_eq!(
+        view.bad_channels().collect::<Vec<_>>(),
+        [ChannelId(2), ChannelId(6)]
+    );
+    // They are marked good like any other.
+    view.toggle_bad(ChannelId(2));
+    assert_eq!(view.bad_channels().collect::<Vec<_>>(), [ChannelId(6)]);
 }

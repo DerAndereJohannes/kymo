@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use crate::common::{TempDir, TempFile};
 use kymo_core::fiff::FiffError;
-use kymo_core::{ChannelId, ChannelKind, GridId, OpenError, Recording, SampleType};
+use kymo_core::{AnnotationData, ChannelId, ChannelKind, GridId, OpenError, Recording, SampleType};
 use kymo_testgen::fiff::{ChInfo, Tags, block, kind, types};
-use kymo_testgen::{ChannelSpec, FiffType, Format, GapSpec, Spec};
+use kymo_testgen::{ChannelSpec, FiffSplit, FiffType, Format, GapSpec, Spec, SplitNaming};
 use proptest::prelude::*;
 
 /// Buffer types read relative to each channel's first sample (float64, and mixed files,
@@ -54,7 +54,60 @@ fn matches(spec: &Spec, channels: &[ChannelId], range: Range<u64>, got: &[f32]) 
 }
 
 fn open(path: &std::path::Path) -> Recording {
-    Recording::new(kymo_core::open(path).unwrap()).unwrap().0
+    open_with(path).0
+}
+
+fn open_with(path: &std::path::Path) -> (Recording, Vec<AnnotationData>) {
+    Recording::new(kymo_core::open(path).unwrap()).unwrap()
+}
+
+type Summary = Vec<(f64, f64, String, Vec<String>)>;
+
+/// The annotations kymo should read from `spec`'s file, as (onset, duration, description,
+/// channel names): one per text, onsets and ends stored as float32 from the start, onsets
+/// from the first sample.
+fn expected_annotations(spec: &Spec) -> Summary {
+    let mut expected = Vec::new();
+    for (i, a) in spec.annotations.iter().enumerate() {
+        let onset = f64::from(a.onset as f32);
+        let end = f64::from((a.onset + a.duration.unwrap_or(0.0)) as f32);
+        let channels = spec
+            .fiff
+            .annotation_channels
+            .get(i)
+            .cloned()
+            .unwrap_or_default();
+        for text in &a.texts {
+            expected.push((
+                onset - spec.first_onset,
+                end - onset,
+                text.clone(),
+                channels.clone(),
+            ));
+        }
+    }
+    expected
+}
+
+fn summary(rec: &Recording, annotations: &[AnnotationData]) -> Summary {
+    annotations
+        .iter()
+        .map(|a| {
+            let names = a
+                .channels
+                .iter()
+                .map(|&c| rec.channel(c).name.clone())
+                .collect();
+            (a.onset, a.duration, a.description.clone(), names)
+        })
+        .collect()
+}
+
+fn same_annotations(got: &Summary, expected: &Summary) -> bool {
+    got.len() == expected.len()
+        && got.iter().zip(expected).all(|(g, e)| {
+            (g.0 - e.0).abs() < 1e-9 && (g.1 - e.1).abs() < 1e-9 && g.2 == e.2 && g.3 == e.3
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -78,12 +131,22 @@ fn case() -> impl Strategy<Value = Case> {
             0u64..3,
             any::<bool>(),
             proptest::option::of((1u64..6, 1u64..3)),
+            proptest::option::of(1u64..4),
         ),
         any::<u64>(),
         proptest::collection::vec(any::<(prop::sample::Index, prop::sample::Index)>(), 1..4),
     )
         .prop_map(
-            |(format, kinds, spr, records, duration, (skip, extra, varying, gap), seed, reads)| {
+            |(
+                format,
+                kinds,
+                spr,
+                records,
+                duration,
+                (skip, extra, varying, gap, split),
+                seed,
+                reads,
+            )| {
                 let channels = kinds
                     .iter()
                     .enumerate()
@@ -101,6 +164,10 @@ fn case() -> impl Strategy<Value = Case> {
                 spec.spike_every = 7;
                 spec.fiff.initial_skip = skip;
                 spec.fiff.varying_buffers = varying;
+                spec.fiff.split = split.map(|records| FiffSplit {
+                    records,
+                    naming: SplitNaming::Neuromag,
+                });
                 spec.first_onset = (skip + extra) as f64 * duration;
                 if let Some((before, length)) = gap
                     && before < records
@@ -117,14 +184,21 @@ fn case() -> impl Strategy<Value = Case> {
 
 proptest! {
     /// Every buffer type (and mixed ones) reads back the truth function in physical units
-    /// for any range, with skips as gaps, an initial skip moving the first sample, and
-    /// buffers of varying length.
+    /// for any range, with skips as gaps, an initial skip moving the first sample, buffers
+    /// of varying length, and split parts (a gap before a part's first record is a jump in
+    /// its first sample).
     #[test]
     fn random_reads_match_the_truth(case in case()) {
         let spec = &case.spec;
         let file = TempFile::written(spec);
-        prop_assert_eq!(std::fs::metadata(file.path()).unwrap().len(), spec.file_size().unwrap());
+        let files = spec.files(file.path());
+        let written: u64 = files.iter().map(|f| std::fs::metadata(f).unwrap().len()).sum();
+        prop_assert_eq!(written, kymo_testgen::fiff::file_size_at(spec, file.path()).unwrap());
+        if spec.fiff.split.is_none() {
+            prop_assert_eq!(written, spec.file_size().unwrap());
+        }
         let rec = open(file.path());
+        prop_assert_eq!(rec.sources(), files.as_slice());
         prop_assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
         prop_assert_eq!(rec.grids().len(), 1);
         let grid = &rec.grids()[0];
@@ -170,18 +244,32 @@ fn presets_open_with_their_channels() {
         "fif-int32-varying",
         "fif-double-dc",
         "fif-mixed",
+        "fif-split",
     ] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
-        assert_eq!(
-            std::fs::metadata(file.path()).unwrap().len(),
-            spec.file_size().unwrap(),
-            "{preset}"
-        );
-        let rec = open(file.path());
+        let files = spec.files(file.path());
+        let written: u64 = files
+            .iter()
+            .map(|f| std::fs::metadata(f).unwrap().len())
+            .sum();
+        let size = kymo_testgen::fiff::file_size_at(&spec, file.path()).unwrap();
+        assert_eq!(written, size, "{preset}");
+        let (rec, annotations) = open_with(file.path());
         assert!(rec.warnings().is_empty(), "{preset}: {:?}", rec.warnings());
         assert_eq!(rec.format(), "FIFF");
-        assert_eq!(rec.sources(), [file.path().to_owned()]);
+        assert_eq!(rec.sources(), files.as_slice());
+        assert!(
+            same_annotations(&summary(&rec, &annotations), &expected_annotations(&spec)),
+            "{preset}: {:?}",
+            summary(&rec, &annotations)
+        );
+        let bads: Vec<&str> = rec
+            .bad_channels()
+            .iter()
+            .map(|&c| rec.channel(c).name.as_str())
+            .collect();
+        assert_eq!(bads, spec.fiff.bads, "{preset}");
         // The first sample's time, in local time where the file has a UTC offset.
         let start = spec
             .start
@@ -766,4 +854,379 @@ proptest! {
             }
         }
     }
+}
+
+/// Writes `spec` (a split recording) in its own directory; the paths of its parts.
+fn split_files(spec: &Spec, dir: &TempDir) -> Vec<PathBuf> {
+    let path = dir.path().join("rec.fif");
+    kymo_testgen::write(spec, &path).unwrap();
+    spec.files(&path)
+}
+
+fn split_spec(naming: SplitNaming) -> Spec {
+    let f = Format::Fiff(FiffType::Int);
+    let channels = (0..3)
+        .map(|i| ChannelSpec::fiff(format!("E{i}"), "eeg", 50, f))
+        .collect();
+    let mut spec = Spec::new(f, channels, 1.0, 10);
+    spec.first_onset = 3.0;
+    spec.spike_every = 7;
+    spec.fiff.split = Some(FiffSplit { records: 4, naming });
+    spec
+}
+
+fn error_of(path: &std::path::Path) -> FiffError {
+    match kymo_core::open(path) {
+        Err(OpenError::Fiff { source, .. }) => source,
+        other => panic!("expected a FIFF error, got {other:?}"),
+    }
+}
+
+#[test]
+fn split_recordings_open_as_one_from_any_part() {
+    for naming in [
+        SplitNaming::Neuromag,
+        SplitNaming::NumbersOnly,
+        SplitNaming::Bids,
+    ] {
+        let mut spec = split_spec(naming);
+        // A gap before the second part's first record: a jump in its first sample.
+        spec.gaps = vec![GapSpec {
+            before_record: 4,
+            seconds: 2.0,
+        }];
+        let dir = TempDir::new();
+        let files = split_files(&spec, &dir);
+        assert_eq!(files.len(), 3);
+        for (k, part) in files.iter().enumerate() {
+            let rec = open(part);
+            assert!(
+                rec.warnings().is_empty(),
+                "{naming:?} part {k}: {:?}",
+                rec.warnings()
+            );
+            assert_eq!(rec.sources(), files.as_slice(), "{naming:?} part {k}");
+            let grid = &rec.grids()[0];
+            assert_eq!(grid.segments(), spec.segments(0).as_slice());
+            assert_eq!(grid.segments(), [0..200, 300..600]);
+            let ids = grid.channels().to_vec();
+            for s in spec.segments(0) {
+                let got = physical(&rec, &ids, s.clone());
+                assert!(matches(&spec, &ids, s, &got), "{naming:?} part {k}");
+            }
+            assert_eq!(first_sample(&rec).as_deref(), Some("150"));
+            let parts = rec.extra().iter().find(|(k, _)| k == "split parts");
+            assert_eq!(parts.map(|(_, v)| v.as_str()), Some("3"));
+        }
+    }
+}
+
+#[test]
+fn missing_and_mismatched_split_parts() {
+    let spec = split_spec(SplitNaming::Neuromag);
+
+    // A missing last part: the parts before it, with a warning.
+    let dir = TempDir::new();
+    let files = split_files(&spec, &dir);
+    std::fs::remove_file(&files[2]).unwrap();
+    let rec = open(&files[0]);
+    assert_eq!(rec.sources(), &files[..2]);
+    assert_eq!(rec.grids()[0].len(), 400);
+    assert!(
+        rec.warnings()
+            .iter()
+            .any(|w| w.contains("next part") && w.contains("missing")),
+        "{:?}",
+        rec.warnings()
+    );
+
+    // A missing first part: a later one is read from itself on.
+    let dir = TempDir::new();
+    let files = split_files(&spec, &dir);
+    std::fs::remove_file(&files[0]).unwrap();
+    let rec = open(&files[1]);
+    assert_eq!(rec.sources(), &files[1..]);
+    assert_eq!(first_sample(&rec).as_deref(), Some("350"));
+    assert!(
+        rec.warnings()
+            .iter()
+            .any(|w| w.contains("previous part") && w.contains("missing"))
+    );
+
+    // A part of another rate, or one starting before the previous part ends, is an error.
+    let dir = TempDir::new();
+    let files = split_files(&spec, &dir);
+    let other = TempDir::new();
+    let mut faster = split_spec(SplitNaming::Neuromag);
+    for c in &mut faster.channels {
+        c.samples_per_record = 100;
+    }
+    let faster = split_files(&faster, &other);
+    std::fs::copy(&faster[1], &files[1]).unwrap();
+    assert!(matches!(
+        error_of(&files[0]),
+        FiffError::SplitMismatch { .. }
+    ));
+    // The same rate and length, but a channel of another name.
+    let renamed = TempDir::new();
+    let mut other_names = split_spec(SplitNaming::Neuromag);
+    other_names.channels[1].label = "X1".into();
+    let other_names = split_files(&other_names, &renamed);
+    std::fs::copy(&other_names[1], &files[1]).unwrap();
+    match error_of(&files[0]) {
+        FiffError::SplitMismatch { reason, .. } => assert!(reason.contains("E1"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let earlier = TempDir::new();
+    let mut early = split_spec(SplitNaming::Neuromag);
+    early.first_onset = 0.0;
+    let early = split_files(&early, &earlier);
+    std::fs::copy(&early[1], &files[1]).unwrap();
+    match error_of(&files[0]) {
+        FiffError::SplitMismatch { reason, .. } => assert!(reason.contains("before"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+
+    // Parts that refer to each other in a loop: read up to the loop, with a warning.
+    let part = |next: &str, prev: Option<&str>| {
+        file(eeg_channels, |t| {
+            if let Some(prev) = prev {
+                t.int(kind::FIRST_SAMPLE, 2).reference(1, Some(prev), None);
+            }
+            buffer(t, &[[1, 2], [3, 4]]);
+            t.reference(2, Some(next), None);
+        })
+    };
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.fif"), part("b.fif", None)).unwrap();
+    std::fs::write(dir.path().join("b.fif"), part("a.fif", Some("a.fif"))).unwrap();
+    let rec = open(&dir.path().join("a.fif"));
+    assert_eq!(rec.sources().len(), 2);
+    assert_eq!(rec.grids()[0].len(), 4);
+    assert!(
+        rec.warnings().iter().any(|w| w.contains("loop")),
+        "{:?}",
+        rec.warnings()
+    );
+
+    // A part named by a full path elsewhere (as MNE may write the previous part's) is
+    // found beside the file under its last component.
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("a.fif"), part("/elsewhere/b.fif", None)).unwrap();
+    let b = file(eeg_channels, |t| {
+        t.int(kind::FIRST_SAMPLE, 2);
+        buffer(t, &[[5, 6]]);
+    });
+    std::fs::write(dir.path().join("b.fif"), b).unwrap();
+    let rec = open(&dir.path().join("a.fif"));
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+    assert_eq!(rec.grids()[0].len(), 3);
+}
+
+/// A file with two EEG channels at 100 Hz, an annotations block from `annotations`, and
+/// 10 s of samples from `first`, its first sample, on; with a measurement date if `dated`.
+fn annotated(dated: bool, first: i32, annotations: impl FnOnce(&mut Tags)) -> Vec<u8> {
+    let mut t = Tags::new();
+    t.start(block::MEAS).start(block::MEAS_INFO);
+    if dated {
+        t.ints(kind::MEAS_DATE, &[1_000_000_000, 0]);
+    }
+    eeg_channels(&mut t);
+    t.end(block::MEAS_INFO).start(block::MNE_ANNOTATIONS);
+    annotations(&mut t);
+    t.end(block::MNE_ANNOTATIONS).start(block::RAW_DATA);
+    t.int(kind::FIRST_SAMPLE, first);
+    buffer(&mut t, &[[0, 0]; 1000]);
+    t.end(block::RAW_DATA).end(block::MEAS).finish();
+    t.bytes
+}
+
+#[test]
+fn annotation_onsets_count_from_the_first_sample() {
+    // First sample 200 at 100 Hz: 2 s after sample 0.
+    let block = |orig: Option<f64>| {
+        move |t: &mut Tags| {
+            t.floats(kind::MNE_BASELINE_MIN, &[5.0, 7.5])
+                .floats(kind::MNE_BASELINE_MAX, &[5.5, 7.5])
+                .names(kind::COMMENT, &["BAD: x", " spaced "]);
+            if let Some(orig) = orig {
+                t.doubles(kind::MEAS_DATE, &[orig, 250_000.0]);
+            }
+        }
+    };
+    // (dated, the annotations' orig_time) and the first onset kymo reads.
+    let cases = [
+        // From the annotations' date (0.25 s after the second), which is the recording's.
+        (true, Some(1e9), 5.0 + 0.25 - 2.0),
+        // A date a second later than the recording's.
+        (true, Some(1e9 + 1.0), 5.0 + 1.25 - 2.0),
+        // Without their own date, MNE takes them from the first sample.
+        (true, None, 5.0),
+        // Without a recording date, from sample 0.
+        (false, None, 5.0 - 2.0),
+        (false, Some(1e9), 5.0 - 2.0),
+    ];
+    for (dated, orig, onset) in cases {
+        let built = Built::new(&annotated(dated, 200, block(orig)));
+        let (rec, annotations) = open_with(&built.path);
+        assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+        let got = summary(&rec, &annotations);
+        assert_eq!(got.len(), 2);
+        assert!((got[0].0 - onset).abs() < 1e-9, "{dated} {orig:?}: {got:?}");
+        assert!((got[1].0 - got[0].0 - 2.5).abs() < 1e-9);
+        assert_eq!((got[0].1, got[1].1), (0.5, 0.0));
+        // Colons come back from "{COLON}", spaces stay.
+        assert_eq!(
+            (got[0].2.as_str(), got[1].2.as_str()),
+            ("BAD: x", " spaced ")
+        );
+    }
+}
+
+#[test]
+fn annotation_channels_counts_and_range() {
+    let lists = |json: &str| {
+        let json = json.to_owned();
+        move |t: &mut Tags| {
+            t.floats(kind::MNE_BASELINE_MIN, &[1.0, 2.0, 3.0])
+                .floats(kind::MNE_BASELINE_MAX, &[1.0, 2.0, 3.0])
+                .names(kind::COMMENT, &["a", "b", "c"])
+                .string(kind::MNE_EPOCHS_DROP_LOG, &json);
+        }
+    };
+    // Lists of names, with JSON's escapes; an unknown name means all channels.
+    let built = Built::new(&annotated(
+        false,
+        0,
+        lists(r#"[["A", "B"], [], ["B", "Z\"q"]]"#),
+    ));
+    let (rec, annotations) = open_with(&built.path);
+    let got: Vec<Vec<String>> = summary(&rec, &annotations)
+        .into_iter()
+        .map(|a| a.3)
+        .collect();
+    assert_eq!(got, [vec!["A".to_owned(), "B".to_owned()], vec![], vec![]]);
+    assert!(
+        rec.warnings().iter().any(|w| w.contains("Z\"q")),
+        "{:?}",
+        rec.warnings()
+    );
+    // Not JSON: all channels, with a warning.
+    let built = Built::new(&annotated(false, 0, lists(r#"[["A"]"#)));
+    let (rec, annotations) = open_with(&built.path);
+    assert!(annotations.iter().all(|a| a.channels.is_empty()));
+    assert!(rec.warnings().iter().any(|w| w.contains("not valid JSON")));
+
+    // Fewer ends than onsets: the first ones; outside the data (10 s): left out.
+    let built = Built::new(&annotated(false, 0, |t| {
+        t.floats(kind::MNE_BASELINE_MIN, &[-3.0, -0.5, 4.0, 10.5])
+            .floats(kind::MNE_BASELINE_MAX, &[-2.0, 0.5, 4.0])
+            .names(kind::COMMENT, &["gone", "kept", "kept too", "unended"]);
+    }));
+    let (rec, annotations) = open_with(&built.path);
+    let got: Vec<String> = annotations.iter().map(|a| a.description.clone()).collect();
+    assert_eq!(got, ["kept", "kept too"]);
+    for warning in ["the first 3 are read", "1 annotation(s) outside"] {
+        assert!(
+            rec.warnings().iter().any(|w| w.contains(warning)),
+            "{:?}",
+            rec.warnings()
+        );
+    }
+}
+
+#[test]
+fn bad_channels_by_name_and_struct_name() {
+    let long = "EEG Fp1-Reference-long";
+    let bytes = file(
+        |t| {
+            t.int(kind::NCHAN, 3).float(kind::SFREQ, 100.0);
+            let chs = [
+                ChInfo::new(long, 2, 107, 1.0),
+                ChInfo::new("B", 2, 107, 1.0),
+                ChInfo::new("C", 2, 107, 1.0),
+            ];
+            for ch in &chs {
+                t.ch_info(ch);
+            }
+            for ch in &chs {
+                t.extended(ch);
+            }
+            // An older list, replaced by the last one (MNE's tools append a new list when
+            // they mark channels bad in place).
+            t.start(block::MNE_BAD_CHANNELS)
+                .names(kind::MNE_CH_NAME_LIST, &["B"])
+                .end(block::MNE_BAD_CHANNELS);
+            // MNE writes bad channels under their struct names (cut to 15 bytes).
+            t.start(block::MNE_BAD_CHANNELS)
+                .names(kind::MNE_CH_NAME_LIST, &[&long[..15], "C", "nope"])
+                .end(block::MNE_BAD_CHANNELS);
+        },
+        |t| {
+            let data: Vec<u8> = [1i32, 2, 3].iter().flat_map(|v| v.to_be_bytes()).collect();
+            t.tag(kind::DATA_BUFFER, types::INT, &data);
+        },
+    );
+    let rec = Built::new(&bytes).open();
+    assert_eq!(rec.bad_channels(), [ChannelId(0), ChannelId(2)]);
+    assert!(
+        rec.warnings().iter().any(|w| w.contains("nope")),
+        "{:?}",
+        rec.warnings()
+    );
+}
+
+#[test]
+fn only_the_combined_stim_channel_has_events() {
+    let stim = |names: &[(&str, f32)]| {
+        let bytes = file(
+            |t| {
+                t.int(kind::NCHAN, names.len() as i32)
+                    .float(kind::SFREQ, 100.0);
+                for &(name, cal) in names {
+                    t.ch_info(&ChInfo::new(name, 3, 107, cal));
+                }
+            },
+            |_| {},
+        );
+        Built::new(&bytes)
+            .open()
+            .channels()
+            .iter()
+            .map(|c| (c.kind, c.events, c.trigger_mask))
+            .collect::<Vec<_>>()
+    };
+    use ChannelKind::*;
+    let combined = (Stim, true, Some(0xffff));
+    let line = (Stim, false, None);
+    // STI101 wins over STI 014, which is then one more line it combines.
+    assert_eq!(
+        stim(&[("STI001", 1.0), ("STI 014", 1.0), ("STI101", 1.0)]),
+        [line, line, combined]
+    );
+    assert_eq!(
+        stim(&[("STI 001", 1.0), ("STI 014", 1.0)]),
+        [line, combined]
+    );
+    // Without a combined stim channel (here STI 014 in volts, a misc channel), every stim
+    // channel has events, unmasked.
+    assert_eq!(
+        stim(&[("DIN1", 1.0), ("STI 014", 0.5)]),
+        [(Stim, true, None), (Misc, true, None)]
+    );
+}
+
+#[test]
+fn stim_lines_a_combined_channel_covers_have_no_changes() {
+    use kymo_core::pyramid::Pyramid;
+    // fif-split: STI 001 and STI 014, which combines it.
+    let rec = open(TempFile::preset("fif-split").path());
+    let pyramid = Pyramid::build(&rec, GridId(0)).unwrap();
+    let changes = pyramid.stim_changes(&rec);
+    let names: Vec<&str> = changes
+        .iter()
+        .map(|s| rec.channel(s.channel).name.as_str())
+        .collect();
+    assert_eq!(names, ["STI 014"]);
+    assert!(!changes[0].changes.is_empty());
 }

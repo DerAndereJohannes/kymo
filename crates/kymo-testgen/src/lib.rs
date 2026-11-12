@@ -100,6 +100,32 @@ pub struct FiffOptions {
     /// The local time's offset from UTC (`+HH:MM`), written as MNE does; the start stays
     /// the local time.
     pub utc_offset: Option<String>,
+    /// Channel names written as the file's bad channels, as given.
+    pub bads: Vec<String>,
+    /// For each annotation (by index), the names of the channels it applies to; none (or
+    /// an empty list) for all channels.
+    pub annotation_channels: Vec<Vec<String>>,
+    /// Written as split parts, each of this many records (the last of fewer); a gap before
+    /// a part's first record shows as a jump in its first sample, not as a skip.
+    pub split: Option<FiffSplit>,
+}
+
+/// Split parts of a FIFF recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FiffSplit {
+    pub records: u64,
+    pub naming: SplitNaming,
+}
+
+/// How split parts are named and referred to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitNaming {
+    /// `rec.fif`, `rec-1.fif`, ...; references with file names and numbers.
+    Neuromag,
+    /// As Neuromag, with references of numbers only, as acquisition systems write them.
+    NumbersOnly,
+    /// `rec.fif`, `rec_split-02.fif`, ...; references with file names and numbers.
+    Bids,
 }
 
 /// The GDF version written.
@@ -793,6 +819,16 @@ impl Spec {
         segments
     }
 
+    /// Every file [`write()`] writes for `path`: [`Format::files`], and for a split FIFF
+    /// recording each of its parts.
+    pub fn files(&self, path: &std::path::Path) -> Vec<std::path::PathBuf> {
+        if self.format.is_fiff() {
+            fiff::files(self, path)
+        } else {
+            self.format.files(path)
+        }
+    }
+
     /// The truth function: digital value of `channel` at grid sample `i`.
     ///
     /// Defined for every `i`; in gaps no value is stored.
@@ -841,7 +877,8 @@ impl Spec {
         Ok(write::Layout::new(self)?.record_bytes as u64)
     }
 
-    /// Size of the file in bytes; for BrainVision and EEGLAB, of the samples.
+    /// Size of the file in bytes; for BrainVision and EEGLAB, of the samples; for a split
+    /// FIFF recording, of all parts written as `rec.fif` (see [`fiff::file_size_at`]).
     pub fn file_size(&self) -> Result<u64, Error> {
         if self.format.is_gdf() {
             return gdf::file_size(self);
@@ -887,8 +924,8 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 
 mod presets {
     use super::{
-        Binary, ChannelSpec, EEG_AMPLITUDE, FiffType, Format, GapSpec, GdfVersion, Layout,
-        Orientation, Spec, Storage, Stored, Tal,
+        Binary, ChannelSpec, EEG_AMPLITUDE, FiffSplit, FiffType, Format, GapSpec, GdfVersion,
+        Layout, Orientation, Spec, SplitNaming, Storage, Stored, Tal,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -973,7 +1010,14 @@ mod presets {
         (
             "fif-float32-meg",
             "FIFF, float32, 12 channels at 600 Hz (magnetometers, gradiometers, EEG, EOG, \
-             ECG, a 5 V trigger line, STI 014), 1 min from first_samp 25800",
+             ECG, a 5 V trigger line, STI 014), 1 min from first_samp 25800, annotations \
+             (some on channels), two bad channels",
+        ),
+        (
+            "fif-split",
+            "FIFF, int16, 7 channels at 1000 Hz (EEG, STI 014 and a trigger line it \
+             combines), 90 s in 3 split parts (Neuromag's names), a skip, annotations, a bad \
+             channel",
         ),
         (
             "fif-int16-skips",
@@ -1015,6 +1059,7 @@ mod presets {
             "gdf2-int32" => gdf2_int32(),
             "gdf2-mixed" => gdf2_mixed(),
             "fif-float32-meg" => fif_float32_meg(),
+            "fif-split" => fif_split(),
             "fif-int16-skips" => fif_int16_skips(),
             "fif-int32-varying" => fif_int32_varying(),
             "fif-double-dc" => fif_double_dc(),
@@ -1515,6 +1560,64 @@ mod presets {
         spec.first_onset = 43.0;
         spec.start = jiff::civil::date(2002, 12, 3).at(19, 1, 10, 500_000_000);
         spec.seed = 15;
+        spec.annotations = fif_annotations(43.0, 60);
+        spec.fiff.annotation_channels = (0..spec.annotations.len())
+            .map(|k| match k % 4 {
+                0 => vec!["EEG 001".to_owned(), "EOG 061".to_owned()],
+                2 => vec!["MEG 0111".to_owned()],
+                _ => Vec::new(),
+            })
+            .collect();
+        spec.fiff.bads = vec!["EEG 003".into(), "MEG 0113".into()];
+        spec
+    }
+
+    /// Annotations every 5 s from `from` (seconds after the start) for `seconds`, as MNE
+    /// writes them: bad segments, a description with a colon, points in time.
+    fn fif_annotations(from: f64, seconds: u32) -> Vec<Tal> {
+        (0..seconds / 5)
+            .map(|k| {
+                let onset = from + f64::from(k) * 5.0 + 0.25;
+                let (text, duration) = match k % 4 {
+                    0 => ("BAD_blink", Some(0.5)),
+                    1 => ("stim: 1", Some(0.0)),
+                    2 => ("BAD_flux", Some(1.25)),
+                    _ => ("eyes closed", None),
+                };
+                Tal {
+                    onset,
+                    duration,
+                    texts: vec![text.to_owned()],
+                }
+            })
+            .collect()
+    }
+
+    fn fif_split() -> Spec {
+        let f = Format::Fiff(FiffType::Short);
+        let mut channels: Vec<ChannelSpec> = ["Fz", "Cz", "Pz", "Oz", "EOG"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 1000, f))
+            .collect();
+        channels.push(ChannelSpec {
+            // A trigger line STI 014 combines: a stim channel without events of its own.
+            label: "STI 001".into(),
+            ..sti014(1000, f)
+        });
+        channels.push(sti014(1000, f));
+        let mut spec = Spec::new(f, channels, 1.0, 90);
+        spec.first_onset = 12.0;
+        spec.gaps = vec![GapSpec {
+            before_record: 40,
+            seconds: 2.0,
+        }];
+        spec.fiff.split = Some(FiffSplit {
+            records: 30,
+            naming: SplitNaming::Neuromag,
+        });
+        spec.annotations = fif_annotations(12.0, 90);
+        spec.fiff.bads = vec!["Oz".into()];
+        spec.seed = 20;
         spec
     }
 

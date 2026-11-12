@@ -8,6 +8,9 @@ use crate::{ChannelKind, Unit};
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ChInfo {
     pub name: String,
+    /// The name in the channel info struct: [`name`](Self::name) cut to 15 bytes where an
+    /// extended block holds a longer one. MNE writes bad channels under it.
+    pub struct_name: String,
     /// FIFF's channel kind (1 MEG, 2 EEG, 3 stim, ...).
     pub kind: i32,
     pub range: f32,
@@ -201,8 +204,10 @@ fn ch_info(b: &[u8]) -> Option<ChInfo> {
     let float = |k| word(k).map(f32::from_be_bytes);
     let name = b.get(80..96)?;
     let name = name.split(|&x| x == 0).next().unwrap_or_default();
+    let name = String::from_utf8_lossy(name).trim().to_owned();
     Some(ChInfo {
-        name: String::from_utf8_lossy(name).trim().to_owned(),
+        struct_name: name.clone(),
+        name,
         kind: int(2)?,
         range: float(3)?,
         cal: float(4)?,

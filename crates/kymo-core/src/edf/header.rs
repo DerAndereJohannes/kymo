@@ -204,6 +204,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             // BioSemi keeps the trigger codes in the low 16 bits of the status channel; the
             // upper 8 are the amplifier's own (CMS in range, battery, ...).
             trigger_mask: (bdf && kind == ChannelKind::Stim).then_some(0xffff),
+            events: true,
             // TODO(later): duplicate labels stay as stored ("POL", "POL", ...). MNE renames
             // them "POL-0", "POL-1", ...; the Python round trip (bads by name) may need the
             // same names.
@@ -264,6 +265,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             channels,
             grids,
             extra: vec![("patient".into(), patient), ("recording".into(), recording)],
+            bad_channels: Vec::new(),
         },
         layout: RecordLayout {
             bytes_per_sample,

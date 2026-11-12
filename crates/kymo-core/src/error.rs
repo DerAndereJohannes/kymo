@@ -49,6 +49,8 @@ pub enum ModelError {
     },
     #[error("channel {0:?} is not listed in its grid")]
     ChannelNotListed(ChannelId),
+    #[error("bad channel {0:?} does not exist")]
+    UnknownBadChannel(ChannelId),
     #[error("channel {channel:?} has a non-finite gain or offset ({gain}, {offset})")]
     InvalidScaling {
         channel: ChannelId,

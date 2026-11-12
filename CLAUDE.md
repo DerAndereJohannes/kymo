@@ -10,7 +10,7 @@ Phase 3's plan, `docs/phase3-plan.md`, and phase 2's, `docs/phase2-plan.md`, hol
 
 ## Current scope
 
-Phases 1 to 3 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection). Phase 4 (file formats, part 1: BrainVision, EEGLAB, GDF, FIFF, XDF) is under way, BrainVision, EEGLAB, GDF and FIFF (raw data; split files, annotations and bads next) are read; its scope is agreed in `docs/phase4-plan.md`. Phase 5 (display filters: high-pass and low-pass) follows; its scope is agreed in `docs/phase5-plan.md`. Each step's details are proposed before it starts. The crates:
+Phases 1 to 3 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection). Phase 4 (file formats, part 1: BrainVision, EEGLAB, GDF, FIFF, XDF) is under way, BrainVision, EEGLAB, GDF and FIFF are read; its scope is agreed in `docs/phase4-plan.md`. Phase 5 (display filters: high-pass and low-pass) follows; its scope is agreed in `docs/phase5-plan.md`. Each step's details are proposed before it starts. The crates:
 
 1. `crates/kymo-core`: recording model, EDF/BDF, BrainVision, EEGLAB, GDF and FIFF readers, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.

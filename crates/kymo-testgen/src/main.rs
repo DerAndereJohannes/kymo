@@ -21,7 +21,8 @@ Options:
   -h, --help                Print this help
 
 BrainVision presets write OUTPUT (the .vhdr) and its .eeg and .vmrk beside it.
-EEGLAB presets write OUTPUT (the .set), and its .fdt beside it for eeglab-fdt.";
+EEGLAB presets write OUTPUT (the .set), and its .fdt beside it for eeglab-fdt.
+fif-split writes OUTPUT (the first part) and its other parts beside it (OUTPUT-1.fif, ...).";
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);

@@ -6,9 +6,11 @@
 //! ```
 //!
 //! Writes to OUTDIR:
-//! - `header.json`: format, start time, duration, warnings, channels (with their prefilter
-//!   and trigger mask) and grids (rate, start, length, segments, sample type, channel ids)
-//! - `annotations.json`: onset, duration and description of each annotation
+//! - `header.json`: format, start time, duration, warnings, source files, channels (with
+//!   their prefilter, trigger mask and whether their changes are events), the ids of the
+//!   channels the file marks as bad, and grids (rate, start, length, segments, sample type,
+//!   channel ids)
+//! - `annotations.json`: onset, duration, description and channel names of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
@@ -56,10 +58,15 @@ fn main() -> Result<()> {
         let sep = if k == 0 { "" } else { "," };
         let _ = write!(
             json,
-            "{sep}\n  {{\"onset\": {}, \"duration\": {}, \"description\": {}}}",
+            "{sep}\n  {{\"onset\": {}, \"duration\": {}, \"description\": {}, \"channels\": [{}]}}",
             a.onset,
             a.duration,
-            string(&a.description)
+            string(&a.description),
+            a.channels
+                .iter()
+                .map(|&c| string(&rec.channel(c).name))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     json.push_str("\n]\n");
@@ -195,6 +202,14 @@ fn header_json(rec: &Recording) -> String {
     let _ = writeln!(j, "  \"duration\": {},", rec.duration());
     let warnings: Vec<String> = rec.warnings().iter().map(|w| string(w)).collect();
     let _ = writeln!(j, "  \"warnings\": [{}],", warnings.join(", "));
+    let sources: Vec<String> = rec
+        .sources()
+        .iter()
+        .map(|s| string(&s.display().to_string()))
+        .collect();
+    let _ = writeln!(j, "  \"sources\": [{}],", sources.join(", "));
+    let bads: Vec<String> = rec.bad_channels().iter().map(|c| c.0.to_string()).collect();
+    let _ = writeln!(j, "  \"bad_channels\": [{}],", bads.join(", "));
     j.push_str("  \"channels\": [");
     for (i, c) in rec.channels().iter().enumerate() {
         let sep = if i == 0 { "" } else { "," };
@@ -209,14 +224,15 @@ fn header_json(rec: &Recording) -> String {
             j,
             "{sep}\n    {{\"name\": {}, \"kind\": {}, \"unit\": {}, \"to_si\": {to_si}, \
              \"gain\": {}, \"offset\": {}, \"grid\": {}, \"prefilter\": {}, \
-             \"trigger_mask\": {mask}}}",
+             \"trigger_mask\": {mask}, \"events\": {}}}",
             string(&c.name),
             string(&format!("{:?}", c.kind)),
             string(&c.unit.label),
             c.gain,
             c.offset,
             c.grid.0,
-            string(&c.prefilter)
+            string(&c.prefilter),
+            c.events
         );
     }
     j.push_str("\n  ],\n  \"grids\": [");

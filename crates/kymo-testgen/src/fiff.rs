@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::header::{check_amplitude, invalid};
 use crate::signal::{ChannelSignal, splitmix64};
-use crate::{Error, FiffType, Format, Spec};
+use crate::{Error, FiffType, Format, Spec, SplitNaming};
 
 /// Tag kinds.
 pub mod kind {
@@ -40,6 +40,15 @@ pub mod kind {
     pub const CH_COIL_TYPE: i32 = 350;
     pub const DATA_BUFFER: i32 = 300;
     pub const DATA_SKIP: i32 = 301;
+    pub const REF_ROLE: i32 = 115;
+    pub const REF_FILE_NUM: i32 = 117;
+    pub const REF_FILE_NAME: i32 = 118;
+    pub const COMMENT: i32 = 206;
+    pub const BAD_CHS: i32 = 220;
+    pub const MNE_CH_NAME_LIST: i32 = 3507;
+    pub const MNE_BASELINE_MIN: i32 = 3568;
+    pub const MNE_BASELINE_MAX: i32 = 3569;
+    pub const MNE_EPOCHS_DROP_LOG: i32 = 3801;
 }
 
 /// Block kinds.
@@ -50,7 +59,11 @@ pub mod block {
     pub const EVOKED: i32 = 104;
     pub const CONTINUOUS_DATA: i32 = 112;
     pub const CH_INFO: i32 = 113;
+    pub const REF: i32 = 118;
     pub const IAS_RAW_DATA: i32 = 119;
+    pub const MNE_BAD_CHANNELS: i32 = 359;
+    pub const MNE_EPOCHS: i32 = 373;
+    pub const MNE_ANNOTATIONS: i32 = 3810;
 }
 
 /// Data types.
@@ -131,6 +144,38 @@ impl Tags {
 
     pub fn float(&mut self, kind: i32, value: f32) -> &mut Self {
         self.tag(kind, types::FLOAT, &value.to_be_bytes())
+    }
+
+    pub fn floats(&mut self, kind: i32, values: &[f32]) -> &mut Self {
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        self.tag(kind, types::FLOAT, &data)
+    }
+
+    pub fn doubles(&mut self, kind: i32, values: &[f64]) -> &mut Self {
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        self.tag(kind, types::DOUBLE, &data)
+    }
+
+    /// A name list as MNE writes one: joined by ":", a colon inside a name as "{COLON}".
+    pub fn names(&mut self, kind: i32, names: &[impl AsRef<str>]) -> &mut Self {
+        let joined: Vec<String> = names
+            .iter()
+            .map(|n| n.as_ref().replace(':', "{COLON}"))
+            .collect();
+        self.string(kind, &joined.join(":"))
+    }
+
+    /// A reference block to another part of a split recording: `role` 1 for the previous
+    /// part, 2 for the next; its file name and number, where given.
+    pub fn reference(&mut self, role: i32, name: Option<&str>, num: Option<i32>) -> &mut Self {
+        self.start(block::REF).int(kind::REF_ROLE, role);
+        if let Some(name) = name {
+            self.string(kind::REF_FILE_NAME, name);
+        }
+        if let Some(num) = num {
+            self.int(kind::REF_FILE_NUM, num);
+        }
+        self.end(block::REF)
     }
 
     pub fn string(&mut self, kind: i32, value: &str) -> &mut Self {
@@ -296,6 +341,8 @@ fn fiff_type(spec: &Spec) -> FiffType {
 /// from grid sample `start`, of type `typ`.
 #[derive(Clone, Copy, Debug)]
 struct Buffer {
+    /// The record it is (part of).
+    record: u64,
     skip: u64,
     start: u64,
     len: u64,
@@ -335,6 +382,7 @@ fn buffers(spec: &Spec) -> Vec<Buffer> {
             if len > 0 {
                 let typ = buffer_type(typ, buffers.len());
                 buffers.push(Buffer {
+                    record: r,
                     skip: if k == 0 { skip } else { 0 },
                     start: s,
                     len,
@@ -427,8 +475,18 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
         }
         check_amplitude(i, c)?;
     }
-    if !spec.annotations.is_empty() {
-        return Err(invalid("FIFF annotations are not written yet"));
+    for (i, a) in spec.annotations.iter().enumerate() {
+        if !a.onset.is_finite() || a.duration.is_some_and(|d| !(d.is_finite() && d >= 0.0)) {
+            return Err(invalid(format!(
+                "annotation {i}: onset and duration must be finite, the duration >= 0"
+            )));
+        }
+    }
+    if spec.fiff.annotation_channels.len() > spec.annotations.len() {
+        return Err(invalid("more annotation channel lists than annotations"));
+    }
+    if spec.fiff.split.is_some_and(|s| s.records == 0) {
+        return Err(invalid("split parts need at least one record"));
     }
     Ok(())
 }
@@ -497,9 +555,115 @@ pub fn lowpass(spec: &Spec) -> f32 {
     (spec.rate(0) / 2.0).min(100.0) as f32
 }
 
-/// Everything before the data buffers: the file id, the measurement info, the start of the
-/// raw data block and its first sample.
-fn head(spec: &Spec) -> Vec<u8> {
+/// A JSON string literal.
+fn json(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// MNE's annotations block: one annotation per text, onsets and ends as float32 from the
+/// start (`meas_date`), whose date is `orig_time`, the channels as JSON where any are given.
+fn annotations(spec: &Spec, t: &mut Tags) {
+    if spec.annotations.is_empty() {
+        return;
+    }
+    let (mut onsets, mut ends, mut texts, mut channels) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (i, a) in spec.annotations.iter().enumerate() {
+        let names = spec
+            .fiff
+            .annotation_channels
+            .get(i)
+            .cloned()
+            .unwrap_or_default();
+        for text in &a.texts {
+            onsets.push(a.onset as f32);
+            ends.push((a.onset + a.duration.unwrap_or(0.0)) as f32);
+            texts.push(text.clone());
+            channels.push(names.clone());
+        }
+    }
+    let (secs, usecs) = meas_date(spec);
+    t.start(block::MNE_ANNOTATIONS)
+        .floats(kind::MNE_BASELINE_MIN, &onsets)
+        .floats(kind::MNE_BASELINE_MAX, &ends)
+        .names(kind::COMMENT, &texts)
+        .doubles(kind::MEAS_DATE, &[f64::from(secs), f64::from(usecs)]);
+    if channels.iter().any(|c| !c.is_empty()) {
+        let lists: Vec<String> = channels
+            .iter()
+            .map(|c| {
+                format!(
+                    "[{}]",
+                    c.iter().map(|n| json(n)).collect::<Vec<_>>().join(", ")
+                )
+            })
+            .collect();
+        t.string(
+            kind::MNE_EPOCHS_DROP_LOG,
+            &format!("[{}]", lists.join(", ")),
+        );
+    }
+    t.end(block::MNE_ANNOTATIONS);
+}
+
+/// The parts written: per part, the records it holds.
+fn parts(spec: &Spec) -> Vec<std::ops::Range<u64>> {
+    match spec.fiff.split {
+        Some(split) => (0..spec.n_records)
+            .step_by(split.records as usize)
+            .map(|r| r..(r + split.records).min(spec.n_records))
+            .collect(),
+        None => vec![0..spec.n_records],
+    }
+}
+
+/// The file of split part `k` (0 is `path` itself), named as `naming` says: Neuromag's
+/// `rec-1.fif`, or `rec_split-02.fif`.
+pub fn part_path(path: &Path, k: usize, naming: SplitNaming) -> std::path::PathBuf {
+    if k == 0 {
+        return path.to_owned();
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match naming {
+        SplitNaming::Neuromag | SplitNaming::NumbersOnly => format!("{stem}-{k}.fif"),
+        SplitNaming::Bids => format!("{stem}_split-{:02}.fif", k + 1),
+    };
+    path.with_file_name(name)
+}
+
+/// The data buffers of part `k`.
+fn part_buffers(spec: &Spec, k: usize) -> Vec<Buffer> {
+    let records = parts(spec)[k].clone();
+    let mut buffers: Vec<Buffer> = buffers(spec)
+        .into_iter()
+        .filter(|b| records.contains(&b.record))
+        .collect();
+    // A gap before a later part's first record shows in its first sample, not as a skip.
+    if k > 0
+        && let Some(b) = buffers.first_mut()
+    {
+        b.skip = 0;
+    }
+    buffers
+}
+
+/// Everything before part `k`'s data buffers (of `path`): the file id, the measurement
+/// info, the annotations, the start of the raw data block, its first sample and the
+/// reference to the previous part.
+fn head(spec: &Spec, path: &Path, k: usize) -> Vec<u8> {
     let mut t = Tags::new();
     let (secs, usecs) = meas_date(spec);
     t.start(block::MEAS).start(block::MEAS_INFO);
@@ -523,47 +687,99 @@ fn head(spec: &Spec) -> Vec<u8> {
             t.extended(ch);
         }
     }
+    if !spec.fiff.bads.is_empty() {
+        t.start(block::MNE_BAD_CHANNELS)
+            .names(kind::MNE_CH_NAME_LIST, &spec.fiff.bads)
+            .end(block::MNE_BAD_CHANNELS);
+    }
     t.end(block::MEAS_INFO);
+    annotations(spec, &mut t);
     let raw = if spec.fiff.maxshield {
         block::IAS_RAW_DATA
     } else {
         block::RAW_DATA
     };
     t.start(raw);
-    let first_samp = (spec.first_onset * spec.rate(0)).round() as u64
-        - spec.fiff.initial_skip * u64::from(spec.channels[0].samples_per_record);
-    t.int(kind::FIRST_SAMPLE, first_samp as i32);
+    let spr = u64::from(spec.channels[0].samples_per_record);
+    let first_samp = (spec.first_onset * spec.rate(0)).round() as u64;
+    let first = if k == 0 {
+        first_samp - spec.fiff.initial_skip * spr
+    } else {
+        first_samp + part_buffers(spec, k).first().map_or(0, |b| b.start)
+    };
+    t.int(kind::FIRST_SAMPLE, first as i32);
+    if k > 0
+        && let Some(split) = spec.fiff.split
+    {
+        reference(&mut t, path, k - 1, split.naming, 1);
+    }
     t.bytes
 }
 
-/// Everything after the data buffers.
-fn tail(spec: &Spec) -> Vec<u8> {
+/// A reference to part `k` of `path`.
+fn reference(t: &mut Tags, path: &Path, k: usize, naming: SplitNaming, role: i32) {
+    let name = part_path(path, k, naming)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let name = match naming {
+        SplitNaming::NumbersOnly => None,
+        _ => name,
+    };
+    t.reference(role, name.as_deref(), Some(k as i32));
+}
+
+/// Everything after part `k`'s data buffers: the reference to the next part, the ends.
+fn tail(spec: &Spec, path: &Path, k: usize) -> Vec<u8> {
     let raw = if spec.fiff.maxshield {
         block::IAS_RAW_DATA
     } else {
         block::RAW_DATA
     };
     let mut t = Tags::default();
+    if let Some(split) = spec.fiff.split
+        && k + 1 < parts(spec).len()
+    {
+        reference(&mut t, path, k + 1, split.naming, 2);
+    }
     t.end(raw).end(block::MEAS).finish();
     t.bytes
 }
 
-/// Size of the file in bytes.
+/// Size of the files in bytes, all parts together, written as `rec.fif` (the parts'
+/// reference blocks hold each other's names); see [`file_size_at`].
 pub(crate) fn file_size(spec: &Spec) -> Result<u64, Error> {
-    validate(spec)?;
-    let n = spec.channels.len() as u64;
-    let data: u64 = buffers(spec)
-        .iter()
-        .map(|b| 16 + b.len * n * b.typ.size() as u64 + if b.skip > 0 { 20 } else { 0 })
-        .sum();
-    Ok(head(spec).len() as u64 + data + tail(spec).len() as u64)
+    file_size_at(spec, Path::new("rec.fif"))
 }
 
-/// Writes `spec` to `path`.
+/// Size of the files [`write()`](crate::write()) writes for `path`, all parts together.
+pub fn file_size_at(spec: &Spec, path: &Path) -> Result<u64, Error> {
+    validate(spec)?;
+    let n = spec.channels.len() as u64;
+    let mut size = 0;
+    for k in 0..parts(spec).len() {
+        let data: u64 = part_buffers(spec, k)
+            .iter()
+            .map(|b| 16 + b.len * n * b.typ.size() as u64 + if b.skip > 0 { 20 } else { 0 })
+            .sum();
+        size += head(spec, path, k).len() as u64 + data + tail(spec, path, k).len() as u64;
+    }
+    Ok(size)
+}
+
+/// The files [`write`] writes for `path`: `path` and, for a split recording, its other
+/// parts.
+pub(crate) fn files(spec: &Spec, path: &Path) -> Vec<std::path::PathBuf> {
+    match spec.fiff.split {
+        Some(split) => (0..parts(spec).len())
+            .map(|k| part_path(path, k, split.naming))
+            .collect(),
+        None => vec![path.to_owned()],
+    }
+}
+
+/// Writes `spec` to `path`, and its other split parts beside it.
 pub(crate) fn write(spec: &Spec, path: &Path) -> Result<(), Error> {
     validate(spec)?;
-    let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
-    out.write_all(&head(spec))?;
     let signals: Vec<(ChannelSignal, Vec<f64>)> = (0..spec.channels.len())
         .map(|c| {
             let s = ChannelSignal::new(spec, c);
@@ -572,23 +788,27 @@ pub(crate) fn write(spec: &Spec, path: &Path) -> Result<(), Error> {
         })
         .collect();
     let mut data = Vec::new();
-    for b in buffers(spec) {
-        if b.skip > 0 {
-            let mut t = Tags::default();
-            t.int(kind::DATA_SKIP, b.skip as i32);
-            out.write_all(&t.bytes)?;
-        }
-        data.clear();
-        for i in b.start..b.start + b.len {
-            for (signal, table) in &signals {
-                let v = signal.value(i, table[(i % signal.sine_period) as usize]);
-                b.typ.put(v, &mut data);
+    for (k, file) in files(spec, path).iter().enumerate() {
+        let mut out = BufWriter::with_capacity(1 << 20, File::create(file)?);
+        out.write_all(&head(spec, path, k))?;
+        for b in part_buffers(spec, k) {
+            if b.skip > 0 {
+                let mut t = Tags::default();
+                t.int(kind::DATA_SKIP, b.skip as i32);
+                out.write_all(&t.bytes)?;
             }
+            data.clear();
+            for i in b.start..b.start + b.len {
+                for (signal, table) in &signals {
+                    let v = signal.value(i, table[(i % signal.sine_period) as usize]);
+                    b.typ.put(v, &mut data);
+                }
+            }
+            out.write_all(&header(kind::DATA_BUFFER, b.typ.code(), data.len(), 0))?;
+            out.write_all(&data)?;
         }
-        out.write_all(&header(kind::DATA_BUFFER, b.typ.code(), data.len(), 0))?;
-        out.write_all(&data)?;
+        out.write_all(&tail(spec, path, k))?;
+        out.flush()?;
     }
-    out.write_all(&tail(spec))?;
-    out.flush()?;
     Ok(())
 }

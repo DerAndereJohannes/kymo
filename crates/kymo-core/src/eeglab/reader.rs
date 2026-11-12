@@ -119,6 +119,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             channels,
             grids: vec![grid],
             extra,
+            bad_channels: Vec::new(),
         },
         annotations,
         warnings,

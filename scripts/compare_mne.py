@@ -118,8 +118,16 @@ FIFF, where Kymo deliberately differs from MNE:
 - MNE needs allow_maxshield=True for MaxShield recordings; Kymo opens them with a warning.
 - Kymo's time 0 is the first sample (first_samp): its start time is meas_date +
   first_samp / sfreq, and its annotation onsets count from the first sample. MNE's are
-  compared after the same shift (none when MNE's annotations have no orig_time, which
-  already count from the first sample).
+  compared after the same shift.
+- Kymo opens a later part of a split recording as the whole recording, from its first
+  part; MNE reads from the part given on. Later parts are skipped (their first part is
+  compared). A jump in the first sample between parts is a gap in Kymo, where MNE joins
+  the parts; no file seen has one, and the comparison assumes none.
+- Of the stim channels, only the combined one (STI101, else STI 014) has events in Kymo
+  when there is one, its codes masked to the low 16 bits (Neuromag's STI016 makes them
+  negative as 16-bit samples). Its events are compared with find_events(uint_cast=True),
+  MNE's remedy; without uint_cast MNE takes negative codes' absolute value.
+- Bad channels and the annotations' channels are compared too.
 - Skips in the data are gaps in Kymo; MNE fills them with zeros (so its sample indices
   line up with Kymo's) and adds BAD_ACQ_SKIP annotations. Kymo must report NaN exactly
   where MNE's skips are, and MNE's BAD_ACQ_SKIP annotations are left out.
@@ -400,6 +408,12 @@ def compare(path, max_values=None, annotation_files=False):
                 return None
             return [f"Kymo could not read the file ({e})"]
         header = json.loads((tmp / "header.json").read_text())
+        if Path(header["sources"][0]).resolve() != path.resolve():
+            print(
+                f"SKIPPED: {path}\n  a later part of a split recording, which Kymo opens "
+                f"from its first part, {Path(header['sources'][0]).name}"
+            )
+            return None
         annotations = json.loads((tmp / "annotations.json").read_text())
         windows = json.loads((tmp / "windows.json").read_text())
 
@@ -632,6 +646,10 @@ def compare(path, max_values=None, annotation_files=False):
         )
         if fiff and any(a == "BAD_ACQ_SKIP" for a in raw.annotations.description):
             notes.append("MNE's BAD_ACQ_SKIP annotations left out (Kymo has gaps)")
+        if fiff:
+            problems += compare_fiff_extras(raw, header, annotations)
+            if len(header["sources"]) > 1:
+                notes.append(f"{len(header['sources'])} split parts")
         if annotation_files:
             problems += compare_annotation_files(
                 path,
@@ -773,6 +791,29 @@ def compare_grid(
     return problems, worst, compared
 
 
+def compare_fiff_extras(raw, header, annotations):
+    """Problems with FIFF's bad channels and the annotations' channels."""
+    problems = []
+    names = [c["name"] for c in header["channels"]]
+    ours = sorted(names[c] for c in header["bad_channels"])
+    if ours != sorted(raw.info["bads"]):
+        problems.append(f"bad channels: Kymo {ours}, MNE {sorted(raw.info['bads'])}")
+    theirs = sorted(
+        (round(o - raw.first_samp / raw.info["sfreq"], 6), s, tuple(sorted(c)))
+        for o, s, c in zip(
+            raw.annotations.onset, raw.annotations.description, raw.annotations.ch_names
+        )
+        if s != "BAD_ACQ_SKIP"
+    )
+    ours = sorted(
+        (round(a["onset"], 6), a["description"], tuple(sorted(a["channels"])))
+        for a in annotations
+    )
+    if [t[2] for t in ours] != [t[2] for t in theirs]:
+        problems.append("annotation channels differ")
+    return problems
+
+
 def compare_skips(raw, grid):
     """Problems if Kymo's gaps aren't exactly MNE's skips (FIFF), in samples from
     first_samp."""
@@ -800,11 +841,17 @@ def compare_events(raw, header, events, fmax, notes, joined=True):
     """Compares Kymo's stim events with mne.find_events; returns problems and count.
     With `joined`, MNE's data drops Kymo's gaps (see compare_grid)."""
     problems, count = [], 0
+    fiff = header["format"] == "FIFF"
     bdf = header["format"].startswith("BDF")
     gdf = header["format"] == "GDF"
     for entry in events:
         c = entry["channel"]
         channel = header["channels"][c]
+        if not channel.get("events", True):
+            notes.append(
+                f"no events of {channel['name']} (the combined stim channel covers it)"
+            )
+            continue
         grid = header["grids"][channel["grid"]]
         if grid["rate"] != fmax:
             notes.append(
@@ -843,6 +890,9 @@ def compare_events(raw, header, events, fmax, notes, joined=True):
             mask=0xFFFF if bdf or trigger_mask is not None else None,
             mask_type="and",
             verbose="error",
+            # FIFF's combined channels hold 16-bit codes (Kymo's trigger mask): MNE's own
+            # remedy for STI016 making them negative.
+            uint_cast=fiff and trigger_mask is not None,
         )
         theirs = theirs[:, [0, 2]] - [raw.first_samp, 0]
         count += len(ours)
@@ -906,11 +956,7 @@ def compare_annotations(raw, annotations, first_onset, format_name, event_rate=N
         return []
     if format_name == "FIFF":
         # Kymo counts from the first sample; see the docstring.
-        shift = (
-            raw.first_samp / raw.info["sfreq"]
-            if raw.annotations.orig_time is not None
-            else 0.0
-        )
+        shift = raw.first_samp / raw.info["sfreq"]
         theirs = [(o - shift, d, s) for o, d, s in theirs if s != "BAD_ACQ_SKIP"]
     if format_name == "EEGLAB":
         # Kymo's rules for events; see the docstring.
@@ -972,6 +1018,7 @@ def testgen_files(directory):
         ("fif-int32-varying", "fif", []),
         ("fif-double-dc", "fif", []),
         ("fif-mixed", "fif", []),
+        ("fif-split", "fif", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -988,6 +1035,24 @@ def testgen_files(directory):
             *extra,
         )
         files.append(path)
+    return files + mne_split_files(directory, directory / "fif-float32-meg.fif")
+
+
+def mne_split_files(directory, source):
+    """Split files MNE writes of `source` (with its annotations and bad channels), in
+    both of MNE's namings; the first part of each."""
+    raw = mne.io.read_raw_fif(source, preload=True, verbose="error")
+    files = []
+    for naming, name in (("neuromag", "mne_split_raw.fif"), ("bids", "mne_split_meg.fif")):
+        written = raw.save(
+            directory / name,
+            split_size=1_100_000,
+            split_naming=naming,
+            buffer_size_sec=1.0,
+            overwrite=True,
+            verbose="error",
+        )
+        files.append(Path(written[0]))
     return files
 
 

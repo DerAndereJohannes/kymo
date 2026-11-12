@@ -227,7 +227,7 @@ impl Viewer {
             .recording
             .channels()
             .iter()
-            .any(|c| c.kind == ChannelKind::Stim);
+            .any(|c| c.kind == ChannelKind::Stim && c.events);
         Viewer {
             stim: has_stim.then(|| StimAnnotations::new(stim)),
             summary: document.summary(),

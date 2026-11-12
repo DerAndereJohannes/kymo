@@ -11,16 +11,21 @@ pub(super) mod kind {
     pub const FILE_ID: i32 = 100;
     pub const BLOCK_ID: i32 = 103;
     pub const PARENT_BLOCK_ID: i32 = 110;
+    pub const REF_ROLE: i32 = 115;
+    pub const REF_FILE_NUM: i32 = 117;
+    pub const REF_FILE_NAME: i32 = 118;
     pub const BLOCK_START: i32 = 104;
     pub const BLOCK_END: i32 = 105;
     pub const NCHAN: i32 = 200;
     pub const SFREQ: i32 = 201;
     pub const CH_INFO: i32 = 203;
     pub const MEAS_DATE: i32 = 204;
+    /// Also FIFF_COMMENT, which holds annotation descriptions.
     pub const DESCRIPTION: i32 = 206;
     pub const FIRST_SAMPLE: i32 = 208;
     pub const EXPERIMENTER: i32 = 212;
     pub const LOWPASS: i32 = 219;
+    pub const BAD_CHS: i32 = 220;
     pub const HIGHPASS: i32 = 223;
     pub const LINE_FREQ: i32 = 235;
     pub const UTC_OFFSET: i32 = 159;
@@ -34,6 +39,13 @@ pub(super) mod kind {
     pub const DATA_BUFFER: i32 = 300;
     pub const DATA_SKIP: i32 = 301;
     pub const PROJ_NAME: i32 = 501;
+    pub const MNE_CH_NAME_LIST: i32 = 3507;
+    /// Annotation onsets.
+    pub const MNE_BASELINE_MIN: i32 = 3568;
+    /// Annotation ends.
+    pub const MNE_BASELINE_MAX: i32 = 3569;
+    /// Annotation channels, as JSON.
+    pub const MNE_EPOCHS_DROP_LOG: i32 = 3801;
 }
 
 /// Block kinds.
@@ -44,8 +56,11 @@ pub(super) mod block {
     pub const EVOKED: i32 = 104;
     pub const CONTINUOUS_DATA: i32 = 112;
     pub const CH_INFO: i32 = 113;
+    pub const REF: i32 = 118;
     pub const IAS_RAW_DATA: i32 = 119;
+    pub const MNE_BAD_CHANNELS: i32 = 359;
     pub const MNE_EPOCHS: i32 = 373;
+    pub const MNE_ANNOTATIONS: i32 = 3810;
 }
 
 /// Data types.
@@ -105,6 +120,38 @@ impl Tag {
             types::SHORT => Some(f64::from(i16::from_be_bytes(b.get(..2)?.try_into().ok()?))),
             _ => self.int(map).map(f64::from),
         }
+    }
+
+    /// Numbers: float, double or integer data, each value.
+    pub fn numbers(&self, map: &[u8]) -> Vec<f64> {
+        let b = self.bytes(map);
+        match self.typ {
+            types::FLOAT => b
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&x| f64::from(f32::from_be_bytes(x)))
+                .collect(),
+            types::DOUBLE => b
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|&x| f64::from_be_bytes(x))
+                .collect(),
+            _ => self.ints(map).map(f64::from).collect(),
+        }
+    }
+
+    /// A name list: names joined by ":", a colon inside one written as "{COLON}" (MNE's
+    /// convention); empty for no text.
+    pub fn names(&self, map: &[u8]) -> Vec<String> {
+        // Untrimmed: descriptions keep their spaces.
+        let text = String::from_utf8_lossy(self.bytes(map));
+        let text = text.trim_end_matches('\0');
+        if text.is_empty() {
+            return Vec::new();
+        }
+        text.split(':').map(|n| n.replace("{COLON}", ":")).collect()
     }
 
     /// The time of an id struct (version, machine id, seconds, microseconds): seconds and
