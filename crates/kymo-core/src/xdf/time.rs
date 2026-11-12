@@ -5,8 +5,11 @@
 //!   line per range between clock resets (a robust Huber fit), and every time stamp gets the
 //!   offset of its range's line at its time.
 //! - **Dejittering:** a regular stream's synchronized time stamps are cut at breaks (steps
-//!   of more than 1 s or 500 samples, either way), and each segment's are replaced by their
-//!   least-squares line.
+//!   of more than 1 s and 2 sample periods, either way), and each segment's are replaced by
+//!   their least-squares line. pyxdf's breaks are steps of more than 1 s and 500 periods,
+//!   which keeps steps of up to 7.8 s at 64 Hz inside a segment; but dejittering places a
+//!   segment's samples as if none were missing, so samples after a step of lost samples
+//!   land up to its length early (a Muse headband's stray samples 4 s early).
 //!
 //! Nothing here holds a stream's time stamps: they are fed in one by one, in order.
 
@@ -23,9 +26,9 @@ const RESET_TIME: (f64, f64) = (5.0, 5.0);
 /// ...and a step in offsets this many MADs and seconds from the median (`_offset_stds`,
 /// `_offset_seconds`). Clock times that run backwards are always a reset.
 const RESET_OFFSET: (f64, f64) = (10.0, 1.0);
-/// Breaks in a regular stream: steps longer than this many seconds or sample periods
-/// (pyxdf's `jitter_break_threshold_seconds` and `_samples`).
-const BREAK: (f64, f64) = (1.0, 500.0);
+/// Breaks in a regular stream: steps longer than this many seconds and sample periods
+/// (pyxdf's `jitter_break_threshold_seconds` and `_samples`, which default to 1 and 500).
+const BREAK: (f64, f64) = (1.0, 2.0);
 /// Longer gaps between segments are taken for damaged time stamps: the segment after one
 /// follows the previous directly.
 pub(crate) const MAX_GAP_SECONDS: f64 = 30.0 * 86_400.0;
@@ -474,13 +477,21 @@ mod tests {
         for k in 0..1000u64 {
             d.push(k, 10.0 + k as f64 * 0.010_01 + jitter[k as usize % 5]);
         }
-        // A step of 3 s is no break at 100 Hz (less than 500 samples); then a break of 10 s
-        // (more than 500 samples), a single sample, and a backward jump.
-        let mut short = Dejitter::new(100.0);
-        for k in 0..20u64 {
-            short.push(k, k as f64 * 0.01 + if k >= 10 { 3.0 } else { 0.0 });
-        }
-        assert_eq!(short.segments().len(), 1);
+        // At 100 Hz a step of 0.99 s is no break, one of 1.01 s is; at 0.25 Hz a step of
+        // 7.9 s is none (less than 2 periods), one of 8.1 s is. Then a break of 10 s, a single
+        // sample, and a backward jump.
+        let breaks = |rate: f64, step: f64| {
+            let mut d = Dejitter::new(rate);
+            for k in 0..20u64 {
+                let late = if k >= 10 { step - 1.0 / rate } else { 0.0 };
+                d.push(k, k as f64 / rate + late);
+            }
+            d.segments().len() - 1
+        };
+        assert_eq!(breaks(100.0, 0.99), 0);
+        assert_eq!(breaks(100.0, 1.01), 1);
+        assert_eq!(breaks(0.25, 7.9), 0);
+        assert_eq!(breaks(0.25, 8.1), 1);
         d.push(1000, 30.0);
         d.push(1001, 20.0);
         d.push(1002, 20.01);

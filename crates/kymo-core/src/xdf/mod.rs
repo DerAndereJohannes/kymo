@@ -19,7 +19,9 @@
 //!   as unlabeled channels are (`"{stream name}_{n}"`).
 //! - Time stamps are synchronized and dejittered as pyxdf does by default (see `time`),
 //!   and each stream's segments between breaks keep their own rate: a grid with a segmented
-//!   time base, its breaks gaps (mnextend joins the segments). Samples before a stream's
+//!   time base, its breaks gaps (mnextend joins the segments). Breaks are steps of more
+//!   than 1 s and 2 sample periods (pyxdf's: 1 s and 500 periods, which leaves samples after
+//!   a few seconds of lost ones early by that much). Samples before a stream's
 //!   first time stamp count back from it (pyxdf counts them on from 0). Marker streams
 //!   with a nominal rate are not dejittered (pyxdf dejitters them like signals): their
 //!   events are irregular.

@@ -1127,7 +1127,7 @@ mod presets {
         (
             "xdf-clocks",
             "XDF, 8 EEG channels at 500 Hz and an accelerometer at 52 Hz on drifting clocks \
-             with a reset, jittered time stamps, rates off nominal, breaks of 3 and 12 s (the \
+             with a reset, jittered time stamps, rates off nominal, breaks of 3 and 4 s (the \
              second with the rate changing), string markers, 2 min",
         ),
     ];
@@ -2043,8 +2043,9 @@ mod presets {
             jitter: 2e-3,
             breaks: vec![XdfBreak {
                 before: 1500,
-                // More than 500 samples at 52 Hz, so a break.
-                seconds: 12.0,
+                // A break (more than 1 s and 2 samples) where pyxdf's default (500
+                // samples, 9.6 s at 52 Hz) has none.
+                seconds: 4.0,
                 rate_error: 1e-4,
             }],
             ..XdfStream::new(2, "Wristband", "ACC", vec![8, 9, 10])

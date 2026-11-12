@@ -139,7 +139,8 @@ FIFF, where Kymo deliberately differs from MNE:
 - Channel kinds and filters are not compared.
 
 XDF, which MNE doesn't read: values and timestamps are compared with pyxdf's (load_xdf
-with its defaults: clocks synchronized, resets handled, regular streams dejittered), stream
+with its defaults: clocks synchronized, resets handled, regular streams dejittered; but
+for the break threshold, see below), stream
 modes with mnextend's stream_modes, annotation texts with mnextend's read_raw_xdf, the
 start time with the file header's datetime as mnextend reads it. Where Kymo deliberately
 differs:
@@ -148,6 +149,11 @@ differs:
   start per segment between breaks) must be pyxdf's dejittered time stamp minus the
   earliest first one of these streams, within 1 us; breaks are gaps in Kymo (mnextend
   joins the segments). The grid's rate must be pyxdf's effective rate.
+- Breaks are steps of more than 1 s and 2 sample periods in Kymo, 1 s and 500 periods in
+  pyxdf, which is loaded with jitter_break_threshold_samples=2 to match. With 500,
+  samples after a step of lost samples shorter than 500 periods (7.8 s at 64 Hz) land up
+  to its length early, as dejittering places a segment's samples as if none were missing:
+  the Muse headband's stray samples in the sub-01 and sub-13 files, 3.4 to 4 s early.
 - Samples before a stream's first time stamp count back from it in Kymo; pyxdf counts
   them on from 0. No file seen has any.
 - Irregular numeric streams with several channels that are not of an event type become
@@ -488,9 +494,12 @@ def compare_xdf(path, tmp, header, annotations, windows):
     from mnextend.io import xdf as mnextend_xdf
 
     problems, notes = [], []
-    # pyxdf's defaults: clocks synchronized (with resets), regular streams dejittered.
+    # pyxdf's defaults: clocks synchronized (with resets), regular streams dejittered; but
+    # breaks at steps of more than 2 samples (and 1 s), as in Kymo.
     logging.getLogger("pyxdf").setLevel(logging.ERROR)
-    streams, file_header = pyxdf.load_xdf(str(path), verbose=False)
+    streams, file_header = pyxdf.load_xdf(
+        str(path), verbose=False, jitter_break_threshold_samples=2
+    )
     by_id = {s["info"]["stream_id"]: s for s in streams}
     kymo_modes = {}
     for key, value in header["extra"]:

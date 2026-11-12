@@ -142,7 +142,7 @@ fn timeline(spec: &Spec) -> (Vec<Expected>, f64) {
                 })
                 .collect();
             // Segments between breaks, each replaced by its least-squares line.
-            let threshold = 1f64.max(500.0 * tdiff);
+            let threshold = 1f64.max(2.0 * tdiff);
             let mut times = synced.clone();
             let mut segments = Vec::new();
             let (mut samples, mut seconds) = (0.0, 0.0);
@@ -389,12 +389,12 @@ fn case() -> impl Strategy<Value = Case> {
                     let (rate_error, jitter, gap) = timing;
                     let tdiff = duration / f64::from(spr);
                     let len = length * u64::from(spr);
-                    // A break longer than pyxdf's threshold (1 s or 500 samples).
+                    // A break longer than the threshold (1 s and 2 samples).
                     let breaks = gap
                         .filter(|_| len > 1)
                         .map(|(at, extra, rate_error)| XdfBreak {
                             before: 1 + at.index(len as usize - 1) as u64,
-                            seconds: 1f64.max(500.0 * tdiff) + extra,
+                            seconds: 1f64.max(2.0 * tdiff) + extra,
                             rate_error,
                         })
                         .into_iter()
