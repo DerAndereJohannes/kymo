@@ -62,6 +62,9 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
     if spec.format.is_gdf() {
         return crate::gdf::validate(spec);
     }
+    if spec.format.is_fiff() {
+        return crate::fiff::validate(spec);
+    }
     let format = spec.format;
     if spec.channels.is_empty() {
         return Err(invalid("at least one data channel is needed"));

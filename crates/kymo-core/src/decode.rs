@@ -439,6 +439,22 @@ pub(crate) fn frames<T: Sample>(
     dst: &mut [T],
 ) -> Result<(), ReadError> {
     let n = (range.end - range.start) as usize;
+    frames_into(data, frame, columns, range, dst, n, 0)
+}
+
+/// As [`frames`], into part of a larger channel-major `dst`: channel `k`'s samples go to
+/// `dst[k * stride + at..]`, so pieces of one read can come from different places (FIFF's
+/// data buffers).
+pub(crate) fn frames_into<T: Sample>(
+    data: &[u8],
+    frame: usize,
+    columns: &[(usize, Decoder)],
+    range: std::ops::Range<u64>,
+    dst: &mut [T],
+    stride: usize,
+    at: usize,
+) -> Result<(), ReadError> {
+    let n = (range.end - range.start) as usize;
     if n == 0 || frame == 0 {
         return Ok(());
     }
@@ -450,7 +466,10 @@ pub(crate) fn frames<T: Sample>(
         let start = (range.start as usize + done) * frame;
         let bytes = data.get(start..start + take * frame).ok_or_else(outside)?;
         for (k, (column, decoder)) in columns.iter().enumerate() {
-            let samples = &mut dst[k * n + done..][..take];
+            let samples = dst
+                .get_mut(k * stride + at + done..)
+                .and_then(|d| d.get_mut(..take))
+                .ok_or_else(|| ReadError::Corrupt("output buffer too short".into()))?;
             decoder.decode(bytes.get(*column..).ok_or_else(outside)?, frame, samples)?;
         }
         done += take;

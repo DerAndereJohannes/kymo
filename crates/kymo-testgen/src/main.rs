@@ -1,4 +1,5 @@
-//! Command-line front end of the synthetic EDF/BDF, BrainVision and EEGLAB generator.
+//! Command-line front end of the synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF
+//! generator.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -7,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use kymo_testgen::{PRESETS, Spec};
 
 const HELP: &str = "\
-kymo-testgen: generate synthetic EDF/BDF, BrainVision and EEGLAB files for tests and benchmarks
+kymo-testgen: generate synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files for tests and
+benchmarks
 
 Usage: kymo-testgen <PRESET> <OUTPUT> [OPTIONS]
        kymo-testgen --list

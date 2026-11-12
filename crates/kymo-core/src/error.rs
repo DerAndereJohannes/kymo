@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::brainvision::BrainVisionError;
 use crate::edf::EdfError;
 use crate::eeglab::EeglabError;
+use crate::fiff::FiffError;
 use crate::gdf::GdfError;
 use crate::tile::TileKey;
 use crate::{AnnotationId, ChannelId, GridId, SampleType};
@@ -135,6 +136,8 @@ pub enum OpenError {
     Eeglab { path: PathBuf, source: EeglabError },
     #[error("{}: {source}", path.display())]
     Gdf { path: PathBuf, source: GdfError },
+    #[error("{}: {source}", path.display())]
+    Fiff { path: PathBuf, source: FiffError },
     #[error("{}: {reason}", path.display())]
     Unsupported { path: PathBuf, reason: String },
 }

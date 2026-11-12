@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mne", "numpy", "pandas"]
 # ///
-"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB and GDF files with MNE-Python's.
+"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files with MNE-Python's.
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
@@ -17,8 +17,8 @@ through uv:
 
 For each file this runs `cargo run --release -p kymo-core --example dump`, reads the
 same file with mne.io.read_raw_edf/read_raw_bdf/read_raw_brainvision/read_raw_eeglab/
-read_raw_gdf (preload=False, so large files work; BrainVision files are given by their
-.vhdr, EEGLAB datasets by their .set),
+read_raw_gdf/read_raw_fif (preload=False, so large files work; BrainVision files are given
+by their .vhdr, EEGLAB datasets by their .set),
 and compares channel names, sampling rate, start time, samples (in SI units, at float32
 precision) and annotations. It exits with status 1 if anything differs.
 
@@ -111,6 +111,23 @@ GDF, where Kymo deliberately differs from MNE:
 - Integer Status channels (BioSemi's status word, in BDF files converted to GDF) show
   their low 16 bits as codes in Kymo, as in BDF; MNE keeps 17 bits. Their samples are
   compared as MNE masks them, their events with find_events(mask=0xFFFF).
+
+FIFF, where Kymo deliberately differs from MNE:
+- FIFF files that aren't raw recordings (epochs, evoked responses, covariances, ...) are
+  refused by both and skipped.
+- MNE needs allow_maxshield=True for MaxShield recordings; Kymo opens them with a warning.
+- Kymo's time 0 is the first sample (first_samp): its start time is meas_date +
+  first_samp / sfreq, and its annotation onsets count from the first sample. MNE's are
+  compared after the same shift (none when MNE's annotations have no orig_time, which
+  already count from the first sample).
+- Skips in the data are gaps in Kymo; MNE fills them with zeros (so its sample indices
+  line up with Kymo's) and adds BAD_ACQ_SKIP annotations. Kymo must report NaN exactly
+  where MNE's skips are, and MNE's BAD_ACQ_SKIP annotations are left out.
+- Stim channels whose calibration (range x cal) isn't 1 are misc channels in Kymo (5 V
+  trigger lines, analog inputs); their samples compare the same, and only Kymo's stim
+  channels' events are compared.
+- Float64 samples are read relative to each channel's first sample, as in EEGLAB.
+- Channel kinds and filters are not compared.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -378,7 +395,7 @@ def compare(path, max_values=None, annotation_files=False):
         try:
             dump(path, tmp, max_values)
         except subprocess.CalledProcessError as e:
-            if path.suffix.lower() == ".set" and refused_by_mne(path):
+            if path.suffix.lower() in (".set", ".fif") and refused_by_mne(path):
                 print(f"SKIPPED: {path}\n  neither Kymo nor MNE reads it")
                 return None
             return [f"Kymo could not read the file ({e})"]
@@ -389,6 +406,7 @@ def compare(path, max_values=None, annotation_files=False):
         brainvision = header["format"] == "BrainVision"
         eeglab = header["format"] == "EEGLAB"
         gdf = header["format"] == "GDF"
+        fiff = header["format"] == "FIFF"
         if gdf:
             info = gdf_info(path)
             reason = gdf_skip_reason(info)
@@ -398,6 +416,10 @@ def compare(path, max_values=None, annotation_files=False):
         try:
             if gdf:
                 raw = mne.io.read_raw_gdf(path, preload=False, verbose="error")
+            elif fiff:
+                raw = mne.io.read_raw_fif(
+                    path, preload=False, verbose="error", allow_maxshield=True
+                )
             elif brainvision:
                 raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
             elif eeglab:
@@ -453,15 +475,35 @@ def compare(path, max_values=None, annotation_files=False):
                     problems.append(
                         f"start time: Kymo {header['start_time']}, MNE {date}"
                     )
+            elif fiff:
+                # Kymo's time 0 is first_samp, on the file's local clock if it has one.
+                ours = datetime.datetime.fromisoformat(header["start_time"][:26])
+                theirs = date + datetime.timedelta(
+                    seconds=raw.first_samp / raw.info["sfreq"]
+                )
+                offset = raw.info.get("utc_offset")
+                if offset:
+                    sign = -1 if offset.startswith("-") else 1
+                    hours, minutes = offset[1:].replace(":", "")[:2], offset[-2:]
+                    theirs += sign * datetime.timedelta(
+                        hours=int(hours), minutes=int(minutes)
+                    )
+                if abs((ours - theirs).total_seconds()) > 1e-6:
+                    problems.append(
+                        f"start time: Kymo {header['start_time']}, MNE {theirs}"
+                    )
             elif brainvision:
                 # Kymo prints microseconds without trailing zeros.
                 theirs = date.isoformat(timespec="microseconds").rstrip("0").rstrip(".")
             else:
                 theirs = date.replace(microsecond=0).isoformat()
-            if not gdf and theirs != header["start_time"]:
+            if not gdf and not fiff and theirs != header["start_time"]:
                 problems.append(
                     f"start time: Kymo {header['start_time']}, MNE {theirs}"
                 )
+
+        if fiff:
+            problems += compare_skips(raw, header["grids"][0])
 
         compared, worst = 0, 0.0
         for g, grid in enumerate(header["grids"]):
@@ -480,6 +522,7 @@ def compare(path, max_values=None, annotation_files=False):
 
             unscaled = [
                 not eeglab
+                and not fiff
                 and channels[c]["to_si"] is not None
                 and not mne_scales(channels[c], scaled, info if gdf else None)
                 for c in ids
@@ -527,7 +570,7 @@ def compare(path, max_values=None, annotation_files=False):
             reference = np.array(
                 [
                     abs(channels[c]["offset"]) * (channels[c]["to_si"] or 1.0)
-                    if eeglab
+                    if eeglab or fiff
                     else 0.0
                     for c in ids
                 ]
@@ -574,6 +617,7 @@ def compare(path, max_values=None, annotation_files=False):
                 missing,
                 notes,
                 stim_scaling,
+                joined=not fiff,
             )
             problems += p
             worst = max(worst, w)
@@ -586,6 +630,8 @@ def compare(path, max_values=None, annotation_files=False):
             header["format"],
             (info["event_rate"] or fmax) if gdf else None,
         )
+        if fiff and any(a == "BAD_ACQ_SKIP" for a in raw.annotations.description):
+            notes.append("MNE's BAD_ACQ_SKIP annotations left out (Kymo has gaps)")
         if annotation_files:
             problems += compare_annotation_files(
                 path,
@@ -601,7 +647,7 @@ def compare(path, max_values=None, annotation_files=False):
                 notes.append("stim events not compared (MNE scales the codes by 1e-6)")
             n = sum(np.array(e["events"]).reshape(-1, 2).shape[0] for e in events)
         else:
-            p, n = compare_events(raw, header, events, fmax, notes)
+            p, n = compare_events(raw, header, events, fmax, notes, joined=not fiff)
             problems += p
 
     status = "OK" if not problems else "DIFFERS"
@@ -635,7 +681,10 @@ def compare_grid(
     missing,
     notes,
     stim_scaling,
+    joined=True,
 ):
+    """With `joined`, MNE's data drops Kymo's gaps (EDF+D); without, its samples line
+    up with Kymo's (FIFF, whose skips MNE fills with zeros)."""
     problems, worst, compared, n_missing = [], 0.0, 0, 0
     data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
     if grid["sample_type"] != "F32":
@@ -676,7 +725,11 @@ def compare_grid(
             problems.append(f"window {a}..{b}: Kymo has values in its gaps")
         if not present.any():
             continue
-        mne_idx = joined_start[seg[present]] + idx[present] - segments[seg[present], 0]
+        mne_idx = (
+            joined_start[seg[present]] + idx[present] - segments[seg[present], 0]
+            if joined
+            else idx[present]
+        )
         lo, hi = int(mne_idx.min()), int(mne_idx.max()) + 1
         theirs = raw.get_data(picks=ids, start=lo, stop=hi)[:, mne_idx - lo]
         ours = block[:, present] * scale[:, None]
@@ -720,8 +773,32 @@ def compare_grid(
     return problems, worst, compared
 
 
-def compare_events(raw, header, events, fmax, notes):
-    """Compares Kymo's stim events with mne.find_events; returns problems and count."""
+def compare_skips(raw, grid):
+    """Problems if Kymo's gaps aren't exactly MNE's skips (FIFF), in samples from
+    first_samp."""
+    theirs = []
+    for extra in raw._raw_extras:
+        bounds = extra["bounds"]
+        for k, entry in enumerate(extra["ent"]):
+            if entry is None:
+                theirs.append([int(bounds[k]) - raw.first_samp, int(bounds[k + 1]) - raw.first_samp])
+    ours, end = [], 0
+    for start, stop in grid["segments"]:
+        if start > end:
+            ours.append([end, start])
+        end = stop
+    if end < grid["len"]:
+        ours.append([end, grid["len"]])
+    if grid["len"] != raw.n_times:
+        return [f"length: Kymo {grid['len']} samples, MNE {raw.n_times}"]
+    if ours != theirs:
+        return [f"gaps: Kymo {ours}, MNE's skips {theirs}"]
+    return []
+
+
+def compare_events(raw, header, events, fmax, notes, joined=True):
+    """Compares Kymo's stim events with mne.find_events; returns problems and count.
+    With `joined`, MNE's data drops Kymo's gaps (see compare_grid)."""
     problems, count = [], 0
     bdf = header["format"].startswith("BDF")
     gdf = header["format"] == "GDF"
@@ -754,8 +831,9 @@ def compare_events(raw, header, events, fmax, notes):
         joined_start = np.concatenate(
             [[0], np.cumsum(segments[:, 1] - segments[:, 0])[:-1]]
         )
-        seg = np.searchsorted(segments[:, 0], ours[:, 0], side="right") - 1
-        ours[:, 0] = joined_start[seg] + ours[:, 0] - segments[seg, 0]
+        if joined:
+            seg = np.searchsorted(segments[:, 0], ours[:, 0], side="right") - 1
+            ours[:, 0] = joined_start[seg] + ours[:, 0] - segments[seg, 0]
         theirs = mne.find_events(
             raw,
             stim_channel=raw.ch_names[c],
@@ -826,6 +904,14 @@ def compare_annotations(raw, annotations, first_onset, format_name, event_rate=N
             if abs(a[0] - b[0]) > 1e-6 or not same_duration or a[2] != b[2]:
                 return [f"annotation {k} differs: Kymo {a}, MNE {b}"]
         return []
+    if format_name == "FIFF":
+        # Kymo counts from the first sample; see the docstring.
+        shift = (
+            raw.first_samp / raw.info["sfreq"]
+            if raw.annotations.orig_time is not None
+            else 0.0
+        )
+        theirs = [(o - shift, d, s) for o, d, s in theirs if s != "BAD_ACQ_SKIP"]
     if format_name == "EEGLAB":
         # Kymo's rules for events; see the docstring.
         theirs = [(o, 0.0 if np.isnan(d) else d, s) for o, d, s in theirs if o >= 0]
@@ -853,7 +939,12 @@ def is_mat_v73(path):
 
 def refused_by_mne(path):
     try:
-        mne.io.read_raw_eeglab(path, preload=False, verbose="error")
+        if path.suffix.lower() == ".fif":
+            mne.io.read_raw_fif(
+                path, preload=False, verbose="error", allow_maxshield=True
+            )
+        else:
+            mne.io.read_raw_eeglab(path, preload=False, verbose="error")
     except Exception:  # noqa: BLE001 - any refusal counts
         return True
     return False
@@ -876,6 +967,11 @@ def testgen_files(directory):
         ("gdf1-float64", "gdf", []),
         ("gdf2-int32", "gdf", []),
         ("gdf2-mixed", "gdf", []),
+        ("fif-float32-meg", "fif", []),
+        ("fif-int16-skips", "fif", []),
+        ("fif-int32-varying", "fif", []),
+        ("fif-double-dc", "fif", []),
+        ("fif-mixed", "fif", []),
     ]
     files = []
     for name, ext, extra in presets:
@@ -902,7 +998,7 @@ def find_files(arguments):
             files += sorted(
                 p
                 for p in a.rglob("*")
-                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set", ".gdf")
+                if p.suffix.lower() in (".edf", ".bdf", ".vhdr", ".set", ".gdf", ".fif")
             )
         else:
             files.append(a)
@@ -914,7 +1010,7 @@ def main():
     parser.add_argument(
         "paths",
         nargs="*",
-        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF files or directories",
+        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF/FIFF files or directories",
     )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
@@ -941,7 +1037,7 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF, BDF, BrainVision, EEGLAB or GDF files found")
+            sys.exit("no EDF, BDF, BrainVision, EEGLAB, GDF or FIFF files found")
         skipped = 0
         for path in files:
             if path.suffix.lower() == ".set" and is_mat_v73(path):

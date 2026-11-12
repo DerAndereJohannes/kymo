@@ -1,10 +1,10 @@
-//! Synthetic EDF/BDF, BrainVision, EEGLAB and GDF files for tests and benchmarks.
+//! Synthetic EDF/BDF, BrainVision, EEGLAB, GDF and FIFF files for tests and benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
 //! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
 //! BrainVision, events in EEGLAB and GDF). [`write()`] streams it to disk. Records are
-//! EDF's and GDF's data records; formats without them (BrainVision, EEGLAB) only take their
-//! length from them.
+//! EDF's and GDF's data records and FIFF's data buffers; formats without them (BrainVision,
+//! EEGLAB) only take their length from them.
 //! The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
@@ -17,6 +17,7 @@
 
 mod brainvision;
 mod eeglab;
+pub mod fiff;
 mod gdf;
 mod header;
 pub mod mat;
@@ -54,6 +55,51 @@ pub enum Format {
     /// ([`ChannelSpec::stored`]), then an event table of the annotations (their texts are
     /// the type codes). No gaps.
     Gdf(GdfVersion),
+    /// FIFF: a raw recording (`.fif`), big-endian. One rate, no offsets (physical = digital
+    /// × range × cal, in SI units); a record is a data buffer (see [`FiffOptions`]); gaps
+    /// are skips of whole records; `first_onset` is `first_samp / sfreq`; channel types
+    /// come from [`ChannelSpec::kind`] (MNE's names, EEG if empty).
+    Fiff(FiffType),
+}
+
+/// The type of FIFF data buffers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FiffType {
+    /// 16-bit integers as Neuromag acquisitions write them (DAU_PACK16).
+    Pack16,
+    Short,
+    Int,
+    /// The truth function's integers, stored as floats (exact up to 2^24).
+    Float,
+    Double,
+    /// Buffers of short, int, float and double in turn; digital values of int16.
+    Mixed,
+}
+
+impl FiffType {
+    pub const ALL: [FiffType; 6] = [
+        FiffType::Pack16,
+        FiffType::Short,
+        FiffType::Int,
+        FiffType::Float,
+        FiffType::Double,
+        FiffType::Mixed,
+    ];
+}
+
+/// FIFF's own options.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FiffOptions {
+    /// Buffers skipped before the first one (a skip of that many records), which moves
+    /// `first_samp` rather than leaving a gap; `first_onset` stays the first sample's.
+    pub initial_skip: u64,
+    /// Records written as two buffers of different lengths (where no skip precedes them).
+    pub varying_buffers: bool,
+    /// A MaxShield (Internal Active Shielding) recording.
+    pub maxshield: bool,
+    /// The local time's offset from UTC (`+HH:MM`), written as MNE does; the start stays
+    /// the local time.
+    pub utc_offset: Option<String>,
 }
 
 /// The GDF version written.
@@ -253,6 +299,16 @@ impl Format {
         Format::Gdf(GdfVersion::V2Tagged),
     ];
 
+    /// Every FIFF buffer type.
+    pub const FIFF: [Format; 6] = [
+        Format::Fiff(FiffType::Pack16),
+        Format::Fiff(FiffType::Short),
+        Format::Fiff(FiffType::Int),
+        Format::Fiff(FiffType::Float),
+        Format::Fiff(FiffType::Double),
+        Format::Fiff(FiffType::Mixed),
+    ];
+
     /// Every EEGLAB storage and layout.
     pub const EEGLAB: [Format; 6] = [
         Format::Eeglab(Storage::Fdt, Layout::Struct),
@@ -275,7 +331,12 @@ impl Format {
             Format::BrainVision(..) => "BrainVision",
             Format::Eeglab(..) => "EEGLAB",
             Format::Gdf(..) => "GDF",
+            Format::Fiff(..) => "FIFF",
         }
+    }
+
+    pub fn is_fiff(self) -> bool {
+        matches!(self, Format::Fiff(..))
     }
 
     pub fn is_gdf(self) -> bool {
@@ -296,7 +357,7 @@ impl Format {
 
     /// EDF or BDF, with or without +.
     pub fn is_edf(self) -> bool {
-        !self.is_brainvision() && !self.is_eeglab() && !self.is_gdf()
+        !self.is_brainvision() && !self.is_eeglab() && !self.is_gdf() && !self.is_fiff()
     }
 
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
@@ -312,8 +373,8 @@ impl Format {
         matches!(self, Format::EdfPlusD | Format::BdfPlusD)
     }
 
-    /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's
-    /// and EEGLAB's are `digital × gain`.
+    /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's,
+    /// EEGLAB's and FIFF's are `digital × gain`.
     pub fn has_offset(self) -> bool {
         self.is_edf() || self.is_gdf()
     }
@@ -323,6 +384,7 @@ impl Format {
     pub fn bytes_per_sample(self) -> usize {
         match self {
             Format::Gdf(_) => 2,
+            Format::Fiff(t) => t.size(),
             Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
             Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
             Format::Eeglab(Storage::Double, _) => 8,
@@ -344,14 +406,19 @@ impl Format {
             Format::Eeglab(..) => (i32::MIN, i32::MAX),
             // The default type, int16 (see `ChannelSpec::stored`).
             Format::Gdf(_) => Stored::I16.limits(),
+            Format::Fiff(FiffType::Pack16 | FiffType::Short | FiffType::Mixed) => (-32_768, 32_767),
+            Format::Fiff(FiffType::Float) => (-16_777_216, 16_777_216),
+            Format::Fiff(_) => (i32::MIN, i32::MAX),
             f if f.is_bdf() => (-8_388_608, 8_388_607),
             _ => (-32_768, 32_767),
         }
     }
 
-    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"` or `"gdf"`.
+    /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"`, `"gdf"` or
+    /// `"fif"`.
     pub fn extension(self) -> &'static str {
         match self {
+            Format::Fiff(_) => "fif",
             Format::Gdf(_) => "gdf",
             Format::BrainVision(..) => "vhdr",
             Format::Eeglab(..) => "set",
@@ -426,6 +493,9 @@ impl ChannelSpec {
         if format.is_gdf() {
             return ChannelSpec::gdf(label, samples_per_record, Stored::I16);
         }
+        if format.is_fiff() {
+            return ChannelSpec::fiff(label, "eeg", samples_per_record, format);
+        }
         let (digital_min, digital_max, physical_min, physical_max) = match format {
             Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
@@ -448,6 +518,42 @@ impl ChannelSpec {
             trigger: false,
             amplitude: EEG_AMPLITUDE,
             kind: String::new(),
+            stored: None,
+        }
+    }
+
+    /// A FIFF channel of MNE's type `kind` ("eeg", "mag", "grad", "eog", ...) in SI units,
+    /// over the digital range of `format`'s buffer type: 0.1 µV per step for voltages (so
+    /// its signal reaches [`EEG_AMPLITUDE`] µV, 120 µV for EOG, 400 µV for ECG and EMG),
+    /// 0.1 fT for magnetometers and MEG references (800 fT), 0.1 fT/cm for gradiometers
+    /// (300 fT/cm); other types in volts.
+    pub fn fiff(
+        label: impl Into<String>,
+        kind: &str,
+        samples_per_record: u32,
+        format: Format,
+    ) -> Self {
+        let (lo, hi) = format.digital_limits();
+        let (dimension, gain, amplitude) = match kind {
+            "mag" | "ref_meg" => ("T", 1e-16, 8e-13),
+            "grad" => ("T/m", 1e-14, 3e-11),
+            "eog" => ("V", 1e-7, 120e-6),
+            "ecg" | "emg" => ("V", 1e-7, 400e-6),
+            _ => ("V", 1e-7, EEG_AMPLITUDE * 1e-6),
+        };
+        ChannelSpec {
+            label: label.into(),
+            transducer: String::new(),
+            dimension: dimension.into(),
+            physical_min: f64::from(lo) * gain,
+            physical_max: f64::from(hi) * gain,
+            digital_min: lo,
+            digital_max: hi,
+            prefilter: String::new(),
+            samples_per_record,
+            trigger: false,
+            amplitude,
+            kind: kind.into(),
             stored: None,
         }
     }
@@ -585,6 +691,8 @@ pub struct Spec {
     /// One sample in this many is a spike, on average; 0 for none. The default,
     /// [`SPIKE_EVERY`], keeps them rare on screen; tests that hunt peaks set it lower.
     pub spike_every: u64,
+    /// FIFF's own options; ignored for other formats.
+    pub fiff: FiffOptions,
 }
 
 impl Spec {
@@ -612,6 +720,7 @@ impl Spec {
             annotations: Vec::new(),
             seed: 0,
             spike_every: SPIKE_EVERY,
+            fiff: FiffOptions::default(),
         }
     }
 
@@ -643,7 +752,7 @@ impl Spec {
     /// rounded to the nearest sample, and samples between records are gaps.
     pub fn record_start(&self, channel: usize, record: u64) -> u64 {
         let spr = self.channels[channel].samples_per_record;
-        if self.format.is_discontinuous() {
+        if self.format.is_discontinuous() || self.format.is_fiff() {
             let elapsed = self.record_onset(record) - self.record_onset(0);
             grid_start(elapsed, spr, self.record_duration)
         } else {
@@ -705,6 +814,7 @@ impl Spec {
 
     /// `digital(channel, i) * gain + offset`, in f64; without the offset for formats that
     /// have none ([`Format::has_offset`]).
+    /// FIFF stores the gain in float32 (range × cal), so its physical values use that.
     pub fn physical(&self, channel: usize, i: u64) -> f64 {
         let c = &self.channels[channel];
         let offset = if self.format.has_offset() {
@@ -712,7 +822,12 @@ impl Spec {
         } else {
             0.0
         };
-        f64::from(self.digital(channel, i)) * c.gain() + offset
+        let gain = if self.format.is_fiff() {
+            f64::from(c.gain() as f32)
+        } else {
+            c.gain()
+        };
+        f64::from(self.digital(channel, i)) * gain + offset
     }
 
     /// EDF/BDF: size of the header in bytes, 256 per signal plus 256, annotation signal
@@ -730,6 +845,9 @@ impl Spec {
     pub fn file_size(&self) -> Result<u64, Error> {
         if self.format.is_gdf() {
             return gdf::file_size(self);
+        }
+        if self.format.is_fiff() {
+            return fiff::file_size(self);
         }
         if !self.format.is_edf() {
             self.validate()?;
@@ -769,8 +887,8 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 
 mod presets {
     use super::{
-        Binary, ChannelSpec, EEG_AMPLITUDE, Format, GapSpec, GdfVersion, Layout, Orientation, Spec,
-        Storage, Stored, Tal,
+        Binary, ChannelSpec, EEG_AMPLITUDE, FiffType, Format, GapSpec, GdfVersion, Layout,
+        Orientation, Spec, Storage, Stored, Tal,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -852,6 +970,30 @@ mod presets {
             "GDF 2.20 with a tag-length-value header, a channel of each of the 12 sample \
              types at 256 or 128 Hz, 1 min, events with durations (MNE reads neither)",
         ),
+        (
+            "fif-float32-meg",
+            "FIFF, float32, 12 channels at 600 Hz (magnetometers, gradiometers, EEG, EOG, \
+             ECG, a 5 V trigger line, STI 014), 1 min from first_samp 25800",
+        ),
+        (
+            "fif-int16-skips",
+            "FIFF, DAU_PACK16, 8 channels at 1000 Hz, 2 min, an initial skip and two skips \
+             in the data, a UTC offset",
+        ),
+        (
+            "fif-int32-varying",
+            "FIFF, int32, 6 channels at 512 Hz with names longer than 15 characters, \
+             1 min in buffers of varying length",
+        ),
+        (
+            "fif-double-dc",
+            "FIFF, float64, 4 channels at 250 Hz, 1 min, a 1 V DC channel and STI 014",
+        ),
+        (
+            "fif-mixed",
+            "FIFF, buffers of short, int, float and double in turn, 5 channels at 400 Hz, \
+             30 s",
+        ),
     ];
 
     pub fn get(name: &str) -> Option<Spec> {
@@ -872,6 +1014,11 @@ mod presets {
             "gdf1-float64" => gdf1_float64(),
             "gdf2-int32" => gdf2_int32(),
             "gdf2-mixed" => gdf2_mixed(),
+            "fif-float32-meg" => fif_float32_meg(),
+            "fif-int16-skips" => fif_int16_skips(),
+            "fif-int32-varying" => fif_int32_varying(),
+            "fif-double-dc" => fif_double_dc(),
+            "fif-mixed" => fif_mixed(),
             _ => return None,
         };
         Some(spec)
@@ -1328,6 +1475,124 @@ mod presets {
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = gdf_events(60, 256, true);
         spec.seed = 14;
+        spec
+    }
+
+    /// STI 014, the trigger channel of Neuromag systems.
+    fn sti014(spr: u32, f: Format) -> ChannelSpec {
+        ChannelSpec {
+            label: "STI 014".into(),
+            dimension: String::new(),
+            ..ChannelSpec::trigger(spr, f)
+        }
+    }
+
+    fn fif_float32_meg() -> Spec {
+        let f = Format::Fiff(FiffType::Float);
+        let typed = |label: &str, kind: &str| ChannelSpec::fiff(label, kind, 600, f);
+        let channels = vec![
+            typed("MEG 0111", "mag"),
+            typed("MEG 0112", "grad"),
+            typed("MEG 0113", "grad"),
+            typed("MEG 0121", "mag"),
+            typed("EEG 001", "eeg"),
+            typed("EEG 002", "eeg"),
+            typed("EEG 003", "eeg"),
+            typed("EEG 004", "eeg"),
+            typed("EOG 061", "eog"),
+            typed("ECG 063", "ecg"),
+            ChannelSpec {
+                // A trigger line in volts, as older Neuromag systems store them: a stim
+                // channel whose calibration isn't 1, which kymo reads as misc.
+                physical_min: -16_777_216.0 / 3276.8,
+                physical_max: 16_777_216.0 / 3276.8,
+                amplitude: 2.5,
+                ..typed("STI 001", "stim")
+            },
+            sti014(600, f),
+        ];
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.first_onset = 43.0;
+        spec.start = jiff::civil::date(2002, 12, 3).at(19, 1, 10, 500_000_000);
+        spec.seed = 15;
+        spec
+    }
+
+    fn fif_int16_skips() -> Spec {
+        let f = Format::Fiff(FiffType::Pack16);
+        let mut channels: Vec<ChannelSpec> = ["Fp1", "Fz", "Cz", "Pz", "O1", "O2"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 1000, f))
+            .collect();
+        channels.push(ChannelSpec::fiff("EOG", "eog", 1000, f));
+        channels.push(sti014(1000, f));
+        let mut spec = Spec::new(f, channels, 1.0, 120);
+        spec.first_onset = 5.0;
+        spec.fiff.initial_skip = 2;
+        spec.fiff.utc_offset = Some("+01:00".into());
+        spec.gaps = vec![
+            GapSpec {
+                before_record: 30,
+                seconds: 3.0,
+            },
+            GapSpec {
+                before_record: 80,
+                seconds: 1.0,
+            },
+        ];
+        spec.seed = 16;
+        spec
+    }
+
+    fn fif_int32_varying() -> Spec {
+        let f = Format::Fiff(FiffType::Int);
+        let typed = |label: &str, kind: &str| ChannelSpec::fiff(label, kind, 512, f);
+        let channels = vec![
+            typed("EEG Fp1-Reference", "eeg"),
+            typed("EEG Fp2-Reference", "eeg"),
+            typed("SEEG LA1", "seeg"),
+            typed("ECOG grid 1 contact 1", "ecog"),
+            typed("EMG chin left-right", "emg"),
+            typed("ECG lead II", "ecg"),
+        ];
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.fiff.varying_buffers = true;
+        spec.seed = 17;
+        spec
+    }
+
+    fn fif_double_dc() -> Spec {
+        let f = Format::Fiff(FiffType::Double);
+        let mut channels: Vec<ChannelSpec> = ["C3", "C4"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 250, f))
+            .collect();
+        channels.push(ChannelSpec {
+            // A large DC offset, 1 V at 0.1 µV per step; float64 keeps it, and kymo keeps
+            // it through the channel's reference value.
+            label: "DC".into(),
+            digital_min: 9_995_000,
+            digital_max: 10_005_000,
+            physical_min: 0.9995,
+            physical_max: 1.0005,
+            ..ChannelSpec::eeg("", 250, f)
+        });
+        channels.push(sti014(250, f));
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.seed = 18;
+        spec
+    }
+
+    fn fif_mixed() -> Spec {
+        let f = Format::Fiff(FiffType::Mixed);
+        let mut channels: Vec<ChannelSpec> = ["Fz", "Cz", "Pz"]
+            .iter()
+            .map(|l| ChannelSpec::eeg(*l, 200, f))
+            .collect();
+        channels.push(ChannelSpec::fiff("MEG 0111", "mag", 200, f));
+        channels.push(sti014(200, f));
+        let mut spec = Spec::new(f, channels, 0.5, 60);
+        spec.seed = 19;
         spec
     }
 }

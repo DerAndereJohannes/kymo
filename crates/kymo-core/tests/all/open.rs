@@ -10,7 +10,7 @@ const BRAINVISION: &[u8] = b"Brain Vision Data Exchange Header File Version 1.0\
 const MAT: &[u8] = b"MATLAB 5.0 MAT-file, Platform: GLNXA64, Created on: Mon Jan  1 00:00:00 2024";
 
 /// The reason `path` could not be opened, and the file it names: unsupported, or a
-/// BrainVision header, MAT-file or GDF header the reader refused (these are only first
+/// BrainVision header, MAT-file, GDF header or FIFF file id the reader refused (these are only first
 /// lines).
 fn unsupported(path: &Path) -> (PathBuf, String) {
     match kymo_core::open(path) {
@@ -18,6 +18,7 @@ fn unsupported(path: &Path) -> (PathBuf, String) {
         Err(OpenError::BrainVision { path, source }) => (path, format!("BrainVision: {source}")),
         Err(OpenError::Eeglab { path, source }) => (path, format!("EEGLAB: {source}")),
         Err(OpenError::Gdf { path, source }) => (path, format!("GDF: {source}")),
+        Err(OpenError::Fiff { path, source }) => (path, format!("FIFF: {source}")),
         other => panic!("{}: expected a refusal, got {other:?}", path.display()),
     }
 }
@@ -38,7 +39,8 @@ fn formats_are_recognized_by_their_first_bytes() {
         (b"GDF 1.25", "GDF: "),
         (b"GDF 2.10", "GDF: "),
         (b"GDF 3.00", "only GDF 1 and 2"),
-        (&fiff, "FIFF files"),
+        (&fiff, "FIFF: "),
+        (b"\x1f\x8b\x08\x00", "compressed"),
         (BRAINVISION, "BrainVision: "),
         (
             b"\xef\xbb\xbfBrainVision Data Exchange Header File Version 2.0\n",

@@ -11,6 +11,7 @@ pub mod decode;
 pub mod edf;
 pub mod eeglab;
 mod error;
+pub mod fiff;
 pub mod gdf;
 mod grid;
 mod mapped;

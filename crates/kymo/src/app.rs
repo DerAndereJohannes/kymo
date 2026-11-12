@@ -665,13 +665,15 @@ impl KymoApp {
                 .add_filter(
                     "All Supported File Types",
                     &[
-                        "edf", "bdf", "vhdr", "set", "gdf", "EDF", "BDF", "VHDR", "SET", "GDF",
+                        "edf", "bdf", "vhdr", "set", "gdf", "fif", "EDF", "BDF", "VHDR", "SET",
+                        "GDF", "FIF",
                     ],
                 )
                 .add_filter("BDF", &["bdf", "BDF"])
                 .add_filter("BrainVision", &["vhdr", "VHDR"])
                 .add_filter("EDF", &["edf", "EDF"])
                 .add_filter("EEGLAB", &["set", "SET"])
+                .add_filter("FIFF", &["fif", "FIF"])
                 .add_filter("GDF", &["gdf", "GDF"])
                 .add_filter("All Files", &["*"])
                 .pick_file(),
