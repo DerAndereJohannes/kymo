@@ -4,7 +4,8 @@
 //! modification time and first and last MiB, plus this format's version. It holds a header (magic,
 //! version, that key, the layout of every grid and a completion flag), then per grid each
 //! level's tiles in time order (all channels, channel-major, little-endian (min, max)
-//! pairs) and the block sums (one little-endian f64 per channel and block). A trailer after
+//! pairs) and the block sums (per channel and block, the little-endian f64 sum of the values
+//! that aren't NaN and the u64 count of those that are; see [`BlockSum`]). A trailer after
 //! them, written when the build finishes, holds the value changes of the stim channels
 //! (see [`crate::stim`]), which have no size known in advance.
 //!
@@ -32,7 +33,7 @@ use std::time::UNIX_EPOCH;
 
 use map::SharedMap;
 
-use super::{Pyramid, PyramidBuilder, PyramidStorage};
+use super::{BlockSum, Pyramid, PyramidBuilder, PyramidStorage};
 use crate::stim::Change;
 use crate::tile::{Level, TILE_LEN, TileData, max_level};
 use crate::{Grid, GridId, ReadError, Recording, SampleType, lock};
@@ -40,7 +41,9 @@ use crate::{Grid, GridId, ReadError, Recording, SampleType, lock};
 const MAGIC: &[u8; 8] = b"KYMOPYR\0";
 /// Bump whenever the layout or the meaning of the contents changes: it is part of the file
 /// name, so a sidecar of another version is never opened, just rebuilt.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
+/// Bytes per stored block sum: the sum (f64) and the count of NaN samples (u64).
+const SUM: usize = 16;
 const TRAILER_MAGIC: &[u8; 8] = b"KYMOSTIM";
 /// Bytes per stored change: sample (u64), value (i32), padding.
 const CHANGE: usize = 16;
@@ -111,7 +114,7 @@ fn layout(grids: &[Grid]) -> (Vec<GridLayout>, usize, u64) {
         }
         cursor = align(cursor);
         let sums = cursor;
-        cursor += len.div_ceil(TILE_LEN) * channels * 8;
+        cursor += len.div_ceil(TILE_LEN) * channels * SUM as u64;
         layouts.push(GridLayout {
             len,
             channels: channels as usize,
@@ -596,7 +599,7 @@ impl GridStorage {
         }
         let channels = l.channels as u64;
         Some(Place {
-            offset: usize::try_from(l.sums + block * channels * 8).ok()?,
+            offset: usize::try_from(l.sums + block * channels * SUM as u64).ok()?,
             values: l.channels,
             end: ((block + 1) * TILE_LEN).min(l.len),
         })
@@ -637,14 +640,17 @@ impl PyramidStorage for GridStorage {
         self.write(&place, &encode(&data));
     }
 
-    fn put_sums(&self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[BlockSum]) {
         let Some(place) = self.sums_place(block) else {
             return;
         };
         if sums.len() != place.values {
             return;
         }
-        let bytes: Vec<u8> = sums.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let bytes: Vec<u8> = sums
+            .iter()
+            .flat_map(|s| s.sum.to_le_bytes().into_iter().chain(s.nan.to_le_bytes()))
+            .collect();
         self.write(&place, &bytes);
     }
 
@@ -676,15 +682,17 @@ impl PyramidStorage for GridStorage {
         Some(decode(l.sample_type, bytes))
     }
 
-    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+    fn sum(&self, block: u64, row: usize) -> Option<BlockSum> {
         let place = self.sums_place(block)?;
         if row >= place.values {
             return None;
         }
-        let bytes = self.read(&place, row * 8, 8)?;
-        let mut b = [0u8; 8];
-        b.copy_from_slice(bytes);
-        Some(f64::from_le_bytes(b))
+        let bytes = self.read(&place, row * SUM, SUM)?;
+        let (sum, nan) = bytes.split_at(8);
+        Some(BlockSum {
+            sum: f64::from_le_bytes(sum.try_into().ok()?),
+            nan: u64::from_le_bytes(nan.try_into().ok()?),
+        })
     }
 
     fn put_changes(&self, row: usize, changes: &[Change]) {

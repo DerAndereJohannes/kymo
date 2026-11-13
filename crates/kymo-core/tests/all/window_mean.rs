@@ -3,8 +3,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::common::{TempFile, is_present, len_and_segments, mem_opened, sample_types};
-use kymo_core::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage};
+use crate::common::{
+    TempFile, is_present, len_and_segments, mem_opened, mem_opened_nan, sample_types,
+};
+use kymo_core::pyramid::{BlockSum, MemStorage, Pyramid, PyramidBuilder, PyramidStorage};
 use kymo_core::stim::Change;
 use kymo_core::testing::{MemData, single_grid};
 use kymo_core::tile::{Level, TILE_LEN, TileData};
@@ -20,7 +22,7 @@ impl PyramidStorage for OddSumsLost {
         self.0.put_tile(level, time, data);
     }
 
-    fn put_sums(&self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[BlockSum]) {
         if block.is_multiple_of(2) {
             self.0.put_sums(block, sums);
         }
@@ -44,7 +46,7 @@ impl PyramidStorage for OddSumsLost {
         self.0.tile_rows(level, time, rows, len)
     }
 
-    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+    fn sum(&self, block: u64, row: usize) -> Option<BlockSum> {
         self.0.sum(block, row)
     }
 
@@ -57,7 +59,8 @@ impl PyramidStorage for OddSumsLost {
     }
 }
 
-/// Brute-force physical mean over the present samples, and a scale for the tolerance.
+/// Brute-force physical mean over the present samples that aren't NaN, and a scale for the
+/// tolerance.
 fn brute_mean(
     physical: impl Fn(u64) -> f64,
     segments: &[Range<u64>],
@@ -66,6 +69,9 @@ fn brute_mean(
     let (mut sum, mut n, mut scale) = (0.0, 0u64, 0.0f64);
     for i in range.filter(|&i| is_present(segments, i)) {
         let x = physical(i);
+        if x.is_nan() {
+            continue;
+        }
         sum += x;
         n += 1;
         scale = scale.max(x.abs());
@@ -127,9 +133,11 @@ proptest! {
         chunk in 1..=20_000u64,
         threads in 1..=3usize,
         lose_sums in any::<bool>(),
+        nan in any::<bool>(),
         seed in any::<u64>(),
     ) {
-        let (mut opened, data) = mem_opened(sample_type, n, len, segments.clone(), seed);
+        let (mut opened, data) =
+            mem_opened_nan(sample_type, n, len, segments.clone(), seed, nan);
         for c in &mut opened.header.channels {
             c.gain = gain;
             c.offset = offset;

@@ -61,6 +61,31 @@ pub fn mem_data(sample_type: SampleType, n: usize, len: u64, seed: u64) -> MemDa
     }
 }
 
+/// `data` with NaN in its float rows, as a float channel's missing samples are: about a
+/// sixteenth of the samples, and a run of up to three blocks, which can cover whole blocks.
+/// Integer data stays as it is.
+pub fn with_nan(data: MemData, seed: u64) -> MemData {
+    let MemData::F32(mut rows) = data else {
+        return data;
+    };
+    for (c, row) in rows.iter_mut().enumerate() {
+        let len = row.len() as u64;
+        for (i, x) in row.iter_mut().enumerate() {
+            if value(seed ^ 0x6e61_6e00, c, i as u64).rem_euclid(16) == 0 {
+                *x = f32::NAN;
+            }
+        }
+        if len > 0 {
+            let start = value(seed, c, len).unsigned_abs() % len;
+            let run = value(seed, c, len + 1).unsigned_abs() % (3 * kymo_core::tile::TILE_LEN);
+            for x in &mut row[start as usize..(start + run).min(len) as usize] {
+                *x = f32::NAN;
+            }
+        }
+    }
+    MemData::F32(rows)
+}
+
 fn clamp_i16(v: i64) -> i16 {
     v.clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }
@@ -89,6 +114,31 @@ pub fn mem_opened(
     segments: Vec<Range<u64>>,
     seed: u64,
 ) -> (Opened, MemData) {
+    let data = mem_data(sample_type, n, len, seed);
+    mem_opened_with(sample_type, n, len, segments, data)
+}
+
+/// As [`mem_opened`], with float rows holding NaN (see [`with_nan`]) where `nan` is set.
+pub fn mem_opened_nan(
+    sample_type: SampleType,
+    n: usize,
+    len: u64,
+    segments: Vec<Range<u64>>,
+    seed: u64,
+    nan: bool,
+) -> (Opened, MemData) {
+    let data = mem_data(sample_type, n, len, seed);
+    let data = if nan { with_nan(data, seed) } else { data };
+    mem_opened_with(sample_type, n, len, segments, data)
+}
+
+fn mem_opened_with(
+    sample_type: SampleType,
+    n: usize,
+    len: u64,
+    segments: Vec<Range<u64>>,
+    data: MemData,
+) -> (Opened, MemData) {
     let ids: Vec<ChannelId> = (0..n as u32).map(ChannelId).collect();
     let channels = ids
         .iter()
@@ -99,7 +149,6 @@ pub fn mem_opened(
         start: 0.0,
     };
     let grid = Grid::new(timebase, len, segments, sample_type, ids).unwrap();
-    let data = mem_data(sample_type, n, len, seed);
     (opened(channels, vec![grid], vec![data.clone()]), data)
 }
 

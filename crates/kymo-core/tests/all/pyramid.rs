@@ -2,8 +2,10 @@
 
 use std::ops::Range;
 
-use crate::common::{TempFile, is_present, len_and_segments, mem_recording, sample_types, values};
-use kymo_core::pyramid::{Pyramid, PyramidBuilder};
+use crate::common::{
+    TempFile, is_present, len_and_segments, mem_opened_nan, mem_recording, sample_types, values,
+};
+use kymo_core::pyramid::{BlockSum, Pyramid, PyramidBuilder};
 use kymo_core::testing::{MemData, brute_minmax, opened};
 use kymo_core::tile::{ChannelBlock, Level, SignalVersion, TILE_LEN, TileKey, max_level};
 use kymo_core::{Channel, ChannelId, Grid, GridId, Recording, SampleType, SamplesMut, Timebase};
@@ -20,7 +22,7 @@ fn key(grid: GridId, level: Level, block: u32, time: u64) -> TileKey {
 }
 
 /// Sum of the native values of `channel` over the present samples of `range`, in order.
-fn brute_sum(rec: &Recording, channel: ChannelId, range: Range<u64>) -> f64 {
+fn brute_sum(rec: &Recording, channel: ChannelId, range: Range<u64>) -> BlockSum {
     let grid = rec.grid(rec.channel(channel).grid);
     let n = (range.end - range.start) as usize;
     let native: Vec<f64> = match grid.sample_type() {
@@ -46,10 +48,15 @@ fn brute_sum(rec: &Recording, channel: ChannelId, range: Range<u64>) -> f64 {
             buf.into_iter().map(f64::from).collect()
         }
     };
-    let mut sum = 0.0;
+    let mut sum = BlockSum::default();
     for (i, x) in range.zip(native) {
-        if is_present(grid.segments(), i) {
-            sum += x;
+        if !is_present(grid.segments(), i) {
+            continue;
+        }
+        if x.is_nan() {
+            sum.nan += 1;
+        } else {
+            sum.sum += x;
         }
     }
     sum
@@ -143,11 +150,10 @@ fn check_pyramid(rec: &Recording, id: GridId, pyramid: &Pyramid) -> Result<(), T
     for block in 0..len.div_ceil(TILE_LEN) {
         let samples = block * TILE_LEN..((block + 1) * TILE_LEN).min(len);
         for &channel in ids {
+            // NaN samples are left out and counted.
             let want = brute_sum(rec, channel, samples.clone());
-            // A NaN sample makes its block's sum NaN.
             let got = pyramid.block_sum(channel, block);
-            let same = got.is_some_and(|g| g == want || (g.is_nan() && want.is_nan()));
-            prop_assert!(same, "block {}: {:?} vs {}", block, got, want);
+            prop_assert_eq!(got, Some(want), "block {}", block);
         }
     }
     prop_assert_eq!(pyramid.block_sum(ids[0], len.div_ceil(TILE_LEN)), None);
@@ -175,12 +181,14 @@ proptest! {
         (n, (len, segments)) in shapes(),
         chunk in prop_oneof![1..=100u64, 1..=300_000u64],
         threads in 1..=5usize,
+        nan in any::<bool>(),
         seed in any::<u64>(),
     ) {
         // Chunks of a few samples on short grids; long ones in at most 1000 steps, which
         // still split buckets at every level.
         let chunk = chunk.max(len / 1000);
-        let (rec, _) = mem_recording(sample_type, n, len, segments, seed);
+        let (opened, _) = mem_opened_nan(sample_type, n, len, segments, seed, nan);
+        let rec = Recording::new(opened).unwrap().0;
         let mut builder = PyramidBuilder::new(&rec, GridId(0))
             .unwrap()
             .with_chunk_len(chunk)

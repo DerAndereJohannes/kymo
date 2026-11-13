@@ -412,7 +412,7 @@ fn single_file_key(path: &Path) -> String {
         .as_nanos();
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"KYMOPYR\0");
-    hasher.update(&3u32.to_le_bytes());
+    hasher.update(&4u32.to_le_bytes());
     let name = path.as_os_str().as_encoded_bytes();
     hasher.update(&(name.len() as u64).to_le_bytes());
     hasher.update(name);

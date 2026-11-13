@@ -605,7 +605,7 @@ fn offset_preset(name: &str, offset: f64) -> TempFile {
     file
 }
 
-/// The mean of `channel` over the samples of `time`, brute force.
+/// The mean of `channel` over the samples of `time` that aren't NaN, brute force.
 fn window_mean(
     rec: &kymo_core::Recording,
     channel: kymo_core::ChannelId,
@@ -619,8 +619,9 @@ fn window_mean(
         let mut out = vec![0.0f32; (part.end - part.start) as usize];
         rec.read_physical(grid_id, &[channel], part, &mut out)
             .unwrap();
-        sum += out.iter().map(|&x| f64::from(x)).sum::<f64>();
-        n += out.len();
+        let values = out.iter().filter(|x| !x.is_nan());
+        sum += values.clone().map(|&x| f64::from(x)).sum::<f64>();
+        n += values.count();
     }
     (n > 0).then(|| sum / n as f64)
 }
@@ -653,6 +654,44 @@ fn reading_numbers(status: &str) -> Vec<f64> {
         .split(" … ")
         .map(|x| x.replace('−', "-").parse().unwrap())
         .collect()
+}
+
+/// A channel whose window touches missing samples (GDF's smallest int16, read as NaN) is
+/// centered on the mean of the samples that are there, not left out of the view: a NaN
+/// mean would offset the whole trace by NaN.
+#[test]
+fn dc_removal_leaves_missing_samples_out_of_the_mean() {
+    use kymo_testgen::{ChannelSpec, Format, GdfVersion, Spec, Stored};
+    let format = Format::Gdf(GdfVersion::V2);
+    let channels = vec![ChannelSpec::gdf("Cz", 256, Stored::I16)];
+    let spec = Spec::new(format, channels, 1.0, 30);
+    let file = TempFile::written(&spec);
+    // The first 1.5 s missing: one channel, so the records hold its samples back to back
+    // after the 512-byte header.
+    let mut bytes = std::fs::read(file.path()).unwrap();
+    for i in 0..384 {
+        bytes[512 + 2 * i..][..2].copy_from_slice(&0x8000u16.to_le_bytes());
+    }
+    std::fs::write(file.path(), bytes).unwrap();
+
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert!(viewer(&harness).view().dc_removed());
+    let cz = kymo_core::ChannelId(0);
+    let time = viewer(&harness).view().time();
+    let rec = &viewer(&harness).document().recording;
+    let want = window_mean(rec, cz, time.clone()).unwrap();
+    // The view starts in the missing samples.
+    let mut first = [0.0f32];
+    rec.read_physical(kymo_core::GridId(0), &[cz], 0..1, &mut first)
+        .unwrap();
+    assert!(first[0].is_nan() && time.start < 1.5, "{first:?} {time:?}");
+    step_until(&mut harness, "the mean", baselines_are_window_means);
+    let mean = viewer(&harness).baseline(cz);
+    assert!(
+        mean.is_finite() && (mean - want).abs() <= 1e-5 * want.abs().max(1.0),
+        "{mean}"
+    );
 }
 
 #[test]

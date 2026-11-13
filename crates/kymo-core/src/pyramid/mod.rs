@@ -6,9 +6,10 @@
 //! Levels are stored as tiles of the fixed grid ([`crate::tile`]), all channels of the grid
 //! together, so one read serves a whole screen of channels.
 //!
-//! Beside the levels sits one f64 sum of native values per channel and block of
-//! [`TILE_LEN`] samples (a level-0 tile span), over the block's present samples. A NaN
-//! sample makes its block's sum NaN; NaN samples never change a minimum or maximum.
+//! Beside the levels sits one sum of native values per channel and block of [`TILE_LEN`]
+//! samples (a level-0 tile span), over the block's present samples ([`BlockSum`]): NaN
+//! samples (a float channel's missing ones) are left out and counted, so a window mean is
+//! over the samples that are there. NaN samples never change a minimum or maximum either.
 //!
 //! The same pass records the value changes of the grid's stim channels ([`crate::stim`]).
 //!
@@ -46,7 +47,7 @@ pub trait PyramidStorage: Send + Sync {
     /// Stores tile `time` of `level`. Each tile is stored once, before it is published.
     fn put_tile(&self, level: Level, time: u64, data: TileData);
     /// Stores the sums of block `block`, one per channel in grid order.
-    fn put_sums(&self, block: u64, sums: &[f64]);
+    fn put_sums(&self, block: u64, sums: &[BlockSum]);
     /// Publishes everything stored for samples `..done`; called with increasing values.
     fn publish(&self, done: u64);
     /// The last published watermark.
@@ -61,7 +62,7 @@ pub trait PyramidStorage: Send + Sync {
         len: usize,
     ) -> Option<TileData>;
     /// The sum of row `row` in the published block `block`; `None` if not available.
-    fn sum(&self, block: u64, row: usize) -> Option<f64>;
+    fn sum(&self, block: u64, row: usize) -> Option<BlockSum>;
     /// Appends changes of the stim channel in row `row`: in sample order across calls, and
     /// before the samples they lie in are published.
     fn put_changes(&self, row: usize, changes: &[Change]);
@@ -69,11 +70,31 @@ pub trait PyramidStorage: Send + Sync {
     fn changes(&self, row: usize) -> Vec<Change>;
 }
 
+/// A channel's native values summed over the present samples of a block (for DC removal),
+/// NaN left out and counted: a float channel's missing samples (GDF's, XDF's) are NaN.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockSum {
+    /// The sum of the values that aren't NaN.
+    pub sum: f64,
+    /// How many of the values are NaN.
+    pub nan: u64,
+}
+
+impl BlockSum {
+    /// Both sums together.
+    pub fn plus(self, other: BlockSum) -> BlockSum {
+        BlockSum {
+            sum: self.sum + other.sum,
+            nan: self.nan + other.nan,
+        }
+    }
+}
+
 /// Keeps a pyramid in memory.
 #[derive(Debug, Default)]
 pub struct MemStorage {
     tiles: Mutex<HashMap<(Level, u64), TileData>>,
-    sums: Mutex<Vec<Option<Box<[f64]>>>>,
+    sums: Mutex<Vec<Option<Box<[BlockSum]>>>>,
     changes: Mutex<HashMap<usize, Vec<Change>>>,
     done: AtomicU64,
 }
@@ -90,7 +111,7 @@ impl PyramidStorage for MemStorage {
         tiles.insert((level, time), data);
     }
 
-    fn put_sums(&self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[BlockSum]) {
         let mut all = self.sums.lock().unwrap_or_else(PoisonError::into_inner);
         let block = block as usize;
         if all.len() <= block {
@@ -120,7 +141,7 @@ impl PyramidStorage for MemStorage {
         (range.end <= data.len()).then(|| data.to_data(range))
     }
 
-    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+    fn sum(&self, block: u64, row: usize) -> Option<BlockSum> {
         let sums = self.sums.lock().unwrap_or_else(PoisonError::into_inner);
         sums.get(block as usize)?.as_ref()?.get(row).copied()
     }
@@ -265,14 +286,14 @@ impl Pyramid {
     }
 
     /// Sum of the native values of `channel` over the present samples of block `block`
-    /// (samples `block · TILE_LEN ..`), or `None` if the channel is not in this grid or the
-    /// block is not built yet.
-    pub fn block_sum(&self, channel: ChannelId, block: u64) -> Option<f64> {
+    /// (samples `block · TILE_LEN ..`), NaN left out and counted, or `None` if the channel is
+    /// not in this grid or the block is not built yet.
+    pub fn block_sum(&self, channel: ChannelId, block: u64) -> Option<BlockSum> {
         let row = self.grid.channels().iter().position(|&c| c == channel)?;
         self.row_sum(block, row)
     }
 
-    fn row_sum(&self, block: u64, row: usize) -> Option<f64> {
+    fn row_sum(&self, block: u64, row: usize) -> Option<BlockSum> {
         let first = block.checked_mul(TILE_LEN)?;
         if first >= self.grid.len() || !self.ready(first.saturating_add(TILE_LEN)) {
             return None;

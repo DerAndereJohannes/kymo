@@ -5,7 +5,7 @@ use std::ops::Range;
 use crate::common::{TempDir, TempFile, len_and_segments, sample_types};
 use std::sync::Arc;
 
-use kymo_core::pyramid::{MemStorage, Pyramid, PyramidBuilder, PyramidStorage, Sidecar};
+use kymo_core::pyramid::{BlockSum, MemStorage, Pyramid, PyramidBuilder, PyramidStorage, Sidecar};
 use kymo_core::stim::{Change, Event, EventOptions, EventRule, StimChanges, annotations, events};
 use kymo_core::testing::{MemData, opened};
 use kymo_core::tile::{Level, TileData};
@@ -259,7 +259,7 @@ impl PyramidStorage for HalfPublished {
     fn put_tile(&self, level: Level, time: u64, data: TileData) {
         self.0.put_tile(level, time, data);
     }
-    fn put_sums(&self, block: u64, sums: &[f64]) {
+    fn put_sums(&self, block: u64, sums: &[BlockSum]) {
         self.0.put_sums(block, sums);
     }
     fn publish(&self, done: u64) {
@@ -277,7 +277,7 @@ impl PyramidStorage for HalfPublished {
     ) -> Option<TileData> {
         self.0.tile_rows(level, time, rows, len)
     }
-    fn sum(&self, block: u64, row: usize) -> Option<f64> {
+    fn sum(&self, block: u64, row: usize) -> Option<BlockSum> {
         self.0.sum(block, row)
     }
     fn put_changes(&self, row: usize, changes: &[Change]) {

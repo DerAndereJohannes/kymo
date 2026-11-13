@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::{MemStorage, Pyramid, PyramidStorage};
+use super::{BlockSum, MemStorage, Pyramid, PyramidStorage};
 use crate::sample::NativeSample;
 use crate::stim::Scanner;
 use crate::tile::{LEVEL_FACTOR, Level, TILE_LEN, max_level};
@@ -177,13 +177,13 @@ struct Levels<T> {
     len: u64,
     tiles: Vec<Partial<T>>,
     /// Sum of the current block so far, per channel.
-    carry: Vec<f64>,
+    carry: Vec<BlockSum>,
     /// The section being processed, channel-major.
     chunk: Vec<T>,
     /// Block sums of the section, channel-major.
-    sums: Vec<f64>,
+    sums: Vec<BlockSum>,
     /// The sums of one block across the channels, as stored.
-    column: Vec<f64>,
+    column: Vec<BlockSum>,
     /// The stim channels' rows and their change scanners.
     stim: Vec<(usize, Scanner)>,
 }
@@ -217,7 +217,7 @@ impl<T: NativeSample> Levels<T> {
             channels,
             len,
             tiles,
-            carry: vec![0.0; channels],
+            carry: vec![BlockSum::default(); channels],
             chunk: Vec::new(),
             sums: Vec::new(),
             column: Vec::new(),
@@ -273,7 +273,8 @@ impl<T: NativeSample> Levels<T> {
         let first_block = section.start / TILE_LEN;
         let blocks = ((section.end - 1) / TILE_LEN - first_block + 1) as usize;
         self.sums.clear();
-        self.sums.resize(self.channels * blocks, 0.0);
+        self.sums
+            .resize(self.channels * blocks, BlockSum::default());
         for (row, &carry) in self.sums.chunks_exact_mut(blocks).zip(&self.carry) {
             row[0] = carry;
         }
@@ -303,7 +304,7 @@ impl<T: NativeSample> Levels<T> {
         let ids = recording.grid(grid).channels();
         let work = |ids: &[crate::ChannelId],
                     rows: &mut [T],
-                    sums: &mut [f64],
+                    sums: &mut [BlockSum],
                     mut pairs: Option<&mut [T]>|
          -> Result<(), ReadError> {
             recording.read_native(grid, ids, section.clone(), T::as_samples_mut(rows))?;
@@ -395,7 +396,11 @@ impl<T: NativeSample> Levels<T> {
             storage.put_sums(first_block + b as u64, &self.column);
         }
         for (carry, row) in self.carry.iter_mut().zip(self.sums.chunks_exact(blocks)) {
-            *carry = if last_complete { 0.0 } else { row[blocks - 1] };
+            *carry = if last_complete {
+                BlockSum::default()
+            } else {
+                row[blocks - 1]
+            };
         }
     }
 

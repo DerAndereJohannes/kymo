@@ -1,5 +1,6 @@
 //! Native sample types and typed sample buffers.
 
+use crate::pyramid::BlockSum;
 use crate::tile::{TILE_LEN, TileData};
 
 /// In-memory type of raw samples, as stored in the pyramid.
@@ -117,8 +118,8 @@ pub(crate) trait NativeSample: Sample {
     /// The value as a stim code.
     fn code(self) -> i32;
     /// `acc` plus the sum of `xs`, which lie inside one block. Exact for integers; for
-    /// floats the samples are added one by one, in order.
-    fn sum(xs: &[Self], acc: f64) -> f64;
+    /// floats the samples are added one by one, in order, NaN left out and counted.
+    fn sum(xs: &[Self], acc: BlockSum) -> BlockSum;
     /// `(min, max)` extended by `xs`. NaN never becomes a min or max.
     fn min_max(xs: &[Self], min: Self, max: Self) -> (Self, Self);
 }
@@ -137,10 +138,13 @@ impl NativeSample for i16 {
         i32::from(self)
     }
 
-    fn sum(xs: &[i16], acc: f64) -> f64 {
+    fn sum(xs: &[i16], acc: BlockSum) -> BlockSum {
         debug_assert!(xs.len() <= TILE_LEN as usize);
         // At most 4096 · 2^15 = 2^27 in magnitude: exact in i32, then exact in f64.
-        acc + f64::from(xs.iter().map(|&x| i32::from(x)).sum::<i32>())
+        BlockSum {
+            sum: acc.sum + f64::from(xs.iter().map(|&x| i32::from(x)).sum::<i32>()),
+            nan: acc.nan,
+        }
     }
 
     fn min_max(xs: &[i16], min: i16, max: i16) -> (i16, i16) {
@@ -163,10 +167,13 @@ impl NativeSample for i32 {
         self
     }
 
-    fn sum(xs: &[i32], acc: f64) -> f64 {
+    fn sum(xs: &[i32], acc: BlockSum) -> BlockSum {
         debug_assert!(xs.len() <= TILE_LEN as usize);
         // At most 4096 · 2^31 = 2^43 in magnitude: exact in i64 and in f64.
-        acc + xs.iter().map(|&x| i64::from(x)).sum::<i64>() as f64
+        BlockSum {
+            sum: acc.sum + xs.iter().map(|&x| i64::from(x)).sum::<i64>() as f64,
+            nan: acc.nan,
+        }
     }
 
     fn min_max(xs: &[i32], min: i32, max: i32) -> (i32, i32) {
@@ -195,8 +202,20 @@ impl NativeSample for f32 {
         self as i32
     }
 
-    fn sum(xs: &[f32], acc: f64) -> f64 {
-        xs.iter().fold(acc, |sum, &x| sum + f64::from(x))
+    fn sum(xs: &[f32], acc: BlockSum) -> BlockSum {
+        xs.iter().fold(acc, |acc, &x| {
+            if x.is_nan() {
+                BlockSum {
+                    nan: acc.nan + 1,
+                    ..acc
+                }
+            } else {
+                BlockSum {
+                    sum: acc.sum + f64::from(x),
+                    ..acc
+                }
+            }
+        })
     }
 
     fn min_max(xs: &[f32], min: f32, max: f32) -> (f32, f32) {
