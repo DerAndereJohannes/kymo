@@ -7,7 +7,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-use kymo_core::{Annotation, AnnotationData, AnnotationId, AnnotationStore, ChannelId, Origin};
+use kymo_core::{
+    Annotation, AnnotationData, AnnotationId, AnnotationStore, ChannelId, ChannelKind, Origin,
+    Recording, Stream, StreamContent,
+};
 
 use crate::view::ViewState;
 
@@ -29,61 +32,104 @@ pub enum AnnotationColor {
     Custom(Rgb),
 }
 
-/// One description in the legend.
+/// One description in the legend, of one stream where the legend is grouped by stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
+    /// The stream its annotations come from (see [`AnnotationData::stream`]) where the
+    /// legend is grouped by stream, else `None`.
+    pub stream: Option<usize>,
     pub description: String,
     /// Its palette color, by first appearance, `< COLORS`; kept while a picked color
     /// replaces it.
     pub slot: usize,
-    /// The palette color, or the one picked for it (see [`Legend::apply_colors`]).
+    /// The palette color, or the one picked for its description (see
+    /// [`Legend::apply_colors`]).
     pub color: AnnotationColor,
-    /// Annotations with this description in the store.
+    /// Annotations with this description (and stream) in the store.
     pub count: usize,
     pub shown: bool,
 }
 
 /// The descriptions of a store's annotations, each with a color that never changes, a
-/// count, and whether it is shown.
+/// count, and whether it is shown. Grouped by stream (where a recording has more than one
+/// stream with annotations, see [`groups_streams`]), a description has an entry per
+/// stream it comes from; otherwise one, whatever the streams.
 #[derive(Clone, Debug, Default)]
 pub struct Legend {
     /// In order of first appearance. Entries are never removed, so their colors (by
     /// position) never change.
     entries: Vec<Entry>,
-    index: HashMap<String, usize>,
+    /// Position of each entry, by stream, then description.
+    index: HashMap<Option<usize>, HashMap<String, usize>>,
+    by_stream: bool,
     /// Counts the changes of what is shown, for [`shown_revision`](Self::shown_revision).
     shown_revision: u64,
 }
 
+/// Whether the legend of `recording` groups its descriptions by stream: where more than
+/// one stream holds annotations (an XDF stream of annotations, or one with a stim channel
+/// whose changes are events). This depends on the file only, so adding annotations never
+/// regroups the legend.
+pub fn groups_streams(recording: &Recording) -> bool {
+    let holds = |s: &Stream| match &s.content {
+        StreamContent::Annotations(_) => true,
+        StreamContent::Channels(ids) => ids.iter().any(|&c| {
+            let channel = recording.channel(c);
+            channel.kind == ChannelKind::Stim && channel.events
+        }),
+        StreamContent::NotShown(_) => false,
+    };
+    recording.streams().iter().filter(|s| holds(s)).count() > 1
+}
+
 impl Legend {
-    /// The legend of `store`, everything shown.
-    pub fn new(store: &AnnotationStore) -> Legend {
-        let mut legend = Legend::default();
+    /// The legend of `store`, everything shown; grouped by stream with `by_stream` (see
+    /// [`groups_streams`]).
+    pub fn new(store: &AnnotationStore, by_stream: bool) -> Legend {
+        let mut legend = Legend {
+            by_stream,
+            ..Legend::default()
+        };
         legend.sync(store);
         legend
     }
 
-    /// Counts `store`'s annotations per description. Descriptions not seen before are added
-    /// at the end, by onset, shown, each with the next color; known ones keep their color
-    /// and shown state, even while none of their annotations are left.
+    /// Whether descriptions are grouped by stream.
+    pub fn by_stream(&self) -> bool {
+        self.by_stream
+    }
+
+    /// The stream `a` is listed under: its own where grouped by stream, else `None`.
+    pub fn stream_of(&self, a: &AnnotationData) -> Option<usize> {
+        if self.by_stream { a.stream } else { None }
+    }
+
+    /// Counts `store`'s annotations per entry. Entries not seen before are added at the
+    /// end, by onset, shown, each with the next color; known ones keep their color and
+    /// shown state, even while none of their annotations are left.
     pub fn sync(&mut self, store: &AnnotationStore) {
         for entry in &mut self.entries {
             entry.count = 0;
         }
         for a in store.iter() {
+            let stream = self.stream_of(&a.data);
             let description = &a.data.description;
-            let i = match self.index.get(description) {
-                Some(&i) => i,
+            let i = match self.position(stream, description) {
+                Some(i) => i,
                 None => {
                     let i = self.entries.len();
                     self.entries.push(Entry {
+                        stream,
                         description: description.clone(),
                         slot: i % COLORS,
                         color: AnnotationColor::Palette(i % COLORS),
                         count: 0,
                         shown: true,
                     });
-                    self.index.insert(description.clone(), i);
+                    self.index
+                        .entry(stream)
+                        .or_default()
+                        .insert(description.clone(), i);
                     i
                 }
             };
@@ -91,7 +137,12 @@ impl Legend {
         }
     }
 
-    /// Colors each description as picked in `picked`, or with its palette color.
+    fn position(&self, stream: Option<usize>, description: &str) -> Option<usize> {
+        self.index.get(&stream)?.get(description).copied()
+    }
+
+    /// Colors each entry as picked for its description in `picked`, or with its palette
+    /// color.
     pub fn apply_colors(&mut self, picked: &AnnotationColors) {
         for entry in &mut self.entries {
             entry.color = picked
@@ -102,13 +153,33 @@ impl Legend {
         }
     }
 
-    /// Descriptions with at least one annotation, in order of first appearance.
+    /// Entries with at least one annotation, in order of first appearance.
     pub fn entries(&self) -> impl Iterator<Item = &Entry> + '_ {
         self.entries.iter().filter(|e| e.count > 0)
     }
 
-    pub fn entry(&self, description: &str) -> Option<&Entry> {
-        self.index.get(description).map(|&i| &self.entries[i])
+    /// The streams of the entries with annotations, in the recording's order, `None`
+    /// (annotations without a stream, or every one if not grouped) last.
+    pub fn streams(&self) -> Vec<Option<usize>> {
+        let mut streams: Vec<Option<usize>> = self.entries().map(|e| e.stream).collect();
+        streams.sort_by_key(|s| (s.is_none(), *s));
+        streams.dedup();
+        streams
+    }
+
+    /// The entry of `description` listed under `stream` (see [`stream_of`](Self::stream_of)).
+    pub fn entry(&self, stream: Option<usize>, description: &str) -> Option<&Entry> {
+        self.position(stream, description).map(|i| &self.entries[i])
+    }
+
+    /// The entry `a` is listed under.
+    pub fn of(&self, a: &AnnotationData) -> Option<&Entry> {
+        self.entry(self.stream_of(a), &a.description)
+    }
+
+    /// Whether `a`'s description (and stream) is shown.
+    pub fn shows(&self, a: &AnnotationData) -> bool {
+        self.of(a).is_some_and(|e| e.shown)
     }
 
     /// Whether there is no annotation to show.
@@ -116,13 +187,23 @@ impl Legend {
         self.entries().next().is_none()
     }
 
-    pub fn set_shown(&mut self, description: &str, shown: bool) {
-        if let Some(&i) = self.index.get(description)
+    pub fn set_shown(&mut self, stream: Option<usize>, description: &str, shown: bool) {
+        if let Some(i) = self.position(stream, description)
             && self.entries[i].shown != shown
         {
             self.entries[i].shown = shown;
             self.shown_revision += 1;
         }
+    }
+
+    /// Shows or hides every entry of `stream`.
+    pub fn set_stream_shown(&mut self, stream: Option<usize>, shown: bool) {
+        for entry in &mut self.entries {
+            if entry.stream == stream {
+                entry.shown = shown;
+            }
+        }
+        self.shown_revision += 1;
     }
 
     pub fn set_all_shown(&mut self, shown: bool) {
@@ -132,15 +213,24 @@ impl Legend {
         self.shown_revision += 1;
     }
 
-    /// A number that grows whenever a description is shown or hidden. Descriptions new to
-    /// the legend are shown without it, as they come with a change of the store.
+    /// A number that grows whenever a description is shown or hidden. Entries new to the
+    /// legend are shown without it, as they come with a change of the store.
     pub fn shown_revision(&self) -> u64 {
         self.shown_revision
     }
 
-    /// How many descriptions with annotations are shown, and how many there are.
+    /// How many entries with annotations are shown, and how many there are.
     pub fn shown_count(&self) -> (usize, usize) {
-        self.entries().fold((0, 0), |(shown, all), e| {
+        Self::count_shown(self.entries())
+    }
+
+    /// How many entries of `stream` with annotations are shown, and how many there are.
+    pub fn stream_shown(&self, stream: Option<usize>) -> (usize, usize) {
+        Self::count_shown(self.entries().filter(|e| e.stream == stream))
+    }
+
+    fn count_shown<'e>(entries: impl Iterator<Item = &'e Entry>) -> (usize, usize) {
+        entries.fold((0, 0), |(shown, all), e| {
             (shown + usize::from(e.shown), all + 1)
         })
     }
@@ -148,6 +238,14 @@ impl Legend {
     /// How many annotations there are, of every description.
     pub fn total(&self) -> usize {
         self.entries().map(|e| e.count).sum()
+    }
+
+    /// How many annotations of `stream` there are.
+    pub fn stream_total(&self, stream: Option<usize>) -> usize {
+        self.entries()
+            .filter(|e| e.stream == stream)
+            .map(|e| e.count)
+            .sum()
     }
 }
 
@@ -224,7 +322,7 @@ pub fn marks(
     let mut spans = Vec::new();
     // By onset, so marks of each color and span come from left to right.
     for a in store.query(view.time()) {
-        let Some(entry) = legend.entry(&a.data.description).filter(|e| e.shown) else {
+        let Some(entry) = legend.of(&a.data).filter(|e| e.shown) else {
             continue;
         };
         spans.clear();
@@ -319,7 +417,7 @@ pub fn under<'s>(
     let time = view.time_at(f64::from(near.start), width)..view.time_at(f64::from(near.end), width);
     store
         .query(time)
-        .filter(|a| legend.entry(&a.data.description).is_some_and(|e| e.shown))
+        .filter(|a| legend.shows(&a.data))
         .filter(|a| spans_all(&a.data) || channel.is_some_and(|c| a.data.channels.contains(&c)))
         .filter(|a| {
             let (columns, _) = columns(view, &a.data, width_px);
@@ -434,9 +532,10 @@ pub fn grip(left: f64, right: f64, x: f64, edge: f64, line: f64) -> Option<Grip>
     }
 }
 
-/// Whether `a` and `b` are of a kind that merges: the same description, channels and
+/// Whether `a` and `b` are of a kind that merges: the same description and channels, with
+/// `by_stream` (where the legend groups by stream, see [`Legend::by_stream`]) the same
 /// stream, neither a stim annotation.
-pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
+pub fn same_kind(a: &AnnotationData, b: &AnnotationData, by_stream: bool) -> bool {
     let sorted = |c: &[ChannelId]| {
         let mut c = c.to_vec();
         c.sort();
@@ -447,7 +546,7 @@ pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
         && b.origin != Origin::Stim
         && a.description == b.description
         && sorted(&a.channels) == sorted(&b.channels)
-        && a.stream == b.stream
+        && (!by_stream || a.stream == b.stream)
 }
 
 /// The changes that merge annotation `id` with every annotation of its kind (see
@@ -457,6 +556,7 @@ pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
 pub fn merge(
     store: &AnnotationStore,
     id: AnnotationId,
+    by_stream: bool,
 ) -> Vec<(AnnotationId, Option<AnnotationData>)> {
     let Some(edited) = store.get(id) else {
         return Vec::new();
@@ -473,7 +573,7 @@ pub fn merge(
                     && !merged.contains(&b.id)
                     && b.data.onset <= end
                     && b.data.end() >= start
-                    && same_kind(&data, &b.data)
+                    && same_kind(&data, &b.data, by_stream)
             })
             .collect();
         if found.is_empty() {
@@ -504,12 +604,16 @@ pub struct Merged {
     pub removed: Vec<AnnotationId>,
 }
 
-/// Merges, among the annotations whose description `shown` accepts, those of a kind (see
-/// [`same_kind`]) that overlap or touch, directly or through others: the earliest of each
+/// Merges, among the annotations `shown` accepts, those of a kind (see [`same_kind`], with
+/// `by_stream`) that overlap or touch, directly or through others: the earliest of each
 /// group (by onset, then id) keeps its id and origin and grows to cover the group, the
 /// others are removed. Groups of one are left out, so the result is empty if there is
 /// nothing to merge. Stim annotations never merge.
-pub fn merge_shown(store: &AnnotationStore, shown: impl Fn(&str) -> bool) -> Vec<Merged> {
+pub fn merge_shown(
+    store: &AnnotationStore,
+    by_stream: bool,
+    shown: impl Fn(&AnnotationData) -> bool,
+) -> Vec<Merged> {
     /// The group being gathered per kind, and where it ends so far.
     struct Run {
         merged: Merged,
@@ -530,13 +634,14 @@ pub fn merge_shown(store: &AnnotationStore, shown: impl Fn(&str) -> bool) -> Vec
     let mut out = Vec::new();
     // By onset, so a group is complete once an annotation of its kind starts after its end.
     for a in store.iter() {
-        if a.data.origin == Origin::Stim || !shown(&a.data.description) {
+        if a.data.origin == Origin::Stim || !shown(&a.data) {
             continue;
         }
         let mut channels = a.data.channels.clone();
         channels.sort();
         channels.dedup();
-        let key = (a.data.description.as_str(), channels, a.data.stream);
+        let stream = if by_stream { a.data.stream } else { None };
+        let key = (a.data.description.as_str(), channels, stream);
         // Closed intervals: one starting where the group ends touches it.
         match runs.get_mut(&key) {
             Some(run) if a.data.onset <= run.end => {

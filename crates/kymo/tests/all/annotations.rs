@@ -50,13 +50,13 @@ fn colors_follow_first_appearance_and_never_change() {
         data(1.0, 2.0, "a", &[]),
         data(9.0, 0.0, "b", &[]),
     ]);
-    let mut legend = Legend::new(&store);
+    let mut legend = Legend::new(&store, false);
     let own = |d: &str, c: usize, n: usize| (d.to_owned(), c, n);
     assert_eq!(colors(&legend), [own("a", 0, 1), own("b", 1, 2)]);
 
     // New descriptions take the next colors, even when they come earlier in time; the
     // known ones keep theirs, and their shown state.
-    legend.set_shown("b", false);
+    legend.set_shown(None, "b", false);
     insert(&mut store, data(0.5, 0.0, "c", &[]));
     insert(&mut store, data(0.2, 0.0, "d", &[]));
     insert(&mut store, data(3.0, 0.0, "a", &[]));
@@ -70,8 +70,8 @@ fn colors_follow_first_appearance_and_never_change() {
             own("c", 3, 1)
         ]
     );
-    assert!(!legend.entry("b").unwrap().shown);
-    assert!(legend.entry("d").unwrap().shown);
+    assert!(!legend.entry(None, "b").unwrap().shown);
+    assert!(legend.entry(None, "d").unwrap().shown);
 
     // A description whose annotations are all gone leaves the legend and keeps its color.
     let ids: Vec<_> = store
@@ -89,7 +89,7 @@ fn colors_follow_first_appearance_and_never_change() {
     );
     insert(&mut store, data(7.0, 0.0, "a", &[]));
     legend.sync(&store);
-    assert_eq!(legend.entry("a").unwrap().slot, 0);
+    assert_eq!(legend.entry(None, "a").unwrap().slot, 0);
 
     // Colors cycle: a, b, d and c take 0 to 3, x0 to x5 take 4 to 9, x6 takes 0 again.
     for k in 0..COLORS {
@@ -99,7 +99,7 @@ fn colors_follow_first_appearance_and_never_change() {
         );
     }
     legend.sync(&store);
-    assert_eq!(legend.entry("x6").unwrap().slot, 0);
+    assert_eq!(legend.entry(None, "x6").unwrap().slot, 0);
 }
 
 #[test]
@@ -109,16 +109,16 @@ fn descriptions_show_and_hide() {
         data(2.0, 0.0, "b", &[]),
         data(3.0, 0.0, "c", &[]),
     ]);
-    let mut legend = Legend::new(&store);
+    let mut legend = Legend::new(&store, false);
     assert_eq!(legend.shown_count(), (3, 3));
-    legend.set_shown("b", false);
+    legend.set_shown(None, "b", false);
     assert_eq!(legend.shown_count(), (2, 3));
     legend.set_all_shown(false);
     assert_eq!(legend.shown_count(), (0, 3));
     legend.set_all_shown(true);
     assert_eq!(legend.shown_count(), (3, 3));
     assert!(!legend.is_empty());
-    assert!(Legend::new(&AnnotationStore::default()).is_empty());
+    assert!(Legend::new(&AnnotationStore::default(), false).is_empty());
 }
 
 /// Columns of each color and span, from bands and lines separately.
@@ -131,7 +131,7 @@ fn brute_force(view: &ViewState, store: &AnnotationStore, legend: &Legend, width
     let w = f64::from(width);
     for a in store.iter() {
         let d = &a.data;
-        let entry = legend.entry(&d.description).unwrap();
+        let entry = legend.of(d).unwrap();
         if !entry.shown || d.onset >= t.end || d.end() < t.start {
             continue;
         }
@@ -220,7 +220,7 @@ fn check_labels(
     let candidates: Vec<(f64, &str, AnnotationColor)> = store
         .iter()
         .filter(|a| a.data.onset < t.end && a.data.end() >= t.start)
-        .filter(|a| legend.entry(&a.data.description).unwrap().shown)
+        .filter(|a| legend.of(&a.data).unwrap().shown)
         .filter(|a| {
             a.data.channels.is_empty()
                 || a.data.origin == Origin::Stim
@@ -231,7 +231,7 @@ fn check_labels(
         })
         .map(|a| {
             let x = view.x_at(a.data.onset, w).max(0.0);
-            let color = legend.entry(&a.data.description).unwrap().color;
+            let color = legend.of(&a.data).unwrap().color;
             (x, a.data.description.as_str(), color)
         })
         .collect();
@@ -317,9 +317,9 @@ proptest! {
         width in 1..700u32,
     ) {
         let store = AnnotationStore::from_data(annotations);
-        let mut legend = Legend::new(&store);
+        let mut legend = Legend::new(&store, false);
         for d in hidden {
-            legend.set_shown(&format!("d{d}"), false);
+            legend.set_shown(None, &format!("d{d}"), false);
         }
         let marks = marks(&view, &store, &legend, width, label_width);
         check(&marks, &brute_force(&view, &store, &legend, width), width)?;
@@ -343,9 +343,9 @@ proptest! {
         channel in 0..9u32,
     ) {
         let store = AnnotationStore::from_data(annotations);
-        let mut legend = Legend::new(&store);
+        let mut legend = Legend::new(&store, false);
         for d in hidden {
-            legend.set_shown(&format!("d{d}"), false);
+            legend.set_shown(None, &format!("d{d}"), false);
         }
         let x = x * f64::from(width);
         // A channel on screen, as under the pointer, or none.
@@ -391,7 +391,7 @@ fn thousands_of_events_thin_to_the_screen() {
         .map(|k| data(k as f64 * 0.03, 0.0, &format!("event {k}"), &[]))
         .collect();
     let store = AnnotationStore::from_data(annotations);
-    let legend = Legend::new(&store);
+    let legend = Legend::new(&store, false);
     let marks = marks(&view, &store, &legend, 400, label_width);
     assert!(marks.bands.is_empty());
     assert!(marks.lines.len() <= 400 * COLORS, "{}", marks.lines.len());
@@ -413,7 +413,7 @@ fn channel_annotations_cover_their_rows() {
         data(1.0, 2.0, "b", &[1, 6]),
         data(5.0, 0.0, "c", &[0]),
     ]);
-    let legend = Legend::new(&store);
+    let legend = Legend::new(&store, false);
     let marks = marks(&view, &store, &legend, 200, label_width);
     let spans = |marks: &[Mark]| -> Vec<(AnnotationColor, Span)> {
         let mut s: Vec<_> = marks.iter().map(|m| (m.color, m.span)).collect();
@@ -453,7 +453,7 @@ fn stim_annotations_mark_every_row() {
         ..data(onset, 0.0, "7", &[channel])
     };
     let store = AnnotationStore::from_data(vec![stim(5.0, 6), stim(10.0, 1)]);
-    let legend = Legend::new(&store);
+    let legend = Legend::new(&store, false);
     let marks = marks(&view, &store, &legend, 200, label_width);
     let lines: Vec<_> = marks
         .lines
@@ -482,7 +482,7 @@ fn bands_come_in_a_fixed_order() {
     items.push(data(0.5, 1.0, "d3", &[]));
     items.push(data(2.0, 3.0, "d1", &[0]));
     let store = AnnotationStore::from_data(items);
-    let legend = Legend::new(&store);
+    let legend = Legend::new(&store, false);
     let first = marks(&view, &store, &legend, 300, label_width);
     let keys: Vec<_> = first
         .bands
@@ -582,14 +582,14 @@ fn any_mergeable() -> impl Strategy<Value = AnnotationData> {
 }
 
 /// Whether `a` and `b` merge, without `annotations::same_kind`: the same description,
-/// channels as sets and stream, neither from the stim channel.
-fn of_a_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
+/// channels as sets and, `by_stream`, stream, neither from the stim channel.
+fn of_a_kind(a: &AnnotationData, b: &AnnotationData, by_stream: bool) -> bool {
     let set = |d: &AnnotationData| d.channels.iter().copied().collect::<BTreeSet<_>>();
     a.origin != Origin::Stim
         && b.origin != Origin::Stim
         && a.description == b.description
         && set(a) == set(b)
-        && a.stream == b.stream
+        && (!by_stream || a.stream == b.stream)
 }
 
 proptest! {
@@ -597,12 +597,13 @@ proptest! {
     fn merging_joins_exactly_the_annotations_of_a_kind_it_reaches(
         items in proptest::collection::vec(any_mergeable(), 1..30),
         n: usize,
+        by_stream: bool,
     ) {
         use kymo::annotations::merge;
         let store = AnnotationStore::from_data(items);
         let all: Vec<Annotation> = store.iter().cloned().collect();
         let edited = all[n % all.len()].clone();
-        let changes = merge(&store, edited.id);
+        let changes = merge(&store, edited.id, by_stream);
         let mut after = store.clone();
         for (id, data) in &changes {
             kymo::history::set(&mut after, *id, data.clone()).unwrap();
@@ -617,7 +618,7 @@ proptest! {
             prop_assert!(first.1.is_some());
             for (id, data) in rest {
                 prop_assert!(data.is_none());
-                prop_assert!(of_a_kind(&edited.data, &store.get(*id).unwrap().data));
+                prop_assert!(of_a_kind(&edited.data, &store.get(*id).unwrap().data, by_stream));
             }
         }
         let grown = after.get(edited.id).unwrap().data.clone();
@@ -629,7 +630,7 @@ proptest! {
         for b in after.iter() {
             prop_assert!(
                 b.id == edited.id
-                    || !of_a_kind(&grown, &b.data)
+                    || !of_a_kind(&grown, &b.data, by_stream)
                     || b.data.onset > grown.end()
                     || b.data.end() < grown.onset,
                 "{:?} still reaches {:?}", b, grown
@@ -639,7 +640,7 @@ proptest! {
         let covered = |s: &AnnotationStore| {
             union(
                 s.iter()
-                    .filter(|b| of_a_kind(&edited.data, &b.data))
+                    .filter(|b| of_a_kind(&edited.data, &b.data, by_stream))
                     .map(|b| (b.data.onset, b.data.end()))
                     .collect(),
             )
@@ -647,7 +648,7 @@ proptest! {
         prop_assert_eq!(covered(&after), covered(&store));
         let others = |s: &AnnotationStore| {
             s.iter()
-                .filter(|b| !of_a_kind(&edited.data, &b.data))
+                .filter(|b| !of_a_kind(&edited.data, &b.data, by_stream))
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -661,11 +662,12 @@ proptest! {
         items in proptest::collection::vec(any_mergeable(), 0..40),
         bad_shown: bool,
         x_shown: bool,
+        by_stream: bool,
     ) {
         use kymo::annotations::merge_shown;
         let shown = |d: &str| if d == "BAD" { bad_shown } else { x_shown };
         let store = AnnotationStore::from_data(items);
-        let merged = merge_shown(&store, shown);
+        let merged = merge_shown(&store, by_stream, |a| shown(&a.description));
         let mut after = store.clone();
         for m in &merged {
             kymo::history::set(&mut after, m.kept, Some(m.data.clone())).unwrap();
@@ -680,7 +682,7 @@ proptest! {
         for (i, a) in left.iter().enumerate() {
             for b in &left[i + 1..] {
                 prop_assert!(
-                    !of_a_kind(&a.data, &b.data)
+                    !of_a_kind(&a.data, &b.data, by_stream)
                         || b.data.onset > a.data.end()
                         || b.data.end() < a.data.onset,
                     "{:?} still reaches {:?}", a, b
@@ -692,7 +694,7 @@ proptest! {
             let covered = |s: &AnnotationStore| {
                 union(
                     s.iter()
-                        .filter(|b| of_a_kind(&a.data, &b.data))
+                        .filter(|b| of_a_kind(&a.data, &b.data, by_stream))
                         .map(|b| (b.data.onset, b.data.end()))
                         .collect(),
                 )
@@ -711,7 +713,7 @@ proptest! {
             );
             for id in &m.removed {
                 let b = &store.get(*id).unwrap().data;
-                prop_assert!(of_a_kind(kept, b));
+                prop_assert!(of_a_kind(kept, b, by_stream));
                 prop_assert!((b.onset, id.0) > (kept.onset, m.kept.0));
                 prop_assert!(after.get(*id).is_none());
             }
@@ -736,7 +738,7 @@ fn merging_the_shown_keeps_a_covering_annotation_exact() {
         data(0.1, 0.2, "BAD", &[]),
         data(0.15, 0.05, "BAD", &[]),
     ]);
-    let merged = kymo::annotations::merge_shown(&store, |_| true);
+    let merged = kymo::annotations::merge_shown(&store, false, |_| true);
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].data, store.get(merged[0].kept).unwrap().data);
 }

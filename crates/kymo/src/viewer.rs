@@ -245,7 +245,10 @@ impl Viewer {
         Viewer {
             stim: has_stim.then(|| StimAnnotations::new(stim)),
             summary: document.summary(),
-            legend: Legend::new(&document.annotations),
+            legend: Legend::new(
+                &document.annotations,
+                annotations::groups_streams(&document.recording),
+            ),
             view: ViewState::with_default_span(&document.recording, default_span),
             document,
             service: Some(service),
@@ -350,7 +353,7 @@ impl Viewer {
             .map(|a| &a.data)
             .filter(|a| {
                 if shown_only {
-                    self.legend.entry(&a.description).is_some_and(|e| e.shown)
+                    self.legend.shows(a)
                 } else {
                     a.origin != Origin::Stim
                 }
@@ -414,8 +417,8 @@ impl Viewer {
 
     /// What merging the shown annotations would do (see [`annotations::merge_shown`]).
     fn merged_shown(&self) -> Vec<annotations::Merged> {
-        annotations::merge_shown(&self.document.annotations, |d| {
-            self.legend.entry(d).is_some_and(|e| e.shown)
+        annotations::merge_shown(&self.document.annotations, self.legend.by_stream(), |a| {
+            self.legend.shows(a)
         })
     }
 
@@ -585,11 +588,10 @@ impl Viewer {
     /// annotations never get selected (see [`annotations::pick`]), and the history never
     /// holds them.
     fn selectable(&self, id: AnnotationId) -> bool {
-        self.document.annotations.get(id).is_some_and(|a| {
-            self.legend
-                .entry(&a.data.description)
-                .is_some_and(|e| e.shown)
-        })
+        self.document
+            .annotations
+            .get(id)
+            .is_some_and(|a| self.legend.shows(&a.data))
     }
 
     /// Whether the description field had the keyboard at the last frame: an Esc now left
@@ -626,7 +628,7 @@ impl Viewer {
             before,
             after,
         }];
-        for (id, data) in annotations::merge(store, edited) {
+        for (id, data) in annotations::merge(store, edited, self.legend.by_stream()) {
             let before = store.get(id).map(|a| a.data.clone());
             history::set(store, id, data.clone()).expect("merged annotations are valid");
             step.push(Change {
@@ -679,10 +681,11 @@ impl Viewer {
             description: description.clone(),
             ..before.clone()
         };
+        let stream = self.legend.stream_of(&after);
         history::set(&mut self.document.annotations, id, Some(after))
             .expect("a new description keeps it valid");
         self.legend.sync(&self.document.annotations);
-        self.legend.set_shown(&description, true);
+        self.legend.set_shown(stream, &description, true);
         self.record(id, Some(before));
     }
 
@@ -882,7 +885,7 @@ impl Viewer {
             .selected
             .and_then(|id| self.document.annotations.get(id));
         let swatch = selected
-            .and_then(|a| self.legend.entry(&a.data.description))
+            .and_then(|a| self.legend.of(&a.data))
             .map(|e| e.color);
         let mode = self.editing.then(|| match selected {
             Some(a) => status::selection_text(
@@ -1100,7 +1103,7 @@ impl Viewer {
             .and_then(|id| self.document.annotations.get(id))
             .and_then(|a| {
                 let columns = annotations::extent(&self.view, &a.data, size_px[0])?;
-                let color = self.legend.entry(&a.data.description)?.color;
+                let color = self.legend.of(&a.data)?.color;
                 let x = Rangef::new(x_of(columns.start), x_of(columns.end));
                 let mut rect = Rect::from_x_y_ranges(x, traces.y_range());
                 if columns.len() == 1 {
@@ -1418,7 +1421,8 @@ impl Viewer {
             history::set(store, drag.id, data).expect("times within the recording are valid");
             self.legend.sync(store);
             if drag.before.is_none() && store.get(drag.id).is_some() {
-                self.legend.set_shown(&drag.base.description, true);
+                let stream = self.legend.stream_of(&drag.base);
+                self.legend.set_shown(stream, &drag.base.description, true);
             }
         }
         if response.drag_stopped() {

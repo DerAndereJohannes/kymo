@@ -6,7 +6,7 @@ use eframe::egui::{
 };
 use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
-use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
+use crate::annotations::{AnnotationColors, Entry, Legend};
 use crate::document::{Document, Summary, format_rate, grid_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
@@ -136,7 +136,13 @@ pub fn header_panel(
                     relabel = description_row(ui, field, legend);
                 }
                 if !legend.is_empty() {
-                    legend_list(ui, recording, legend, annotation_colors);
+                    legend_list(
+                        ui,
+                        recording,
+                        document.recording.streams(),
+                        legend,
+                        annotation_colors,
+                    );
                 }
             });
     }
@@ -253,7 +259,13 @@ fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) ->
     };
     let mut picked = None;
     // The menu first, at the right, so the field takes the rest.
-    let descriptions: Vec<String> = legend.entries().map(|e| e.description.clone()).collect();
+    // Each once, though several streams may have it.
+    let mut descriptions: Vec<String> = Vec::new();
+    for e in legend.entries() {
+        if !descriptions.contains(&e.description) {
+            descriptions.push(e.description.clone());
+        }
+    }
     let menu = row.add_enabled_ui(!descriptions.is_empty(), |ui| {
         egui::ComboBox::from_id_salt("descriptions")
             .selected_text("")
@@ -298,8 +310,17 @@ fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) ->
 /// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how
 /// many there are; then a row per description: a checkbox, its color (a click picks
 /// another, kept in `picked`), the description and how many annotations have it. Counts
-/// are right-aligned. Scrolls beyond [`LEGEND_ROWS`] description rows.
-fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut AnnotationColors) {
+/// are right-aligned. Grouped by stream (see [`Legend::by_stream`]), each stream of
+/// `streams` with annotations gets a row first (see [`legend_stream_row`]) and its
+/// descriptions' rows below it, indented; annotations without a stream come last, under
+/// "Added". Scrolls beyond [`LEGEND_ROWS`] rows.
+fn legend_list(
+    ui: &mut Ui,
+    recording: u64,
+    streams: &[Stream],
+    legend: &mut Legend,
+    picked: &mut AnnotationColors,
+) {
     let (shown, all) = legend.shown_count();
     let row_height = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -317,22 +338,52 @@ fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut An
             legend.set_all_shown(checked);
         }
     });
-    let entries: Vec<(String, AnnotationColor, usize, bool)> = legend
-        .entries()
-        .map(|e| (e.description.clone(), e.color, e.count, e.shown))
-        .collect();
+
+    let grouped = legend.by_stream();
+    let closed_key = ui.scope_id().with(("closed annotation streams", recording));
+    let mut closed: Vec<Option<usize>> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
+    let group_name = |stream: Option<usize>| {
+        stream
+            .and_then(|s| streams.get(s))
+            .map_or_else(|| "Added".to_owned(), stream_name)
+    };
+    let mut rows: Vec<LegendRow> = Vec::new();
+    // Rows with every stream open: the legend keeps their height, so collapsing a stream
+    // leaves room at the bottom rather than moving the legend (and the row clicked) down.
+    let mut all_rows = legend.entries().count();
+    if grouped {
+        all_rows += legend.streams().len();
+        for stream in legend.streams() {
+            rows.push(LegendRow::Stream(stream));
+            if !closed.contains(&stream) {
+                rows.extend(
+                    legend
+                        .entries()
+                        .filter(|e| e.stream == stream)
+                        .map(|e| LegendRow::Entry(e.clone())),
+                );
+            }
+        }
+    } else {
+        rows.extend(legend.entries().map(|e| LegendRow::Entry(e.clone())));
+    }
+    let indent = if grouped {
+        CHEVRON_WIDTH + ui.spacing().item_spacing.x
+    } else {
+        0.0
+    };
+    let mut toggled = None;
     // Exactly as tall as its rows, up to LEGEND_ROWS: the panel holding it would otherwise
     // keep its first height.
-    let height = (entries.len() as f32).min(LEGEND_ROWS)
-        * (row_height + ui.spacing().item_spacing.y)
+    let height = (all_rows as f32).min(LEGEND_ROWS) * (row_height + ui.spacing().item_spacing.y)
         - ui.spacing().item_spacing.y;
     from_top(ui, "legend", recording, ScrollArea::vertical())
         .id_salt("legend")
         .min_scrolled_height(height)
         .max_height(height)
-        .auto_shrink([false, true])
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (description, color, count, shown) in entries {
+            for item in rows {
                 let (rect, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
                 let mut row = ui.new_child(
@@ -340,18 +391,50 @@ fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut An
                         .max_rect(rect)
                         .layout(Layout::right_to_left(Align::Center)),
                 );
+                let entry = match item {
+                    LegendRow::Stream(stream) => {
+                        let open = !closed.contains(&stream);
+                        let kind = stream.and_then(|s| streams.get(s)).map(|s| s.kind.trim());
+                        let group = LegendGroup {
+                            stream,
+                            name: group_name(stream),
+                            kind: kind.unwrap_or(""),
+                            open,
+                        };
+                        if legend_stream_row(&mut row, legend, group) {
+                            toggled = Some(stream);
+                        }
+                        continue;
+                    }
+                    LegendRow::Entry(entry) => entry,
+                };
+                let Entry {
+                    stream,
+                    description,
+                    color,
+                    count,
+                    shown,
+                    ..
+                } = entry;
+                // In a group, the description's stream tells rows of one description apart.
+                let named = if grouped {
+                    format!("{description} in {}", group_name(stream))
+                } else {
+                    description.clone()
+                };
                 // The count first, at the right, so a long description truncates.
                 row.add(Label::new(RichText::new(count.to_string()).weak()).extend());
                 row.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add_space(indent);
                     let mut checked = shown;
                     let response = ui.add(Checkbox::without_text(&mut checked));
-                    accessible_label(ui, &response, format!("Show {description}"));
+                    accessible_label(ui, &response, format!("Show {named}"));
                     if response.changed() {
-                        legend.set_shown(&description, checked);
+                        legend.set_shown(stream, &description, checked);
                     }
                     let side = ui.text_style_height(&TextStyle::Body) * 0.7;
                     let shown_color = annotation_color(color, ui.visuals());
-                    let label = format!("Color of {description}");
+                    let label = format!("Color of {named}");
                     let is_picked = picked.contains_key(&description);
                     match swatch(ui, &label, shown_color, is_picked, vec2(side, side)) {
                         Some(Choice::Picked(c)) => {
@@ -373,6 +456,77 @@ fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut An
                 });
             }
         });
+    if let Some(stream) = toggled {
+        if let Some(i) = closed.iter().position(|&c| c == stream) {
+            closed.remove(i);
+        } else {
+            closed.push(stream);
+        }
+        ui.data_mut(|d| d.insert_temp(closed_key, closed));
+    }
+}
+
+/// A row of the annotation legend.
+enum LegendRow {
+    /// A stream's row (`None`: annotations without a stream, "Added").
+    Stream(Option<usize>),
+    Entry(Entry),
+}
+
+/// A stream of the annotation legend, as its row shows it.
+struct LegendGroup<'a> {
+    stream: Option<usize>,
+    name: String,
+    /// The stream's type, empty for "Added" or a stream without one.
+    kind: &'a str,
+    open: bool,
+}
+
+/// A stream's row in the annotation legend: a chevron that shows or hides its
+/// descriptions' rows, a checkbox for all of them (mixed while some are shown), its name
+/// (a click also shows or hides the rows; the name and type on hover), and at the right
+/// how many annotations it has. Returns whether the rows are to be shown or hidden.
+fn legend_stream_row(row: &mut Ui, legend: &mut Legend, group: LegendGroup<'_>) -> bool {
+    let LegendGroup {
+        stream,
+        name,
+        kind,
+        open,
+    } = group;
+    let (shown, all) = legend.stream_shown(stream);
+    let row_height = row.max_rect().height();
+    row.add(Label::new(RichText::new(legend.stream_total(stream).to_string()).weak()).extend());
+    row.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        let (rect, arrow) = ui.allocate_exact_size(vec2(CHEVRON_WIDTH, row_height), Sense::click());
+        let color = if arrow.hovered() {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        chevron(ui.painter(), rect.center(), open, color);
+        let verb = if open { "Collapse" } else { "Expand" };
+        accessible_label(ui, &arrow, format!("{verb} {name}"));
+        let arrow = arrow.on_hover_cursor(CursorIcon::PointingHand);
+
+        let mut checked = shown == all;
+        let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
+        let response = ui.add(checkbox);
+        accessible_label(ui, &response, format!("Show {name}"));
+        if response.changed() {
+            legend.set_stream_shown(stream, checked);
+        }
+
+        let label = Label::new(RichText::new(&name).strong())
+            .sense(Sense::click())
+            .selectable(false)
+            .truncate();
+        let mut response = ui.add(label);
+        if !kind.is_empty() {
+            response = response.on_hover_text(format!("{name}\n{kind}"));
+        }
+        arrow.clicked() || response.clicked()
+    })
+    .inner
 }
 
 /// Narrowest the list's names get, in ems (the body font's size), before columns drop out;

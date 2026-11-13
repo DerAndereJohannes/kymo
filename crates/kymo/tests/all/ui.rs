@@ -1661,7 +1661,7 @@ fn the_legend_shows_and_hides_annotations() {
     assert_eq!(
         viewer(&harness)
             .legend()
-            .entry("sleep stage N2")
+            .entry(None, "sleep stage N2")
             .unwrap()
             .count,
         20
@@ -1916,7 +1916,7 @@ fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
     let legend = viewer(&harness).legend();
     let codes: std::collections::BTreeSet<&str> = want.iter().map(|w| w.1.as_str()).collect();
     for code in &codes {
-        let entry = legend.entry(code).unwrap();
+        let entry = legend.entry(None, code).unwrap();
         assert!(entry.shown && entry.count > 0, "{entry:?}");
     }
     assert_eq!(legend.shown_count(), (12 + codes.len(), 12 + codes.len()));
@@ -1937,7 +1937,13 @@ fn stim_annotations_follow_the_rule_and_keep_the_file_annotations() {
         assert_eq!(stim_item(&mut harness, item), (true, true));
         assert_eq!(stim_item(&mut harness, "Every Change"), (true, false));
         assert_eq!(file_annotations(&harness), files);
-        assert!(!viewer(&harness).legend().entry("trigger 0").unwrap().shown);
+        assert!(
+            !viewer(&harness)
+                .legend()
+                .entry(None, "trigger 0")
+                .unwrap()
+                .shown
+        );
     }
     choose_stim(&mut harness, "Initial Code");
     let initial = expected_stim(&spec, increasing, true);
@@ -2372,7 +2378,8 @@ fn annotation_colors_are_picked_per_description_and_kept() {
     let file = without_triggers("edf+d-mixed");
     let mut harness = fonts_window(file.path(), options());
     ready(&mut harness);
-    let color = |h: &Harness<'_, KymoApp>, d: &str| viewer(h).legend().entry(d).unwrap().color;
+    let color =
+        |h: &Harness<'_, KymoApp>, d: &str| viewer(h).legend().entry(None, d).unwrap().color;
     let line_colors = |h: &Harness<'_, KymoApp>| {
         let mut colors: Vec<_> = viewer(h).marks().lines.iter().map(|m| m.color).collect();
         colors.sort();
@@ -2593,7 +2600,11 @@ fn annotation_mode_creates_selects_and_deletes_with_undo() {
     let id = viewer(&harness)
         .selected()
         .expect("the new annotation is selected");
-    let entry = viewer(&harness).legend().entry("BAD").unwrap().clone();
+    let entry = viewer(&harness)
+        .legend()
+        .entry(None, "BAD")
+        .unwrap()
+        .clone();
     assert_eq!((entry.count, entry.shown), (1, true));
     assert!(enabled(&mut harness, "Edit", "Undo"));
     assert!(enabled(&mut harness, "Edit", "Delete"));
@@ -2613,7 +2624,7 @@ fn annotation_mode_creates_selects_and_deletes_with_undo() {
         "{status}"
     );
     // With a swatch in its color before it.
-    let color = viewer(&harness).legend().entry("BAD").unwrap().color;
+    let color = viewer(&harness).legend().entry(None, "BAD").unwrap().color;
     assert_eq!(viewer(&harness).status().swatch, Some(color));
 
     // A click away from annotations deselects; on it, selects.
@@ -2817,7 +2828,7 @@ fn clicks_select_the_shortest_editable_annotation() {
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
     let (a, b) = (at_time(&harness, 2.0, 40.0), at_time(&harness, 3.0, 40.0));
     drag(&mut harness, a, b);
-    assert!(viewer(&harness).legend().entry("BAD").unwrap().shown);
+    assert!(viewer(&harness).legend().entry(None, "BAD").unwrap().shown);
     assert!(pick(&mut harness, 13.5).is_some());
 
     // An event, "trigger 2", gets an outline around its line.
@@ -2964,7 +2975,14 @@ fn the_description_field_names_new_annotations() {
     let got = made(&harness);
     assert_eq!(got.len(), 2);
     assert_eq!(got[1].2, "spike");
-    assert_eq!(viewer(&harness).legend().entry("spike").unwrap().count, 2);
+    assert_eq!(
+        viewer(&harness)
+            .legend()
+            .entry(None, "spike")
+            .unwrap()
+            .count,
+        2
+    );
 
     // Out of annotation mode the field goes, the legend stays.
     press(&mut harness, command(), Key::E);
@@ -3311,7 +3329,11 @@ fn the_theme_follows_the_setting_and_the_system() {
             })
             .next()
             .expect("a legend swatch below the Settings window");
-        let color = viewer(harness).legend().entry(&description).unwrap().color;
+        let color = viewer(harness)
+            .legend()
+            .entry(None, &description)
+            .unwrap()
+            .color;
         let visuals = harness.ctx.global_style().visuals.clone();
         assert_eq!(background, visuals.extreme_bg_color, "trace area");
         // Within rounding: the swatch's variants differ by far more.
@@ -4143,7 +4165,7 @@ fn merge_annotations_merges_the_shown_ones_in_one_step() {
     assert!(got.iter().all(|s| s.2 == File));
     assert_spans(spans(&harness, "x"), &x);
     let count =
-        |harness: &Harness<'_, KymoApp>, d| viewer(harness).legend().entry(d).unwrap().count;
+        |harness: &Harness<'_, KymoApp>, d| viewer(harness).legend().entry(None, d).unwrap().count;
     assert_eq!(count(&harness, "BAD"), 2);
     assert!(harness.state().title().contains("(edited)"));
     assert!(!enabled(&mut harness, "Edit", merge));
@@ -4270,11 +4292,14 @@ fn the_field_changes_the_selected_annotations_description() {
     // Typed, it applies on Enter, not before: no legend entry per letter.
     retype(&mut harness, "eye");
     assert_eq!(first(&harness), "BAD");
-    assert!(viewer(&harness).legend().entry("e").is_none());
+    assert!(viewer(&harness).legend().entry(None, "e").is_none());
     harness.key_press(Key::Enter);
     harness.run_steps(2);
     assert_eq!(first(&harness), "eye");
-    assert_eq!(viewer(&harness).legend().entry("eye").unwrap().count, 1);
+    assert_eq!(
+        viewer(&harness).legend().entry(None, "eye").unwrap().count,
+        1
+    );
     assert!(
         viewer(&harness)
             .legend()
@@ -4335,11 +4360,23 @@ fn the_field_changes_the_selected_annotations_description() {
     let (a, b) = (at(&harness, 3.0), at(&harness, 5.0));
     drag(&mut harness, a, b);
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show blink");
-    assert!(!viewer(&harness).legend().entry("blink").unwrap().shown);
+    assert!(
+        !viewer(&harness)
+            .legend()
+            .entry(None, "blink")
+            .unwrap()
+            .shown
+    );
     retype(&mut harness, "blink");
     harness.key_press(Key::Enter);
     harness.run_steps(2);
-    assert!(viewer(&harness).legend().entry("blink").unwrap().shown);
+    assert!(
+        viewer(&harness)
+            .legend()
+            .entry(None, "blink")
+            .unwrap()
+            .shown
+    );
     let blinks: Vec<_> = descriptions(&harness)
         .into_iter()
         .filter(|d| d.2 == "blink")
@@ -4417,9 +4454,16 @@ fn saved_annotations_load_into_another_window() {
     assert!(loaded.contains(&made[0]), "{loaded:?}");
     assert!(harness.state().title().contains("(edited)"));
     // The legend counts them.
-    assert_eq!(viewer(&harness).legend().entry("BAD").unwrap().count, 1);
     assert_eq!(
-        viewer(&harness).legend().entry("trigger 3").unwrap().count,
+        viewer(&harness).legend().entry(None, "BAD").unwrap().count,
+        1
+    );
+    assert_eq!(
+        viewer(&harness)
+            .legend()
+            .entry(None, "trigger 3")
+            .unwrap()
+            .count,
         2
     );
     press(&mut harness, command(), Key::Z);
@@ -5440,4 +5484,292 @@ fn a_dragged_name_scrolls_the_list_at_its_edge() {
     harness.run_steps(2);
     let place = order(&harness).iter().position(|&c| c == 0).unwrap();
     assert!(place >= channels - 3, "A1 at {place} of {channels}");
+}
+
+/// An XDF file of an EEG stream ("Amp": Fz, Cz, Pz at 10 Hz for 30 s) and two marker
+/// streams sharing a description: "Keyboard" (id 2: go, stop, go) and "Task" (id 3: go,
+/// rest).
+fn marker_streams_xdf() -> TempFile {
+    use kymo_testgen::XdfFormat;
+    use kymo_testgen::xdf::{Chunks, header_xml};
+    let amp: Vec<(String, String, String)> = ["Fz", "Cz", "Pz"]
+        .iter()
+        .map(|l| ((*l).to_owned(), "EEG".to_owned(), "microvolts".to_owned()))
+        .collect();
+    let mut c = Chunks::new(None);
+    c.stream_header(1, &header_xml("Amp", "EEG", 3, 10.0, "float32", Some(&amp)));
+    c.stream_header(
+        2,
+        &header_xml("Keyboard", "Markers", 1, 0.0, "string", None),
+    );
+    c.stream_header(3, &header_xml("Task", "Markers", 1, 0.0, "string", None));
+    let samples: Vec<(Option<f64>, Vec<f64>)> = (0..300)
+        .map(|i| (Some(f64::from(i) / 10.0), vec![f64::from(i % 7); 3]))
+        .collect();
+    c.numeric(1, XdfFormat::F32, &samples);
+    let marker = |t: f64, text: &str| (Some(t), vec![text.to_owned()]);
+    c.strings(
+        2,
+        &[marker(1.0, "go"), marker(4.0, "stop"), marker(9.0, "go")],
+    );
+    c.strings(3, &[marker(2.0, "go"), marker(6.0, "rest")]);
+    for id in 1..=3 {
+        c.footer(id, "<info/>");
+    }
+    let file = TempFile::new("xdf");
+    std::fs::write(file.path(), &c.bytes).unwrap();
+    file
+}
+
+/// A recording with several streams of annotations groups its legend by stream: a row
+/// per stream shows and hides its descriptions, collapses their rows (by its chevron or
+/// name), and counts its annotations; a description of two streams has a row in each.
+/// Annotations without a stream (added or loaded) come last, under "Added"; they save and
+/// load with their stream.
+#[test]
+fn several_annotation_streams_group_the_legend() {
+    use egui::accesskit::{Role, Toggled};
+    let file = marker_streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // Streams 1 (Keyboard) and 2 (Task), by index.
+    let (keyboard, task) = (Some(1), Some(2));
+    let entry = |h: &Harness<'_, KymoApp>, stream, d: &str| {
+        let e = viewer(h).legend().entry(stream, d).unwrap().clone();
+        (e.count, e.shown)
+    };
+    assert!(viewer(&harness).legend().by_stream());
+    assert_eq!(entry(&harness, keyboard, "go"), (2, true));
+    assert_eq!(entry(&harness, task, "go"), (1, true));
+    let legend = viewer(&harness).legend();
+    assert_eq!(
+        (legend.stream_total(keyboard), legend.stream_total(task)),
+        (3, 2)
+    );
+    // Each stream's row, then its descriptions', which line up with the stream's box.
+    let top = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().top();
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    let order = [
+        "Show Keyboard",
+        "Show go in Keyboard",
+        "Show stop in Keyboard",
+        "Show Task",
+        "Show go in Task",
+        "Show rest in Task",
+    ];
+    for pair in order.windows(2) {
+        assert!(top(&harness, pair[0]) < top(&harness, pair[1]), "{pair:?}");
+    }
+    assert_eq!(
+        left(&harness, "Show go in Keyboard"),
+        left(&harness, "Show Keyboard")
+    );
+    assert!(left(&harness, "Collapse Keyboard") < left(&harness, "Show Keyboard"));
+    let lines = |h: &Harness<'_, KymoApp>| viewer(h).marks().lines.len();
+    assert_eq!(lines(&harness), 5);
+
+    // A stream's box hides and shows its descriptions; mixed while some are shown.
+    click_in_list(&mut harness, Role::CheckBox, "Show Keyboard");
+    assert_eq!(entry(&harness, keyboard, "go"), (2, false));
+    assert_eq!(entry(&harness, keyboard, "stop"), (1, false));
+    assert_eq!(entry(&harness, task, "go"), (1, true));
+    assert_eq!(lines(&harness), 2);
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Annotations"),
+        Toggled::Mixed
+    );
+    click_in_list(&mut harness, Role::CheckBox, "Show Keyboard");
+    assert_eq!(lines(&harness), 5);
+    click_in_list(&mut harness, Role::CheckBox, "Show go in Task");
+    assert_eq!(entry(&harness, task, "go"), (1, false));
+    assert_eq!(entry(&harness, keyboard, "go"), (2, true));
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show Task"),
+        Toggled::Mixed
+    );
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show Keyboard"),
+        Toggled::True
+    );
+    click_in_list(&mut harness, Role::CheckBox, "Show Task");
+    assert_eq!(entry(&harness, task, "go"), (1, true));
+
+    // Its chevron, or its name, hides its descriptions' rows, not their marks; the name
+    // has the type on hover.
+    // Nothing moves: the legend keeps its height.
+    let before = top(&harness, "Show Keyboard");
+    harness.get_by_label("Collapse Keyboard").click();
+    harness.run_steps(3);
+    assert_eq!(top(&harness, "Show Keyboard"), before);
+    assert!(harness.query_by_label("Show go in Keyboard").is_none());
+    harness.get_by_label("Show go in Task");
+    assert_eq!(lines(&harness), 5);
+    harness.get_by_label("Expand Keyboard").click();
+    harness.run_steps(2);
+    harness.get_by_label("Show go in Keyboard");
+    click_in_list(&mut harness, Role::Label, "Task");
+    assert!(harness.query_by_label("Show rest in Task").is_none());
+    let name = harness.get_by_role_and_label(Role::Label, "Task").rect();
+    hover(&mut harness, name.center());
+    assert!(tooltip(&mut harness, "Task\nMarkers"));
+    click_in_list(&mut harness, Role::Label, "Task");
+    harness.get_by_label("Show rest in Task");
+
+    // The description menu has each description once.
+    press(&mut harness, command(), Key::E);
+    harness.get_by_label("Descriptions").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness
+            .query_all_by_role_and_label(Role::Button, "go")
+            .count(),
+        1
+    );
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    // A description an annotation is given shows, in its stream: Keyboard's second "go"
+    // becomes the hidden "stop" (undone after).
+    click_in_list(&mut harness, Role::CheckBox, "Show stop in Keyboard");
+    click_at_time(&mut harness, 9.0);
+    harness.run_steps(2);
+    assert_eq!(selected_data(&harness).unwrap().stream, keyboard);
+    harness.get_by_label("Descriptions").click();
+    harness.run_steps(2);
+    click_in_list(&mut harness, Role::Button, "stop");
+    harness.run_steps(2);
+    assert_eq!(entry(&harness, keyboard, "stop"), (2, true));
+    assert_eq!(selected_data(&harness).unwrap().stream, keyboard);
+    press(&mut harness, command(), Key::Z);
+    assert_eq!(entry(&harness, keyboard, "go"), (2, true));
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+
+    // An annotation added in the viewer has no stream: "Added", last.
+    describe(&mut harness, "go");
+    let (a, b) = (at_time(&harness, 12.0, 40.0), at_time(&harness, 13.0, 40.0));
+    drag(&mut harness, a, b);
+    assert_eq!(entry(&harness, None, "go"), (1, true));
+    assert!(top(&harness, "Show rest in Task") < top(&harness, "Show Added"));
+    harness.get_by_label("Show go in Added");
+    assert_eq!(entry(&harness, keyboard, "go"), (2, true));
+
+    // Saved with their streams' ids, and loaded back into them: ids 2 and 3 are Keyboard
+    // and Task, stream 9 isn't in the file.
+    let mut out = Vec::new();
+    viewer(&harness).write_annotations(&mut out, false).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let mut lines_of: Vec<(String, String)> = text
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[2].to_owned(), f[3].to_owned())
+        })
+        .collect();
+    lines_of.sort();
+    assert_eq!(
+        text.lines().next(),
+        Some("onset\tduration\ttrial_type\tstream_id")
+    );
+    let own = |d: &str, s: &str| (d.to_owned(), s.to_owned());
+    assert_eq!(
+        lines_of,
+        [
+            own("go", "2"),
+            own("go", "2"),
+            own("go", "3"),
+            own("go", "n/a"),
+            own("rest", "3"),
+            own("stop", "2"),
+        ]
+    );
+    let table = TempFile::new("tsv");
+    std::fs::write(
+        table.path(),
+        "onset\tduration\ttrial_type\tstream_id\n20\t0\trest\t3\n21\t0\tstop\t9\n",
+    )
+    .unwrap();
+    assert!(harness.state_mut().load_annotations_from(table.path()));
+    harness.run_steps(2);
+    assert_eq!(entry(&harness, task, "rest"), (2, true));
+    assert_eq!(entry(&harness, None, "stop"), (1, true));
+    assert_eq!(entry(&harness, keyboard, "stop"), (1, true));
+
+    // Only annotations of a stream merge: a copy of Keyboard's first "go", and one
+    // without a stream, at the same time.
+    std::fs::write(
+        table.path(),
+        "onset\tduration\ttrial_type\tstream_id\n1\t0\tgo\t2\n1\t0\tgo\tn/a\n",
+    )
+    .unwrap();
+    assert!(harness.state_mut().load_annotations_from(table.path()));
+    harness.run_steps(2);
+    assert_eq!(entry(&harness, keyboard, "go"), (3, true));
+    choose(&mut harness, "Edit", "Merge Annotations");
+    assert_eq!(entry(&harness, keyboard, "go"), (2, true));
+    assert_eq!(entry(&harness, None, "go"), (2, true));
+}
+
+/// A recording with one stream of annotations, or none, has the legend as before: no
+/// stream rows, and an added annotation joins the file's of its description.
+#[test]
+fn one_annotation_stream_keeps_the_legend_flat() {
+    let file = streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert!(!viewer(&harness).legend().by_stream());
+    assert!(harness.query_by_label("Collapse Markers").is_none());
+    harness.get_by_label("Show go");
+    press(&mut harness, command(), Key::E);
+    describe(&mut harness, "go");
+    let (a, b) = (at_time(&harness, 12.0, 40.0), at_time(&harness, 13.0, 40.0));
+    drag(&mut harness, a, b);
+    assert_eq!(
+        viewer(&harness).legend().entry(None, "go").unwrap().count,
+        2
+    );
+    assert!(harness.query_by_label("Show Added").is_none());
+    // An edit merges it with the file's, as the stream doesn't count.
+    let (a, b) = (at_time(&harness, 0.5, 40.0), at_time(&harness, 1.5, 40.0));
+    drag(&mut harness, a, b);
+    assert_eq!(
+        viewer(&harness).legend().entry(None, "go").unwrap().count,
+        2
+    );
+}
+
+/// The legend groups by stream where more than one stream holds annotations: streams of
+/// annotations, and streams with a stim channel.
+#[test]
+fn legends_group_where_several_streams_hold_annotations() {
+    use kymo_testgen::XdfFormat;
+    use kymo_testgen::xdf::{Chunks, header_xml};
+    let groups = |path: &Path| {
+        let (rec, _) = kymo_core::Recording::new(kymo_core::open(path).unwrap()).unwrap();
+        kymo::annotations::groups_streams(&rec)
+    };
+    assert!(groups(marker_streams_xdf().path()));
+    assert!(!groups(streams_xdf().path()));
+    assert!(!groups(TempFile::preset("bdf+c-small").path()));
+    // A marker stream and a stream of trigger channels, with or without the markers.
+    let file = |markers: bool| {
+        let mut c = Chunks::new(None);
+        c.stream_header(1, &header_xml("Amp", "EEG", 1, 10.0, "float32", None));
+        c.stream_header(
+            2,
+            &header_xml("Buttons", "Triggers", 1, 10.0, "float32", None),
+        );
+        let samples: Vec<(Option<f64>, Vec<f64>)> = (0..100)
+            .map(|i| (Some(f64::from(i) / 10.0), vec![f64::from(i / 10 % 2)]))
+            .collect();
+        c.numeric(1, XdfFormat::F32, &samples);
+        c.numeric(2, XdfFormat::F32, &samples);
+        if markers {
+            c.stream_header(3, &header_xml("Task", "Markers", 1, 0.0, "string", None));
+            c.strings(3, &[(Some(1.0), vec!["go".into()])]);
+        }
+        let file = TempFile::new("xdf");
+        std::fs::write(file.path(), &c.bytes).unwrap();
+        file
+    };
+    assert!(groups(file(true).path()));
+    assert!(!groups(file(false).path()));
 }
