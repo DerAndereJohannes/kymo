@@ -53,33 +53,6 @@ pub fn description_field_id() -> egui::Id {
     egui::Id::unique("kymo description field")
 }
 
-/// Room between the summary's keys and values, in points.
-const SUMMARY_SPACING: f32 = 12.0;
-
-fn summary_short_id() -> Id {
-    Id::unique("kymo summary short by")
-}
-
-fn list_short_id() -> Id {
-    Id::unique("kymo channel list short by")
-}
-
-/// How much wider the sidebar would have to be (negative: could be narrower) to show the
-/// summary's values and every column of the channel list in full, as the last frame laid
-/// them out; `None` before the sidebar has been shown.
-pub fn sidebar_fit(ctx: &egui::Context) -> Option<f32> {
-    let (summary, list) = ctx.data(|d| {
-        (
-            d.get_temp::<f32>(summary_short_id()),
-            d.get_temp::<f32>(list_short_id()),
-        )
-    });
-    match (summary, list) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (a, b) => a.or(b),
-    }
-}
-
 /// Rows of the annotation legend shown before it scrolls.
 const LEGEND_ROWS: f32 = 8.0;
 
@@ -119,29 +92,9 @@ pub fn header_panel(
     );
     ui.add_space(6.0);
 
-    // How much wider the summary would have to be to show its values in full.
-    let summary_width = ui.fonts_mut(|f| {
-        let font = TextStyle::Body.resolve(ui.style());
-        let mut width = |text: &str| {
-            f.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
-                .size()
-                .x
-        };
-        let rows = summary.sidebar_rows();
-        let keys = rows.iter().map(|r| width(&r.key)).fold(0.0, f32::max);
-        let values = rows
-            .iter()
-            .flat_map(|r| r.value.lines())
-            .map(&mut width)
-            .fold(0.0, f32::max);
-        keys + SUMMARY_SPACING + values
-    });
-    let summary_short = summary_width - ui.available_width();
-    ui.data_mut(|d| d.insert_temp(summary_short_id(), summary_short));
-
     egui::Grid::new("summary")
         .num_columns(2)
-        .spacing([SUMMARY_SPACING, 4.0])
+        .spacing([12.0, 4.0])
         .show(ui, |ui| {
             // Keys at their full width; values, in the last column, shorten to what is left.
             for row in summary.sidebar_rows() {
@@ -496,12 +449,6 @@ impl Columns {
         columns
     }
 
-    /// The width of a row showing everything in full, with `fixed` for the checkbox, the
-    /// Bad toggle and the gaps beside them.
-    fn full(&self, fixed: f32, gap: f32) -> f32 {
-        fixed + self.name + 3.0 * gap + self.kind + self.unit + self.rate
-    }
-
     /// What a row of `width` shows: the type, unit and rate columns, and the name's and
     /// unit's widths. Everything in full where it fits; with too little room the unit narrows
     /// first, down to `min_unit`, then the name, down to `min_name`; then the rate drops out,
@@ -584,8 +531,7 @@ fn full_rate(grid: &kymo_core::Grid) -> String {
 /// whatever the file stores) and its rate (right-aligned; "≈ 300 Hz" for an irregular
 /// grid's average). A list too narrow for all of it narrows the units and names (shortened
 /// in the middle) and then leaves out the rate, unit and type (see [`Columns::fit`]);
-/// hovering a row whose text is shortened or left out shows it all. Keeps how much wider
-/// the list would have to be to show everything in full for [`sidebar_fit`].
+/// hovering a row whose text is shortened or left out shows it all.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -608,15 +554,13 @@ fn channel_list(
     from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, rec.channels().len(), |ui, rows| {
-            let width = ui.available_width();
             let fit = columns.fit(
-                width,
+                ui.available_width(),
                 fixed,
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
             );
-            ui.data_mut(|d| d.insert_temp(list_short_id(), columns.full(fixed, gap) - width));
             for i in rows {
                 let (rect, row_response) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());

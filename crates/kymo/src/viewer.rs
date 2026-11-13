@@ -28,32 +28,11 @@ use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{
-    AnnotationPanel, DescriptionField, description_field_id, header_panel, sidebar_fit,
-    within_width,
+    AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{elide_middle, readout, scrollbar, status};
 use crate::view::{Area, ViewState};
-
-/// The sidebar panel's id.
-const SIDEBAR_ID: &str = "header";
-
-/// The width the sidebar fits its contents at (see [`sidebar_fit`]) if its edge was double
-/// clicked in the last frame, `ui` being the one it is shown in. egui's panels keep the
-/// width they are shown at, so a frame at this width leaves them there. The ids are the ones
-/// egui gives a panel and its resize handle.
-fn sidebar_fitted(ui: &Ui) -> Option<f32> {
-    let id = ui.scope_id().with_salt(egui::IdSalt::new(SIDEBAR_ID));
-    let edge = ui.ctx().read_response(id.with("__resize"))?;
-    if !edge.double_clicked() {
-        return None;
-    }
-    let width = egui::containers::panel::PanelState::load(ui.ctx(), id)?
-        .size()
-        .x;
-    // A point to spare, against rounding.
-    Some((width + sidebar_fit(ui.ctx())? + 1.0).ceil())
-}
 
 /// Narrowest the sidebar can be dragged.
 const SIDEBAR_MIN_WIDTH: f32 = 200.0;
@@ -776,42 +755,37 @@ impl Viewer {
             });
         });
         if sidebar {
-            let max = (ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH);
-            let mut panel = egui::Panel::left(SIDEBAR_ID)
+            egui::Panel::left("header")
                 .resizable(true)
                 .default_size(300.0)
                 .min_size(SIDEBAR_MIN_WIDTH)
-                .max_size(max);
-            // A double click on its edge fits it to its contents, within its limits.
-            if let Some(fitted) = sidebar_fitted(ui) {
-                panel = panel.exact_size(fitted.clamp(SIDEBAR_MIN_WIDTH, max));
-            }
-            panel.show(ui, |ui| {
-                relabel = within_width(ui, |ui| {
-                    header_panel(
-                        ui,
-                        self.serial,
-                        &self.document,
-                        &self.summary,
-                        &mut self.view,
-                        &self.type_colors,
-                        AnnotationPanel {
-                            legend: &mut self.legend,
-                            colors: annotation_colors,
-                            field: self.editing.then(|| match &mut self.draft {
-                                Some(draft) => DescriptionField::Selected {
-                                    current: self
-                                        .selected
-                                        .and_then(|id| self.document.annotations.get(id))
-                                        .map_or("", |a| &a.data.description),
-                                    draft,
-                                },
-                                None => DescriptionField::New(&mut self.description),
-                            }),
-                        },
-                    )
+                .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
+                .show(ui, |ui| {
+                    relabel = within_width(ui, |ui| {
+                        header_panel(
+                            ui,
+                            self.serial,
+                            &self.document,
+                            &self.summary,
+                            &mut self.view,
+                            &self.type_colors,
+                            AnnotationPanel {
+                                legend: &mut self.legend,
+                                colors: annotation_colors,
+                                field: self.editing.then(|| match &mut self.draft {
+                                    Some(draft) => DescriptionField::Selected {
+                                        current: self
+                                            .selected
+                                            .and_then(|id| self.document.annotations.get(id))
+                                            .map_or("", |a| &a.data.description),
+                                        draft,
+                                    },
+                                    None => DescriptionField::New(&mut self.description),
+                                }),
+                            },
+                        )
+                    });
                 });
-            });
             if let Some(description) = relabel
                 && let Some(id) = self.selected
             {
