@@ -988,32 +988,53 @@ fn the_channel_list_shows_hides_and_marks_bad() {
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
     for kind in ["EEG", "EOG", "ECG", "Stim"] {
         assert_eq!(
-            toggled(&harness, Role::CheckBox, kind),
+            toggled(&harness, Role::CheckBox, &format!("Show {kind} channels")),
             Toggled::True,
             "{kind}"
         );
     }
     assert!(
         harness
-            .query_by_role_and_label(Role::CheckBox, "EMG")
+            .query_by_role_and_label(Role::CheckBox, "Show EMG channels")
             .is_none()
     );
     harness.get_by_label("2 of 2 shown");
+    // A type's channels are half a level in: their boxes halfway from its box to its name.
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    let halfway =
+        (left(&harness, "Show EEG channels") + kind_name_rect(&harness, "EEG").left()) / 2.0;
+    assert!((left(&harness, "Show A1") - halfway).abs() <= 0.5);
+    assert!(left(&harness, "Collapse EEG channels") < left(&harness, "Show EEG channels"));
+    // Its arrow hides its channels' rows, not their traces.
+    harness.get_by_label("Collapse EEG channels").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Show A1").is_none());
+    harness.get_by_label("Show EOG L");
+    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+    harness.get_by_label("Expand EEG channels").click();
+    harness.run_steps(2);
+    harness.get_by_label("Show A1");
 
     // One channel's box hides it; its type's box is mixed then.
     click_in_list(&mut harness, Role::CheckBox, "Show A2");
     assert_eq!(shown(&harness), [0, 2, 3, 4]);
     assert_eq!(toggled(&harness, Role::CheckBox, "Show A2"), Toggled::False);
-    assert_eq!(toggled(&harness, Role::CheckBox, "EEG"), Toggled::Mixed);
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show EEG channels"),
+        Toggled::Mixed
+    );
     harness.get_by_label("1 of 2 shown");
     // A mixed type's box shows them all, and then hides them all.
-    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    click_in_list(&mut harness, Role::CheckBox, "Show EEG channels");
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
-    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    click_in_list(&mut harness, Role::CheckBox, "Show EEG channels");
     assert_eq!(shown(&harness), [2, 3, 4]);
     assert_eq!(toggled(&harness, Role::CheckBox, "Show A1"), Toggled::False);
-    assert_eq!(toggled(&harness, Role::CheckBox, "EEG"), Toggled::False);
-    click_in_list(&mut harness, Role::CheckBox, "EEG");
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show EEG channels"),
+        Toggled::False
+    );
+    click_in_list(&mut harness, Role::CheckBox, "Show EEG channels");
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
 
     // The bad toggle.
@@ -1034,10 +1055,33 @@ fn the_channel_list_shows_hides_and_marks_bad() {
     assert_eq!(viewer(&harness).view().top(), 2.0);
     click_in_list(&mut harness, Role::Label, "A2");
     assert_eq!(viewer(&harness).view().top(), 1.0);
+    // A type's name scrolls to its first shown channel.
+    click_in_list(&mut harness, Role::Label, "EOG");
+    assert_eq!(viewer(&harness).view().top(), 2.0);
+    click_in_list(&mut harness, Role::Label, "A2");
     // A hidden channel's name doesn't scroll.
     click_in_list(&mut harness, Role::CheckBox, "Show A1");
     click_in_list(&mut harness, Role::Label, "A1");
     assert_eq!(shown(&harness), [1, 2, 3]);
+    // A type's name skips its hidden channels: EEG scrolls to A2.
+    click_in_list(&mut harness, Role::Label, "EOG");
+    assert_eq!(viewer(&harness).view().top(), 1.0);
+    click_in_list(&mut harness, Role::Label, "EEG");
+    assert_eq!(viewer(&harness).view().top(), 0.0);
+}
+
+/// Where the channel list's type row of `name` ("EOG") shows its name: the label of that
+/// text in the row of its checkbox.
+fn kind_name_rect(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Rect {
+    use egui::accesskit::Role;
+    let checkbox = harness
+        .get_by_role_and_label(Role::CheckBox, &format!("Show {name} channels"))
+        .rect();
+    harness
+        .query_all_by_role_and_label(Role::Label, name)
+        .map(|n| n.rect())
+        .find(|r| (r.center().y - checkbox.center().y).abs() < 1.0)
+        .unwrap_or_else(|| panic!("no name in {name}'s row"))
 }
 
 /// The left edges of the sidebar list's labels `label`; panics unless there are some and
@@ -1074,7 +1118,6 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     ready(&mut harness);
     assert!(harness.query_by_label("LONGCHANNELNAME1").is_none());
     let bad = harness.get_by_label("A1 bad").rect().left();
-    let eeg = column_left(&harness, Role::Label, "EEG");
     let uv = column_left(&harness, Role::Label, "\u{b5}V");
 
     // Scrolled to the end, where the long name and Status are.
@@ -1097,7 +1140,6 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
         long.right() < bad,
         "{long:?} reaches the bad toggles at {bad}"
     );
-    assert_eq!(column_left(&harness, Role::Label, "EEG"), eeg);
     assert_eq!(column_left(&harness, Role::Label, "\u{b5}V"), uv);
     // Codes have no unit, whatever the file says.
     assert!(harness.query_by_label("Boolean").is_none());
@@ -1217,10 +1259,10 @@ fn the_channel_list_fits_its_width() {
     };
     let em = body_size(&harness);
 
-    // Wide: every column.
+    // Wide: every column, but the type, which is the row the channel is under.
     sidebar_to(&mut harness, 600.0);
     let aux = row_of(&harness, "AUX1");
-    assert!(in_row(&harness, aux, "Misc"));
+    assert!(!in_row(&harness, aux, "Misc"));
     assert!(in_row(&harness, aux, "\u{b5}V"));
     assert!(harness.query_by_label("microvolts").is_none());
     // The rates are in the streams' rows.
@@ -1250,8 +1292,8 @@ fn the_channel_list_fits_its_width() {
     assert!(harness.query_by_label_contains("both eyes\n").is_none());
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
-    // The default width, plus the room the rows under a stream are indented by beyond
-    // the stream's checkbox (half a level): the unit and then the names narrow.
+    // The default width, plus the room the rows under a stream and type are indented by
+    // beyond the stream's checkbox (two half levels): the unit and then the names narrow.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -1263,7 +1305,6 @@ fn the_channel_list_fits_its_width() {
         - harness.get_by_label("Show Amp").rect().left();
     sidebar_to(&mut harness, default + level);
     let por = row_of(&harness, "POR X - (Point of regard), left eye");
-    assert!(in_row(&harness, por, "Misc"));
     assert!(!in_row(&harness, por, "100 Hz"));
     let name = harness
         .get_by_role_and_label(Role::Label, "POR X - (Point of regard), left eye")
@@ -1276,12 +1317,7 @@ fn the_channel_list_fits_its_width() {
     assert!(unit.width() <= 4.0 * em + 0.5, "{unit:?}");
     assert!(!full(&harness, "normalized_signed"));
     // Hovering the row shows what it leaves out.
-    let misc = harness
-        .query_all_by_role_and_label(Role::Label, "Misc")
-        .find(|n| (n.rect().center().y - por).abs() < 1.0)
-        .unwrap()
-        .rect();
-    hover(&mut harness, misc.center());
+    hover(&mut harness, unit.center());
     assert!(tooltip(
         &mut harness,
         "POR X - (Point of regard), left eye\nMisc \u{b7} normalized_signed \u{b7} 100 Hz"
@@ -1626,7 +1662,7 @@ fn the_legend_shows_and_hides_annotations() {
         )
     );
 
-    // The legend is at the bottom of the sidebar, below the types and channels, and shows
+    // The legend is at the bottom of the sidebar, below the channels and their types, and shows
     // 8 rows before it scrolls.
     let top = |harness: &Harness<'_, KymoApp>, label: &str| {
         harness
@@ -1648,7 +1684,10 @@ fn the_legend_shows_and_hides_annotations() {
         .map(|n| n.rect().top())
         .collect();
     assert!(!channels.is_empty());
-    assert!(top(&harness, "EEG") < channels[0], "{channels:?}");
+    assert!(
+        top(&harness, "Show EEG channels") < channels[0],
+        "{channels:?}"
+    );
     assert!(channels[0] < legend, "{channels:?} {legend}");
     let row = harness.ctx.global_style().spacing.interact_size.y;
     // The reading under the pointer marks the status line.
@@ -3585,9 +3624,7 @@ fn traces_take_picked_type_colors() {
     // Green pixels of the sidebar's EOG type row and channel name.
     let sidebar = |harness: &mut Harness<'_, KymoApp>| {
         let rects = [
-            harness
-                .get_by_role_and_label(egui::accesskit::Role::CheckBox, "EOG")
-                .rect(),
+            kind_name_rect(harness, "EOG"),
             harness.get_by_label("EOG L").rect(),
         ];
         let image = harness.render().unwrap();
@@ -4693,11 +4730,18 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
         "MEG Mag", "MEG Grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
         "Stim",
     ];
+    // Each collapsed, so all rows fit.
+    for name in present {
+        harness
+            .get_by_label(&format!("Collapse {name} channels"))
+            .click();
+        harness.run_steps(2);
+    }
     let tops: Vec<f32> = present
         .iter()
         .map(|name| {
             harness
-                .get_by_role_and_label(Role::CheckBox, name)
+                .get_by_role_and_label(Role::CheckBox, &format!("Show {name} channels"))
                 .rect()
                 .top()
         })
@@ -4706,7 +4750,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
     for absent in ["MEG Ref", "Misc"] {
         assert!(
             harness
-                .query_by_role_and_label(Role::CheckBox, absent)
+                .query_by_role_and_label(Role::CheckBox, &format!("Show {absent} channels"))
                 .is_none()
         );
     }
@@ -4719,9 +4763,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
         ChannelKind::Dbs,
         ChannelKind::Eog,
     ] {
-        let r = harness
-            .get_by_role_and_label(Role::CheckBox, kind_name(kind))
-            .rect();
+        let r = kind_name_rect(&harness, kind_name(kind));
         let color = trace_color(kind, &visuals);
         let colored = (r.left() as u32..r.right() as u32)
             .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
@@ -5176,15 +5218,153 @@ fn several_streams_group_the_channel_list() {
     ));
 }
 
+/// Grouped by stream, a stream's channels are under their types where it has several: each
+/// type a row in it, half a level in, that shows and hides, folds and moves its channels
+/// within the stream; a stream of one type has none. The columns after the names line up
+/// whatever the rows' levels.
+#[test]
+fn streams_of_several_types_group_their_channels_by_type() {
+    use egui::accesskit::Role;
+    // Amp: Fz (EEG), AUX1 and POR X (misc); Tracker: IPD (misc).
+    let file = long_names_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert_eq!(
+        folds(&harness),
+        [
+            "Collapse Amp",
+            "Collapse EEG channels in Amp",
+            "Collapse Misc channels in Amp",
+            "Collapse Tracker"
+        ]
+    );
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    let amp = harness
+        .get_by_role_and_label(Role::Label, "Amp")
+        .rect()
+        .left();
+    let level = (amp - left(&harness, "Show Amp")) / 2.0;
+    let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
+    let misc = left(&harness, "Show Misc channels in Amp");
+    assert!(near(misc - left(&harness, "Show Amp"), level));
+    assert!(near(left(&harness, "Show AUX1") - misc, level));
+    let tracker = left(&harness, "Show Tracker");
+    let ipd = "IPD - Interpupillary distance, both eyes";
+    assert!(near(
+        left(&harness, &format!("Show {ipd}")) - tracker,
+        level
+    ));
+    // Units line up across the levels.
+    sidebar_to(&mut harness, 600.0);
+    let unit = |h: &Harness<'_, KymoApp>, text: &str| {
+        h.get_by_role_and_label(Role::Label, text).rect().left()
+    };
+    assert_eq!(unit(&harness, "mm"), unit(&harness, "normalized_signed"));
+
+    // Its box shows and hides only its channels in this stream.
+    click_in_list(&mut harness, Role::CheckBox, "Show Misc channels in Amp");
+    assert_eq!(shown(&harness), [0, 3]);
+    click_in_list(&mut harness, Role::CheckBox, "Show Misc channels in Amp");
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
+    // Its arrow folds them.
+    harness
+        .get_by_label("Collapse Misc channels in Amp")
+        .click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Show AUX1").is_none());
+    harness.get_by_label("Show Fz");
+    harness.get_by_label("Expand Misc channels in Amp").click();
+    harness.run_steps(2);
+
+    // It moves within its stream: above EEG, then dropped below Tracker, to Amp's end.
+    let row = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect();
+    let eeg = row(&harness, "Show EEG channels in Amp");
+    let from = grip_at(&harness, "Misc channels in Amp");
+    drag(
+        &mut harness,
+        from,
+        egui::pos2(eeg.center().x, eeg.center().y - 3.0),
+    );
+    harness.run_steps(2);
+    assert_eq!(order(&harness), [1, 2, 0, 3]);
+    let tracker = row(&harness, "Show Tracker");
+    let from = grip_at(&harness, "Misc channels in Amp");
+    drag(
+        &mut harness,
+        from,
+        egui::pos2(tracker.center().x, tracker.center().y + 3.0),
+    );
+    harness.run_steps(2);
+    assert_eq!(order(&harness), [0, 1, 2, 3]);
+}
+
+/// Two streams of two types each: Amp (Fz EEG, AUX1 misc), Body (HEOG EOG, Temp misc).
+fn two_mixed_streams_xdf() -> TempFile {
+    use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStream};
+    let channel =
+        |label: &str, kind: &str| ChannelSpec::xdf(label, kind, "microvolts", 100, XdfFormat::F32);
+    let channels = vec![
+        channel("Fz", "EEG"),
+        channel("AUX1", "AUX"),
+        channel("HEOG", "EOG"),
+        channel("Temp", "AUX"),
+    ];
+    let mut spec = Spec::new(kymo_testgen::Format::Xdf, channels, 1.0, 30);
+    spec.xdf.streams = vec![
+        XdfStream::new(1, "Amp", "EEG", vec![0, 1]),
+        XdfStream::new(2, "Body", "Physio", vec![2, 3]),
+    ];
+    TempFile::written(&spec)
+}
+
+/// A dragged type's line stays within its stream: held over another stream's type, it is
+/// at its own stream's end, where it then goes.
+#[test]
+fn a_dragged_type_stays_in_its_stream() {
+    let file = two_mixed_streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert_eq!(order(&harness), [0, 1, 2, 3]);
+    let eog = harness.get_by_label("Show EOG channels in Body").rect();
+    let from = grip_at(&harness, "EEG channels in Amp");
+    let to = egui::pos2(eog.center().x, eog.center().y - 3.0);
+    hover(&mut harness, from);
+    harness.drag_at(from);
+    harness.step();
+    hover(&mut harness, (from + to.to_vec2()) / 2.0);
+    hover(&mut harness, to);
+    let line = drop_line(&harness).unwrap();
+    let aux = name_rect(&harness, "AUX1");
+    let body = harness.get_by_label("Show Body").rect();
+    assert!(
+        aux.bottom() <= line && line <= body.top(),
+        "{line} {aux:?} {body:?}"
+    );
+    harness.drop_at(to);
+    harness.run_steps(2);
+    assert_eq!(order(&harness), [1, 0, 2, 3]);
+}
+
+/// The labels of what collapses rows in the sidebar.
+fn folds(harness: &Harness<'_, KymoApp>) -> Vec<String> {
+    harness
+        .query_all_by_label_contains("Collapse ")
+        .filter_map(|n| n.accesskit_node().label())
+        .collect()
+}
+
 /// Nothing of streams shows for a recording without them, nor for one with a single stream
-/// of channels (beside its marker stream, which the summary counts).
+/// of channels (beside its marker stream, which the summary counts): only its types fold.
 #[test]
 fn recordings_without_several_streams_show_no_groups() {
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
     assert!(harness.query_by_label("Streams").is_none());
-    assert!(harness.query_by_label_contains("Collapse").is_none());
+    assert_eq!(
+        folds(&harness),
+        ["Collapse EEG channels", "Collapse Stim channels"]
+    );
     // The channels' rows have their rates, besides the summary's.
     let rates = |h: &Harness<'_, KymoApp>| h.query_all_by_label_contains(" Hz").count();
     assert!(rates(&harness) > 1);
@@ -5193,7 +5373,7 @@ fn recordings_without_several_streams_show_no_groups() {
     let mut harness = window(file.path());
     ready(&mut harness);
     harness.get_by_label("2 (1 shown as channels)");
-    assert!(harness.query_by_label_contains("Collapse").is_none());
+    assert_eq!(folds(&harness), ["Collapse EEG channels"]);
     assert!(harness.query_by_label("Show BrainAmp").is_none());
     assert!(rates(&harness) > 1);
 }
@@ -5245,11 +5425,12 @@ fn has_selection(harness: &Harness<'_, KymoApp>) -> bool {
 }
 
 /// Channels move by dragging the grip that shows at the left of their row in the sidebar on
-/// hover, in any recording; the traces follow; View → Channel Order sorts them by type or
-/// puts them back in file order.
+/// hover, in any recording, within their type, and types with their channels; the traces
+/// follow; View → Reset Channel Order puts them back as the recording opened.
 #[test]
 fn dragging_names_reorders_the_channels() {
-    // A1, A2 (EEG), ECG, EOG L, Status: not in the types' order.
+    // A1, A2 (EEG), ECG, EOG L, Status: not in the types' order, so they open as EEG, EOG,
+    // ECG, stim.
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
     spec.channels[2].label = "ECG".into();
     spec.channels[3].label = "EOG L".into();
@@ -5257,12 +5438,13 @@ fn dragging_names_reorders_the_channels() {
     kymo_testgen::write(&spec, file.path()).unwrap();
     let mut harness = window(file.path());
     ready(&mut harness);
-    drag_label(&mut harness, "ECG", "A1", false);
-    assert_eq!(order(&harness), [2, 0, 1, 3, 4]);
-    assert_eq!(shown(&harness), [2, 0, 1, 3, 4]);
-    // The list follows: ECG's row is above A1's.
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
+    drag_label(&mut harness, "A2", "A1", false);
+    assert_eq!(order(&harness), [1, 0, 3, 2, 4]);
+    assert_eq!(shown(&harness), [1, 0, 3, 2, 4]);
+    // The list follows: A2's row is above A1's.
     let y = |h: &Harness<'_, KymoApp>, label: &str| name_rect(h, label).top();
-    assert!(y(&harness, "ECG") < y(&harness, "A1"));
+    assert!(y(&harness, "A2") < y(&harness, "A1"));
     // Dragging a name moves nothing, and selects no text on the way.
     let (a, b) = (
         name_rect(&harness, "A2").center(),
@@ -5270,7 +5452,7 @@ fn dragging_names_reorders_the_channels() {
     );
     drag(&mut harness, a, b);
     harness.run_steps(2);
-    assert_eq!(order(&harness), [2, 0, 1, 3, 4]);
+    assert_eq!(order(&harness), [1, 0, 3, 2, 4]);
     assert!(!has_selection(&harness));
     // Nor does a drag from a row's gray text.
     let unit = harness
@@ -5282,12 +5464,22 @@ fn dragging_names_reorders_the_channels() {
     drag(&mut harness, unit, b);
     harness.run_steps(2);
     assert!(!has_selection(&harness));
-    drag_label(&mut harness, "A1", "Status", true);
-    assert_eq!(order(&harness), [2, 1, 3, 4, 0]);
+    // A channel stays among its type's: dropped below Status, A2 goes to the end of EEG,
+    // and ECG dropped above A1 stays where it is.
+    drag_label(&mut harness, "A2", "Status", true);
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
+    drag_label(&mut harness, "ECG", "A1", false);
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
+    // A type moves with its channels.
+    drag_label(&mut harness, "ECG channels", "EEG", false);
+    assert_eq!(order(&harness), [2, 0, 1, 3, 4]);
+    assert!(y(&harness, "ECG") < y(&harness, "A1"));
+    drag_label(&mut harness, "EEG channels", "Stim", true);
+    assert_eq!(order(&harness), [2, 3, 4, 0, 1]);
 
     // Escape cancels a drag.
     let a = grip_at(&harness, "A2");
-    let b = name_rect(&harness, "ECG").center();
+    let b = name_rect(&harness, "A1").center();
     hover(&mut harness, a);
     harness.drag_at(a);
     harness.step();
@@ -5297,23 +5489,14 @@ fn dragging_names_reorders_the_channels() {
     harness.step();
     harness.drop_at(b);
     harness.run_steps(2);
-    assert_eq!(order(&harness), [2, 1, 3, 4, 0]);
+    assert_eq!(order(&harness), [2, 3, 4, 0, 1]);
 
-    // By type: EEG, EOG, ECG, stim; then as in the file.
+    // Back to how it opened.
     harness.get_by_label("View").click();
     harness.run_steps(2);
-    harness.get_by_label("Channel Order").click();
-    harness.run_steps(2);
-    harness.get_by_label("By Type").click();
+    harness.get_by_label("Reset Channel Order").click();
     harness.run_steps(2);
     assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-    harness.get_by_label("View").click();
-    harness.run_steps(2);
-    harness.get_by_label("Channel Order").click();
-    harness.run_steps(2);
-    harness.get_by_label("File Order").click();
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
 
     // A click on a name still shows it in the traces.
     for _ in 0..2 {
@@ -5322,7 +5505,7 @@ fn dragging_names_reorders_the_channels() {
     }
     click_in_list(&mut harness, egui::accesskit::Role::Label, "EOG L");
     assert_eq!(viewer(&harness).view().top(), 2.0);
-    assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
 }
 
 /// How many grip dots are painted.

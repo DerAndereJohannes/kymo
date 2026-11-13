@@ -572,7 +572,8 @@ fn the_scene_follows_the_view() {
 #[test]
 fn stim_rows_clip_and_draw_codes() {
     let len = 60_000u64;
-    let eeg = channel("A1", 0, 0.5, 100.0);
+    let mut eeg = channel("A1", 0, 0.5, 100.0);
+    eeg.kind = ChannelKind::Eeg;
     let mut stim = channel("Status", 0, 2.0, 1e6);
     stim.kind = ChannelKind::Stim;
     stim.trigger_mask = Some(0xffff);

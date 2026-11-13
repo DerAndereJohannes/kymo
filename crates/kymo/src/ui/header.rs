@@ -57,9 +57,8 @@ pub fn description_field_id() -> egui::Id {
 /// Rows of the annotation legend shown before it scrolls.
 const LEGEND_ROWS: f32 = 8.0;
 
-/// File header, channel types and channels, and the annotation legend at the bottom. The
-/// channel list shows and hides channels and marks them bad in `view`, in their types'
-/// colors (`type_colors` where picked); the legend shows and hides annotations by
+/// File header, channels by type, and the annotation legend at the bottom. The channel
+/// list shows and hides channels and marks them bad in `view`, in their types' colors (`type_colors` where picked); the legend shows and hides annotations by
 /// description in `annotations.legend`, and picks their colors in `annotations.colors`. In
 /// annotation mode, `annotations.field` edits the description new annotations get, or the
 /// selected annotation's, above the legend, which then shows even without annotations.
@@ -127,7 +126,7 @@ pub fn header_panel(
 
     ui.add_space(6.0);
     ui.separator();
-    // The legend at the bottom, so the channel list fills the space below its types.
+    // The legend at the bottom, so the channel list fills the space above it.
     if !legend.is_empty() || field.is_some() {
         egui::Panel::bottom("legend")
             .resizable(false)
@@ -147,8 +146,6 @@ pub fn header_panel(
                 }
             });
     }
-    kind_list(ui, view, type_colors);
-    ui.separator();
     channel_list(ui, recording, document, view, type_colors);
     relabel
 }
@@ -202,37 +199,6 @@ fn sentence(text: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
-}
-
-/// A row per channel type in the recording: a checkbox, in the type's trace color, that
-/// shows or hides all of its channels (mixed while some are shown), and how many are shown.
-fn kind_list(ui: &mut Ui, view: &mut ViewState, type_colors: &TypeColors) {
-    egui::Grid::new("kinds")
-        .num_columns(2)
-        .spacing([12.0, 2.0])
-        .show(ui, |ui| {
-            for kind in KINDS {
-                let (shown, all) = view.kind_shown(kind);
-                if all == 0 {
-                    continue;
-                }
-                // A click on a mixed box shows them all.
-                let mut checked = shown == all;
-                let text = RichText::new(kind_name(kind)).color(type_color(
-                    kind,
-                    type_colors,
-                    ui.visuals(),
-                ));
-                let checkbox =
-                    Checkbox::new(&mut checked, text).indeterminate(0 < shown && shown < all);
-                if ui.add(checkbox).changed() {
-                    view.set_kind_shown(kind, checked);
-                }
-                let count = format!("{shown} of {all} shown");
-                ui.add(Label::new(RichText::new(count).weak()).extend());
-                ui.end_row();
-            }
-        });
 }
 
 /// Rows of descriptions the description menu shows before it scrolls.
@@ -519,16 +485,7 @@ fn legend_stream_row(row: &mut Ui, legend: &mut Legend, group: LegendGroup<'_>) 
     let row_height = row.max_rect().height();
     row.add(Label::new(RichText::new(legend.stream_total(stream).to_string()).weak()).extend());
     row.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        let (rect, arrow) = ui.allocate_exact_size(vec2(CHEVRON_WIDTH, row_height), Sense::click());
-        let color = if arrow.hovered() {
-            ui.visuals().strong_text_color()
-        } else {
-            ui.visuals().weak_text_color()
-        };
-        chevron(ui.painter(), rect.center(), open, color);
-        let verb = if open { "Collapse" } else { "Expand" };
-        accessible_label(ui, &arrow, format!("{verb} {name}"));
-        let arrow = arrow.on_hover_cursor(CursorIcon::PointingHand);
+        let arrow = disclosure(ui, open, &name, row_height);
 
         let mut checked = shown == all;
         let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
@@ -575,7 +532,6 @@ const CHEVRON_WIDTH: f32 = 10.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Columns {
     name: f32,
-    kind: f32,
     unit: f32,
     rate: f32,
 }
@@ -621,7 +577,6 @@ impl Columns {
         let channels = rec.channels();
         let columns = Columns {
             name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned())),
-            kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
             unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
             rate: widest(&mut channels.iter().map(|c| list_rate(rec.grid(c.grid)))),
         };
@@ -638,11 +593,11 @@ impl Columns {
         columns
     }
 
-    /// What a row of `width` shows: the type, unit and rate columns, and the name's and
-    /// unit's widths. Everything in full where it fits; with too little room the unit narrows
+    /// What a row of `width` shows: the unit and rate columns, and the name's and unit's
+    /// widths. Everything in full where it fits; with too little room the unit narrows
     /// first, down to `min_unit`, then the name, down to `min_name`; then the rate drops out,
-    /// then the unit, then the type, the name and then the unit widening again into the room
-    /// they leave. `fixed` is what every row has besides (the checkbox, the Bad toggle and
+    /// then the unit, the name and then the unit widening again into the room they leave.
+    /// (A channel's type is the row it is under.) `fixed` is what every row has besides (the checkbox, the Bad toggle and
     /// the gaps between them and the name). Without `rated` rows have no rate column.
     fn fit(
         &self,
@@ -653,15 +608,11 @@ impl Columns {
         min_unit: f32,
         rated: bool,
     ) -> RowColumns {
-        let options = [
-            (true, true, rated),
-            (true, true, false),
-            (true, false, false),
-        ];
+        let options = [(true, rated), (true, false)];
         let min_name = min_name.min(self.name);
         let min_unit = min_unit.min(self.unit);
-        for (kind, unit, rate) in options {
-            let others = [(kind, self.kind), (unit, 0.0), (rate, self.rate)]
+        for (unit, rate) in options {
+            let others = [(unit, 0.0), (rate, self.rate)]
                 .iter()
                 .filter(|(shown, _)| *shown)
                 .map(|(_, w)| gap + w)
@@ -673,7 +624,6 @@ impl Columns {
                 let name = (room - unit_least).min(self.name);
                 return RowColumns {
                     name,
-                    kind,
                     unit: unit.then(|| (room - name).min(self.unit)),
                     rate,
                 };
@@ -681,19 +631,17 @@ impl Columns {
         }
         RowColumns {
             name: (width - fixed).clamp(0.0, self.name),
-            kind: false,
             unit: None,
             rate: false,
         }
     }
 }
 
-/// What a row of the channel list shows (see [`Columns::fit`]): the name's width, the type,
-/// the unit's width and the rate.
+/// What a row of the channel list shows (see [`Columns::fit`]): the name's width, the
+/// unit's width and the rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RowColumns {
     name: f32,
-    kind: bool,
     unit: Option<f32>,
     rate: bool,
 }
@@ -701,7 +649,7 @@ struct RowColumns {
 impl RowColumns {
     /// Whether the row shows every column it has; `rated` if it has a rate column.
     fn all(&self, rated: bool) -> bool {
-        self.kind && self.unit.is_some() && (self.rate || !rated)
+        self.unit.is_some() && (self.rate || !rated)
     }
 }
 
@@ -723,37 +671,75 @@ fn full_rate(grid: &kymo_core::Grid) -> String {
     }
 }
 
+/// A channel's group in the order: its stream (by its index in the recording; `None`
+/// without streams) and its type (see [`ViewState::group_of`]).
+type Group = (Option<usize>, ChannelKind);
+
 /// One row of the channel list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     /// A stream's row (by its index in the recording), above its channels.
     Stream(usize),
-    /// A channel, with its stream (by its index in the recording) if the list is grouped.
-    Channel(ChannelId, Option<usize>),
+    /// A type's row, above its channels, and how many levels in it is (under a stream, 1).
+    Kind(Group, usize),
+    /// A channel, its group, and how many levels in it is (under its type or stream, 1;
+    /// under both, 2).
+    Channel(ChannelId, Group, usize),
     /// A stream of the file that isn't shown, at the end.
     NotShown(usize),
 }
 
-/// The channel list's rows: the channels in the view's order, grouped by stream (a closed
-/// stream's channels left out) if `grouped`, then the streams that aren't shown.
-fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[usize]) -> Vec<Item> {
-    let streams = document.recording.streams();
-    let stream_of = |c: ChannelId| {
-        streams
-            .iter()
-            .position(|s| matches!(&s.content, StreamContent::Channels(ids) if ids.contains(&c)))
-    };
-    let mut items = Vec::with_capacity(view.order().len() + streams.len());
-    let mut current = None;
+/// A row of the channel list that shows or hides the rows below it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fold {
+    Stream(usize),
+    Kind(Group),
+}
+
+/// The channel list's rows: the channels in the view's order, under their types, grouped
+/// by stream if `grouped`, where a stream's channels are under their types only if it has
+/// several; the rows of `closed` folds left out; then the streams that aren't shown.
+fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[Fold]) -> Vec<Item> {
+    let rec = &document.recording;
+    let streams = rec.streams();
+    // Per stream, whether its channels are of several types.
+    let mixed: Vec<bool> = streams
+        .iter()
+        .map(|s| match &s.content {
+            StreamContent::Channels(ids) => {
+                let kind = |c: &ChannelId| rec.channel(*c).kind;
+                ids.iter().any(|c| kind(c) != kind(&ids[0]))
+            }
+            _ => false,
+        })
+        .collect();
+    let mut items = Vec::with_capacity(view.order().len() + 2 * streams.len() + KINDS.len());
+    let (mut stream_now, mut group_now) = (None, None);
     for &c in view.order() {
-        let stream = if grouped { stream_of(c) } else { None };
-        if stream != current {
-            current = stream;
-            items.extend(stream.map(Item::Stream));
+        let group @ (stream, _) = view.group_of(c);
+        let mut depth = 0;
+        let mut typed = true;
+        if grouped && let Some(s) = stream {
+            if stream_now != Some(s) {
+                stream_now = Some(s);
+                items.push(Item::Stream(s));
+            }
+            if closed.contains(&Fold::Stream(s)) {
+                continue;
+            }
+            depth = 1;
+            typed = mixed[s];
         }
-        if !stream.is_some_and(|s| closed.contains(&s)) {
-            items.push(Item::Channel(c, stream));
+        if typed {
+            if group_now != Some(group) {
+                group_now = Some(group);
+                items.push(Item::Kind(group, depth));
+            }
+            if closed.contains(&Fold::Kind(group)) {
+                continue;
+            }
         }
+        items.push(Item::Channel(c, group, depth + usize::from(typed)));
     }
     items.extend(
         streams
@@ -765,7 +751,6 @@ fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[us
     items
 }
 
-/// A stream's name as the list shows it: "Stream 3" for one without a name.
 /// How the channel list names `channel`: grouped by stream, its name within its stream
 /// where that is shorter ([`Channel::in_stream`](kymo_core::Channel::in_stream)), else its
 /// name.
@@ -776,6 +761,7 @@ fn list_name(channel: &kymo_core::Channel, grouped: bool) -> &str {
     }
 }
 
+/// A stream's name as the list shows it: "Stream 3" for one without a name.
 fn stream_name(stream: &Stream) -> String {
     if stream.name.trim().is_empty() {
         format!("Stream {}", stream.id)
@@ -784,18 +770,20 @@ fn stream_name(stream: &Stream) -> String {
     }
 }
 
-/// All channels in the view's order, drawing only the rows in view, in columns as wide as
-/// the widest entry of any channel. Per channel: whether it is shown, its name (a click
-/// scrolls the traces to it), whether it is bad, its type, its unit as the readout shows
-/// values (µV for EEG whatever the file stores) and its rate (right-aligned; "≈ 300 Hz" for
-/// an irregular grid's average). A list too narrow for all of it narrows the units and
-/// names (shortened in the middle) and then leaves out the rate, unit and type (see
-/// [`Columns::fit`]); hovering a row whose text is shortened or left out shows it all.
+/// All channels in the view's order, under their types (see [`kind_row`]), drawing only the
+/// rows in view, in columns as wide as the widest entry of any channel. Per channel:
+/// whether it is shown, its name (a click scrolls the traces to it), whether it is bad, its
+/// unit as the readout shows values (µV for EEG whatever the file stores) and its rate
+/// (right-aligned; "≈ 300 Hz" for an irregular grid's average). A list too narrow for all of
+/// it narrows the units and names (shortened in the middle) and then leaves out the rate
+/// and unit (see [`Columns::fit`]); hovering a row whose text is shortened or left out
+/// shows it all, its type too. Rows under a type or stream are half a level in.
 ///
 /// A recording with several streams of channels (XDF) groups them by stream: a row per
-/// stream (see [`stream_row`]) above its channels, which leave out the rate, the stream's.
-/// Streams the file has but doesn't show are listed at the end, grayed, with the reason on
-/// hover. Nothing of streams shows for other recordings.
+/// stream (see [`stream_row`]) above its channels, which leave out the rate, the stream's,
+/// and are under their types only in a stream of several types. Streams the file has but
+/// doesn't show are listed at the end, grayed, with the reason on hover. Nothing of streams
+/// shows for other recordings.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -810,30 +798,33 @@ fn channel_list(
         .filter(|s| matches!(s.content, StreamContent::Channels(_)))
         .count()
         > 1;
-    let closed_key = ui.scope_id().with(("closed streams", recording));
-    let mut closed: Vec<usize> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
+    let closed_key = ui.scope_id().with(("closed folds", recording));
+    let mut closed: Vec<Fold> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
     let items = list_items(document, view, grouped, &closed);
     let mut toggled = None;
     let columns = Columns::of(ui, document, grouped);
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // Grouped, a channel's checkbox is half a level in from its stream's.
-    let indent = if grouped {
-        CHEVRON_WIDTH + gap + half_level(ui, gap)
-    } else {
-        0.0
-    };
-    // The width of a row's checkbox and Bad toggle with the gaps beside them (and the
+    // Each level in moves a row's checkbox half the way from its fold's checkbox to its
+    // fold's name; a channel's row has no chevron.
+    let level = half_level(ui, gap);
+    let indent = |depth: usize| CHEVRON_WIDTH + gap + depth as f32 * level;
+    // The columns are laid out for the deepest channel, and the names of the others are
+    // wider by what they are less indented, so all columns after the names line up.
+    let deepest = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Channel(_, _, depth) => Some(*depth),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1);
+    // The width of a row's checkbox and Bad toggle with the gaps beside them (not the
     // indent), as the last frame laid them out (a guess before).
     let fixed_key = Id::unique("kymo channel list fixed width");
     let fixed = ui.data(|d| d.get_temp::<f32>(fixed_key)).unwrap_or(
-        GRIP_WIDTH
-            + GRIP_GAP
-            + indent
-            + ui.spacing().interact_size.x
-            + ui.spacing().icon_width
-            + 3.0 * gap,
+        GRIP_WIDTH + GRIP_GAP + ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap,
     );
     let mut measured = None;
     let mut moved = None;
@@ -842,7 +833,7 @@ fn channel_list(
         .show_rows(ui, row_height, items.len(), |ui, rows| {
             let fit = columns.fit(
                 ui.available_width(),
-                fixed,
+                fixed + indent(deepest),
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
@@ -877,13 +868,32 @@ fn channel_list(
                 };
                 let left = Layout::left_to_right(Align::Center);
 
-                let id = match items[i] {
+                let (id, depth) = match items[i] {
                     Item::Stream(s) => {
-                        let open = !closed.contains(&s);
+                        let open = !closed.contains(&Fold::Stream(s));
                         let name = stream_name(&streams[s]);
                         grip(ui, rect, &name, Drag::Stream(s));
                         if stream_row(ui, document, s, open, view, row_response) {
-                            toggled = Some(s);
+                            toggled = Some(Fold::Stream(s));
+                        }
+                        continue;
+                    }
+                    Item::Kind(group, depth) => {
+                        let fold = Fold::Kind(group);
+                        let in_stream = group
+                            .0
+                            .filter(|_| grouped)
+                            .map(|s| stream_name(&streams[s]));
+                        let name = kind_label(group.1, in_stream.as_deref());
+                        grip(ui, rect, &name, Drag::Kind(group));
+                        ui.add_space(depth as f32 * level);
+                        let kind = KindRow {
+                            group,
+                            label: name,
+                            open: !closed.contains(&fold),
+                        };
+                        if kind_row(ui, view, kind, type_colors, row_response) {
+                            toggled = Some(fold);
                         }
                         continue;
                     }
@@ -893,17 +903,18 @@ fn channel_list(
                         not_shown_row(ui, &streams[s], row_response);
                         continue;
                     }
-                    Item::Channel(id, _) => id,
+                    Item::Channel(id, _, depth) => (id, depth),
                 };
                 let channel = rec.channel(id);
                 grip(ui, rect, &channel.name, Drag::Channel(id));
-                ui.add_space(indent);
+                ui.add_space(indent(depth));
+                let name_width = fit.name + (deepest - depth) as f32 * level;
                 let name = &channel.name;
                 // Under its stream, the name within it ("X" for "ACC X").
                 let listed = list_name(channel, grouped);
                 let grid = rec.grid(channel.grid);
                 let (unit, _) = display_unit(channel);
-                let short_name = elide_middle(ui.ctx(), listed, &body, fit.name);
+                let short_name = elide_middle(ui.ctx(), listed, &body, name_width);
                 let short_unit = fit
                     .unit
                     .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
@@ -945,7 +956,7 @@ fn channel_list(
                     .sense(Sense::click())
                     .selectable(false)
                     .extend();
-                let mut response = cell(ui, fit.name, left, label);
+                let mut response = cell(ui, name_width, left, label);
                 if text != name {
                     accessible_text(ui, &response, name.clone());
                 }
@@ -976,9 +987,11 @@ fn channel_list(
                 if response.clicked() {
                     view.toggle_bad(id);
                 }
-                // Everything but the name, without the gap before the next column; in whole
-                // points, so positions rounded to pixels don't change it from frame to frame.
-                measured = Some((ui.cursor().left() - rect.left() - fit.name - gap).ceil());
+                // Everything but the indent and the name, without the gap before the next
+                // column; in whole points, so positions rounded to pixels don't change it
+                // from frame to frame.
+                let others = ui.cursor().left() - rect.left() - indent(depth) - name_width - gap;
+                measured = Some(others.ceil());
 
                 // Not selectable: a drag from a grip would select the text it passes.
                 let weak = |text: &str| {
@@ -989,9 +1002,6 @@ fn channel_list(
                 // Each cell shows the row's whole text too, as the name hides the row from
                 // the pointer.
                 let mut cells = vec![row_response];
-                if fit.kind {
-                    cells.push(cell(ui, columns.kind, left, weak(kind_name(channel.kind))));
-                }
                 if let Some(width) = fit.unit {
                     let response = cell(
                         ui,
@@ -1025,6 +1035,9 @@ fn channel_list(
         Some(Move::Channel(c, before)) => {
             view.move_channel(c, before);
         }
+        Some(Move::Kind((stream, kind), before)) => {
+            view.move_kind(stream, kind, before);
+        }
         Some(Move::Stream(s, before)) => {
             view.move_stream(s, before);
         }
@@ -1036,12 +1049,12 @@ fn channel_list(
         ui.data_mut(|d| d.insert_temp(fixed_key, width));
         ui.ctx().request_repaint();
     }
-    if let Some(s) = toggled {
-        match closed.iter().position(|&c| c == s) {
+    if let Some(fold) = toggled {
+        match closed.iter().position(|&c| c == fold) {
             Some(at) => {
                 closed.remove(at);
             }
-            None => closed.push(s),
+            None => closed.push(fold),
         }
         ui.data_mut(|d| d.insert_temp(closed_key, closed));
     }
@@ -1104,23 +1117,27 @@ fn chevron(painter: &egui::Painter, center: egui::Pos2, open: bool, color: Color
     painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
 }
 
-/// What is dragged in the channel list, by its grip: a channel, or a stream.
+/// What is dragged in the channel list, by its grip: a channel, a type's channels, or a
+/// stream.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag {
     Channel(ChannelId),
+    Kind(Group),
     Stream(usize),
 }
 
-/// A drop: the channel or stream, and what it goes before (`None`: the end of its stream,
-/// or of all streams).
+/// A drop: the channel, type or stream, and what it goes before (`None`: the end of its
+/// group, of its stream, or of all streams).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Move {
     Channel(ChannelId, Option<ChannelId>),
+    Kind(Group, Option<ChannelKind>),
     Stream(usize, Option<usize>),
 }
 
 /// While a row is dragged: where it would go, as a line between the rows (a channel only
-/// among its stream's channels, a stream between streams); the list scrolling while the
+/// among its group's channels, a type among its stream's types, a stream between streams);
+/// the list scrolling while the
 /// pointer is near its top or bottom edge. Returns the move when it is dropped (Escape
 /// cancels it). `placed` are the rows laid out, by their index in `items`.
 fn dragging(ui: &mut Ui, items: &[Item], placed: &[(usize, egui::Rect)]) -> Option<Move> {
@@ -1144,21 +1161,27 @@ fn dragging(ui: &mut Ui, items: &[Item], placed: &[(usize, egui::Rect)]) -> Opti
         ui.ctx().request_repaint();
     }
 
-    // The rows it may go before: its stream's channels, or the streams.
+    // The rows it may go before (its group's channels, its stream's types, or the streams),
+    // and what follows such a row as part of it (a type's channels, a stream's types and
+    // channels).
     let group = match drag {
         Drag::Channel(c) => Some(items.iter().find_map(|item| match *item {
-            Item::Channel(x, g) if x == c => Some(g),
+            Item::Channel(x, g, _) if x == c => Some(g),
             _ => None,
         })?),
-        Drag::Stream(_) => None,
+        _ => None,
     };
-    let target = |item: &Item| match (*item, group) {
-        (Item::Channel(_, g), Some(group)) => g == group,
-        (Item::Stream(_), None) => true,
+    let target = |item: &Item| match (drag, *item) {
+        (Drag::Channel(_), Item::Channel(_, g, _)) => Some(g) == group,
+        (Drag::Kind((stream, _)), Item::Kind((s, _), _)) => s == stream,
+        (Drag::Stream(_), Item::Stream(_)) => true,
         _ => false,
     };
-    // What follows a target as part of it: a stream's channels.
-    let belongs = |item: &Item| group.is_none() && matches!(item, Item::Channel(_, Some(_)));
+    let belongs = |item: &Item| match (drag, *item) {
+        (Drag::Kind((stream, _)), Item::Channel(_, (s, _), _)) => s == stream,
+        (Drag::Stream(_), Item::Channel(..) | Item::Kind(..)) => true,
+        _ => false,
+    };
     let rows: Vec<(usize, egui::Rect)> = placed
         .iter()
         .copied()
@@ -1194,7 +1217,14 @@ fn dragging(ui: &mut Ui, items: &[Item], placed: &[(usize, egui::Rect)]) -> Opti
         Drag::Channel(c) => Move::Channel(
             c,
             match items.get(at) {
-                Some(&Item::Channel(x, g)) if Some(g) == group => Some(x),
+                Some(&Item::Channel(x, g, _)) if Some(g) == group => Some(x),
+                _ => None,
+            },
+        ),
+        Drag::Kind(g) => Move::Kind(
+            g,
+            match items.get(at) {
+                Some(&Item::Kind((s, kind), _)) if s == g.0 => Some(kind),
                 _ => None,
             },
         ),
@@ -1232,17 +1262,7 @@ fn stream_row(
     let (shown, all) = view.stream_shown(s);
     let row_height = row.rect.height();
 
-    let (rect, arrow) = ui.allocate_exact_size(vec2(CHEVRON_WIDTH, row_height), Sense::click());
-    let color = if arrow.hovered() {
-        ui.visuals().strong_text_color()
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    chevron(ui.painter(), rect.center(), open, color);
-    let verb = if open { "Collapse" } else { "Expand" };
-    accessible_label(ui, &arrow, format!("{verb} {name}"));
-    let arrow = arrow.on_hover_cursor(CursorIcon::PointingHand);
-    let clicked = arrow.clicked();
+    let clicked = disclosure(ui, open, &name, row_height).clicked();
 
     let mut checked = shown == all;
     let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
@@ -1344,6 +1364,132 @@ fn stream_row(
     }
     for cell in cells {
         cell.on_hover_text(&full);
+    }
+    clicked
+}
+
+/// A fold's disclosure chevron in a row `height` high, pointing down while `open`, named
+/// "Collapse {name}" or "Expand {name}" for screen readers.
+fn disclosure(ui: &mut Ui, open: bool, name: &str, height: f32) -> Response {
+    let (rect, arrow) = ui.allocate_exact_size(vec2(CHEVRON_WIDTH, height), Sense::click());
+    let color = if arrow.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    chevron(ui.painter(), rect.center(), open, color);
+    let verb = if open { "Collapse" } else { "Expand" };
+    accessible_label(ui, &arrow, format!("{verb} {name}"));
+    arrow.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// What a type's row's controls name it: "EEG channels", or under a stream "EEG channels in
+/// Amp", as several streams can have one (and a channel can be named as its type).
+fn kind_label(kind: ChannelKind, stream: Option<&str>) -> String {
+    match stream {
+        Some(stream) => format!("{} channels in {stream}", kind_name(kind)),
+        None => format!("{} channels", kind_name(kind)),
+    }
+}
+
+/// A type's row in the channel list, as [`kind_row`] shows it.
+struct KindRow {
+    group: Group,
+    /// What its controls are named (see [`kind_label`]).
+    label: String,
+    open: bool,
+}
+
+/// A type's row in the channel list: a chevron that shows or hides its channels' rows, a
+/// checkbox that shows or hides them in the traces (mixed while some are shown), its name in
+/// its trace color (a click scrolls the traces to its first shown channel), and at the right
+/// how many of its channels are shown ("62 of 64 shown"), left out where the row is too
+/// narrow and then shown on hover. Returns whether the chevron was clicked.
+fn kind_row(
+    ui: &mut Ui,
+    view: &mut ViewState,
+    spec: KindRow,
+    type_colors: &TypeColors,
+    row: Response,
+) -> bool {
+    let KindRow { group, label, open } = spec;
+    let (stream, kind) = group;
+    let name = kind_name(kind);
+    let (shown, all) = view.group_shown(stream, kind);
+    let row_height = row.rect.height();
+    let clicked = disclosure(ui, open, &label, row_height).clicked();
+
+    let mut checked = shown == all;
+    let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
+    let response = ui.add(checkbox);
+    note_checkbox_width(ui, &response);
+    accessible_label(ui, &response, format!("Show {label}"));
+    if response.changed() {
+        view.set_group_shown(stream, kind, checked);
+    }
+
+    let body = TextStyle::Body.resolve(ui.style());
+    let width = |text: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(text.to_owned(), body.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+    };
+    let count = format!("{shown} of {all} shown");
+    let gap = ui.spacing().item_spacing.x;
+    let room = ui.available_width();
+    let name_width = width(name);
+    let show_count = name_width + gap + width(&count) <= room;
+    let name_room = if show_count {
+        name_width
+    } else {
+        room.clamp(0.0, name_width)
+    };
+
+    let color = type_color(kind, type_colors, ui.visuals());
+    let (_, rect) = ui.allocate_space(vec2(name_room, row_height));
+    let text = Label::new(RichText::new(name).color(color).strong())
+        .sense(Sense::click())
+        .selectable(false)
+        .truncate();
+    let mut response = ui
+        .new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        )
+        .add(text);
+    let first_shown = view
+        .order()
+        .iter()
+        .copied()
+        .find(|&c| view.group_of(c) == group && view.is_shown(c));
+    let hover = match (show_count, first_shown) {
+        (true, Some(_)) => Some("Show in Traces".to_owned()),
+        (false, Some(_)) => Some(format!("{count}\n\nShow in Traces")),
+        (false, None) => Some(count.clone()),
+        (true, None) => None,
+    };
+    if let Some(hover) = hover {
+        response = response.on_hover_text(hover);
+    }
+    if let Some(first) = first_shown {
+        let response = response.on_hover_cursor(CursorIcon::PointingHand);
+        if response.clicked() {
+            view.scroll_to(first);
+        }
+    }
+    if show_count {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(
+                Label::new(RichText::new(count).weak())
+                    .selectable(false)
+                    .extend(),
+            )
+        });
+    } else {
+        row.on_hover_text(count);
     }
     clicked
 }

@@ -198,10 +198,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::MoreChannels),
             a(Action::FewerChannels),
-            Item::Submenu {
-                title: "Channel Order",
-                items: vec![a(Action::FileOrder), a(Action::TypeOrder)],
-            },
+            a(Action::ResetOrder),
             Item::Separator,
             a(Action::ScaleUp),
             a(Action::ScaleDown),

@@ -8,3 +8,5 @@ cc 229b1e208d4142a944e5fce8c9233bf8689ed3e4267239615d0737d111f98f48 # shrinks to
 cc f43402c2fd1e7c2f2f64c6565263c5404a7a1ef4421962112858ada083f4ca4e # shrinks to shape = (1, 1), steps = [Pan(197.95662713717397)]
 cc 90237a11cf8cd91ddcff58b7c3a53c747c7827e956547ab6e42d802427f9c1d3 # shrinks to shape = (2, 1, true), steps = [MoveStream(0, None)]
 cc d7db6c518de87691e2a012cc90af730437b3b5bcf6612c47e3eb5ede489b025d # shrinks to shape = (1, 1, true), steps = [MoveStream(0, Some(0))]
+cc 229f8a9649bb0ea470dd46a49ea14d86c106e3f10506bceeaa20aaeff85f41f2 # shrinks to shape = (27, 1, false), steps = [MoveChannel(0, Some(27))]
+cc ed578e1e0ea82fe0403d7a7438005dc811e9c8db2a5a258d963b9337aab414c4 # shrinks to shape = (10, 1, false), steps = [MoveChannel(0, None)]

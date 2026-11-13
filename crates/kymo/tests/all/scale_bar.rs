@@ -8,7 +8,7 @@ use kymo::scale_bar::{ScaleBar, round_below, scale_bars};
 use kymo::view::ViewState;
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
-    Recording, SampleType, SamplesMut, Timebase, Unit,
+    Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
 };
 use proptest::prelude::*;
 
@@ -29,8 +29,9 @@ impl BlockReader for NoReader {
     }
 }
 
-/// A channel of each of `kinds`, in that order, all in µV at 100 Hz for a minute.
-fn recording_of(kinds: &[ChannelKind]) -> Recording {
+/// A channel of each of `kinds`, in that order, all in µV at 100 Hz for a minute, in
+/// streams of the channels in `streams` (none: no streams).
+fn recording_in(kinds: &[ChannelKind], streams: &[Range<u32>]) -> Recording {
     let channels = kinds
         .iter()
         .enumerate()
@@ -58,7 +59,16 @@ fn recording_of(kinds: &[ChannelKind]) -> Recording {
             grids: vec![grid],
             extra: vec![],
             bad_channels: Vec::new(),
-            streams: Vec::new(),
+            streams: streams
+                .iter()
+                .enumerate()
+                .map(|(i, r)| Stream {
+                    id: i as u32 + 1,
+                    name: format!("Stream {i}"),
+                    kind: String::new(),
+                    content: StreamContent::Channels(r.clone().map(ChannelId).collect()),
+                })
+                .collect(),
         },
         annotations: vec![],
         warnings: vec![],
@@ -68,14 +78,16 @@ fn recording_of(kinds: &[ChannelKind]) -> Recording {
     Recording::new(opened).unwrap().0
 }
 
-/// 10 EEG, 2 EOG, 10 EEG and a stim channel, 4 rows on screen.
+/// 10 EEG, 2 EOG, 10 EEG and a stim channel, 4 rows on screen; in two streams, the
+/// second starting at the second EEG block, as a type's channels stay together within a
+/// stream.
 fn blocks() -> (Recording, ViewState) {
     use ChannelKind::{Eeg, Eog, Stim};
     let kinds: Vec<_> = [(Eeg, 10), (Eog, 2), (Eeg, 10), (Stim, 1)]
         .into_iter()
         .flat_map(|(kind, n)| std::iter::repeat_n(kind, n))
         .collect();
-    let rec = recording_of(&kinds);
+    let rec = recording_in(&kinds, &[0..12, 12..23]);
     let mut view = ViewState::new(&rec);
     view.set_rows(4);
     (rec, view)
