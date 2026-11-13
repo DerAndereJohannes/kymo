@@ -5832,3 +5832,127 @@ fn the_shortcut_overview_shrinks_back_to_its_rows() {
         );
     }
 }
+
+/// An XDF file of three streams of channels: "Acc" and "Gyro" (X and Y each, so their
+/// labels get the stream's name) for 30 s, and "Pos", without labels (Pos_0, Pos_1), from
+/// 5 s to 25 s.
+fn qualified_xdf() -> TempFile {
+    use kymo_testgen::XdfFormat;
+    use kymo_testgen::xdf::{Chunks, header_xml};
+    let axes: Vec<(String, String, String)> = ["X", "Y"]
+        .iter()
+        .map(|l| ((*l).to_owned(), "Misc".to_owned(), String::new()))
+        .collect();
+    let mut c = Chunks::new(None);
+    c.stream_header(
+        1,
+        &header_xml("Acc", "Motion", 2, 10.0, "float32", Some(&axes)),
+    );
+    c.stream_header(
+        2,
+        &header_xml("Gyro", "Motion", 2, 10.0, "float32", Some(&axes)),
+    );
+    c.stream_header(3, &header_xml("Pos", "Position", 2, 10.0, "float32", None));
+    let samples = |from: f64, n: u32| -> Vec<(Option<f64>, Vec<f64>)> {
+        (0..n)
+            .map(|i| (Some(from + f64::from(i) / 10.0), vec![f64::from(i % 5); 2]))
+            .collect()
+    };
+    c.numeric(1, XdfFormat::F32, &samples(0.0, 300));
+    c.numeric(2, XdfFormat::F32, &samples(0.0, 300));
+    c.numeric(3, XdfFormat::F32, &samples(5.0, 200));
+    for id in 1..=3 {
+        c.footer(id, "<info/>");
+    }
+    let file = TempFile::new("xdf");
+    std::fs::write(file.path(), &c.bytes).unwrap();
+    file
+}
+
+/// Grouped by stream, the channel list names a channel as its stream has it: "X" for
+/// "Acc X", "0" for an unlabeled "Pos_0"; the full name on hover, for screen readers and in
+/// the traces. A stream's row gives its span on hover. Ungrouped, names stay whole.
+#[test]
+fn channels_are_named_within_their_streams() {
+    use egui::accesskit::Role;
+    let file = qualified_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let names: Vec<&str> = viewer(&harness)
+        .document()
+        .recording
+        .channels()
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["Acc X", "Acc Y", "Gyro X", "Gyro Y", "Pos_0", "Pos_1"]
+    );
+    // The list paints the short names; screen readers get the full ones.
+    let list_texts = |h: &Harness<'_, KymoApp>, text: &str| {
+        painted(h, text).iter().filter(|t| *t == text).count()
+    };
+    assert_eq!(list_texts(&harness, "X"), 2);
+    assert_eq!(list_texts(&harness, "0"), 1);
+    let x = harness.get_by_role_and_label(Role::Label, "Acc X").rect();
+    let gyro_x = harness.get_by_role_and_label(Role::Label, "Gyro X").rect();
+    let pos_0 = harness.get_by_role_and_label(Role::Label, "Pos_0").rect();
+    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    for rect in [x, gyro_x, pos_0] {
+        assert!(rect.right() < sidebar, "{rect:?}");
+    }
+    // The names' column is as wide as the short names: the Bad toggles follow closer
+    // than the full names would fit.
+    let full_width = {
+        let font = egui::TextStyle::Body.resolve(&harness.ctx.global_style());
+        harness.ctx.fonts_mut(|f| {
+            f.layout_no_wrap("Gyro X".to_owned(), font, egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    let bad = harness.get_by_label("Gyro X bad").rect();
+    assert!(
+        bad.left() - gyro_x.left() < full_width,
+        "{bad:?} {gyro_x:?}"
+    );
+    // The traces keep the full names.
+    assert!(painted(&harness, "Acc X").iter().any(|t| t == "Acc X"));
+    assert!(painted(&harness, "Pos_1").iter().any(|t| t == "Pos_1"));
+    // The full name on hover.
+    hover(&mut harness, x.center());
+    assert!(tooltip(&mut harness, "Acc X\nMisc"));
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+    // A stream's span on hover.
+    let pos = harness.get_by_role_and_label(Role::Label, "Pos").rect();
+    hover(&mut harness, pos.center());
+    assert!(tooltip(&mut harness, "from 5.0 s to 25.0 s"));
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+    let acc = harness.get_by_role_and_label(Role::Label, "Acc").rect();
+    hover(&mut harness, acc.center());
+    assert!(tooltip(&mut harness, "from 0.0 s to 30.0 s"));
+
+    // One stream of unlabeled channels: not grouped, the names whole.
+    use kymo_testgen::XdfFormat;
+    use kymo_testgen::xdf::{Chunks, header_xml};
+    let mut c = Chunks::new(None);
+    c.stream_header(1, &header_xml("Pos", "Position", 2, 10.0, "float32", None));
+    let samples: Vec<(Option<f64>, Vec<f64>)> = (0..100)
+        .map(|i| (Some(f64::from(i) / 10.0), vec![1.0, 2.0]))
+        .collect();
+    c.numeric(1, XdfFormat::F32, &samples);
+    c.footer(1, "<info/>");
+    let single = TempFile::new("xdf");
+    std::fs::write(single.path(), &c.bytes).unwrap();
+    let mut harness = window(single.path());
+    ready(&mut harness);
+    assert_eq!(list_texts(&harness, "0"), 0);
+    assert!(
+        painted(&harness, "Pos_0")
+            .iter()
+            .filter(|t| *t == "Pos_0")
+            .count()
+            >= 2
+    );
+}

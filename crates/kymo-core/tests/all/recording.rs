@@ -259,6 +259,10 @@ fn formats_without_streams_list_none() {
         let file = common::TempFile::written(&Spec::preset(preset).unwrap());
         let (rec, _) = Recording::new(kymo_core::open(file.path()).unwrap()).unwrap();
         assert!(rec.streams().is_empty(), "{preset}");
+        assert!(
+            rec.channels().iter().all(|c| c.in_stream.is_none()),
+            "{preset}"
+        );
     }
 }
 

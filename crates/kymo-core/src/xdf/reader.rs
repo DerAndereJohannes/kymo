@@ -212,9 +212,10 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         };
         let mut decoders = Vec::with_capacity(info.count);
         let mut stim = Vec::with_capacity(info.count);
-        for (c, name) in names[g].iter().enumerate() {
+        for (c, label) in names[g].iter().enumerate() {
             let described = info.channels.get(c);
-            let mut channel = Channel::new(name.clone(), grid_id);
+            let mut channel = Channel::new(label.name.clone(), grid_id);
+            channel.in_stream = label.in_stream.clone();
             channel.kind = kind(event_stream, described.map_or("", |d| d.kind.as_str()));
             let unit = described.map_or("", |d| d.unit.trim());
             if !unit.is_empty() && unit != "NA" {
@@ -712,10 +713,18 @@ fn kind(event_stream: bool, channel_type: &str) -> ChannelKind {
     }
 }
 
+/// A channel's name, and its name within its stream where that is shorter (see
+/// [`Channel::in_stream`]).
+struct Label {
+    name: String,
+    in_stream: Option<String>,
+}
+
 /// Each shown stream's channel labels: as described (`"{stream name}_{n}"` where empty or
-/// missing), a label that several streams have prefixed by its stream's qualifier.
-fn labels(shown: &[&Stream]) -> Vec<Vec<String>> {
-    let mut labels: Vec<Vec<String>> = shown
+/// missing, `n` within the stream), a label that several streams have prefixed by its
+/// stream's qualifier.
+fn labels(shown: &[&Stream]) -> Vec<Vec<Label>> {
+    let mut labels: Vec<Vec<Label>> = shown
         .iter()
         .map(|s| {
             let Some(info) = &s.info else {
@@ -723,35 +732,35 @@ fn labels(shown: &[&Stream]) -> Vec<Vec<String>> {
             };
             (0..info.count)
                 .map(|c| match info.channels.get(c) {
-                    Some(d) if !d.label.is_empty() => d.label.clone(),
-                    _ => format!("{}_{c}", info.name),
+                    Some(d) if !d.label.is_empty() => Label {
+                        name: d.label.clone(),
+                        in_stream: None,
+                    },
+                    _ => Label {
+                        name: format!("{}_{c}", info.name),
+                        in_stream: Some(c.to_string()),
+                    },
                 })
                 .collect()
         })
         .collect();
-    let mut owners: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut owners: HashMap<String, Vec<usize>> = HashMap::new();
     for (g, names) in labels.iter().enumerate() {
-        for name in names {
-            let owner = owners.entry(name.as_str()).or_default();
+        for label in names {
+            let owner = owners.entry(label.name.clone()).or_default();
             if !owner.contains(&g) {
                 owner.push(g);
             }
         }
     }
-    let colliding: Vec<(usize, String)> = labels
-        .iter()
-        .enumerate()
-        .flat_map(|(g, names)| {
-            names
-                .iter()
-                .filter(|n| owners.get(n.as_str()).is_some_and(|o| o.len() > 1))
-                .map(move |n| (g, n.clone()))
-        })
-        .collect();
     let qualifiers: Vec<String> = (0..shown.len()).map(|g| qualifier(shown, g)).collect();
-    for (g, name) in colliding {
-        for label in labels[g].iter_mut().filter(|l| **l == name) {
-            *label = format!("{} {name}", qualifiers[g]);
+    for (g, names) in labels.iter_mut().enumerate() {
+        for label in names {
+            if owners.get(&label.name).is_some_and(|o| o.len() > 1) {
+                let name = std::mem::take(&mut label.name);
+                label.name = format!("{} {name}", qualifiers[g]);
+                label.in_stream.get_or_insert(name);
+            }
         }
     }
     labels

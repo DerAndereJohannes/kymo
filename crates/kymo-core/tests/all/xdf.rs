@@ -747,6 +747,17 @@ fn presets_open_with_their_channels() {
             ("Aux_1", Misc, ""),
         ]
     );
+    // Names within their streams, where shorter: the labels without the qualifier, the
+    // numbers of unlabeled channels.
+    let in_stream: Vec<Option<&str>> = rec
+        .channels()
+        .iter()
+        .map(|c| c.in_stream.as_deref())
+        .collect();
+    let mut want = vec![Some("X"), Some("Y"), Some("X"), Some("Y")];
+    want.extend([None; 7]);
+    want.extend([Some("0"), Some("1")]);
+    assert_eq!(in_stream, want);
     assert!(rec.warnings()[0].contains("g, dps"), "{:?}", rec.warnings());
     // The int64 DC channel is read relative to its first sample, folded into the offset.
     let dc = &rec.channels()[9];
@@ -1239,6 +1250,30 @@ fn labels_kinds_and_units() {
             ("deg", Misc, "deg", None),
             ("Few_0", Misc, "", None),
             ("Few_1", Misc, "", None),
+        ]
+    );
+    let in_stream: Vec<Option<&str>> = rec
+        .channels()
+        .iter()
+        .map(|c| c.in_stream.as_deref())
+        .collect();
+    assert_eq!(
+        in_stream,
+        [
+            Some("X"),
+            Some("1"),
+            Some("X"),
+            Some("Y"),
+            Some("X"),
+            None,
+            Some("Y"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("0"),
+            Some("1"),
         ]
     );
     assert!(has_warning(

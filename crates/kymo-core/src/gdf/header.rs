@@ -307,6 +307,7 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
             digital_range: Some((dmin, dmax)),
             trigger_mask,
             events: true,
+            in_stream: None,
         });
         blocks.push(RecordBlock {
             offset,

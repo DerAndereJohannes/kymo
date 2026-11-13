@@ -8,6 +8,7 @@ use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
 use crate::annotations::{AnnotationColors, Entry, Legend};
 use crate::document::{Document, Summary, format_rate, grid_rate, plural};
+use crate::ui::axis::{Clock, format_time};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
@@ -587,12 +588,17 @@ struct Measured {
 
 impl Columns {
     /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
-    /// font and scale.
-    fn of(ui: &Ui, document: &Document) -> Columns {
+    /// font and scale; `grouped`, the names within their streams (see [`list_name`]).
+    fn of(ui: &Ui, document: &Document, grouped: bool) -> Columns {
         let font = TextStyle::Body.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
         let rec = &document.recording;
-        let key = Id::unique(("kymo channel columns", &document.path, rec.channels().len()));
+        let key = Id::unique((
+            "kymo channel columns",
+            &document.path,
+            rec.channels().len(),
+            grouped,
+        ));
         if let Some(m) = ui.data(|d| d.get_temp::<Measured>(key))
             && m.font == font
             && m.pixels_per_point == pixels_per_point
@@ -612,7 +618,7 @@ impl Columns {
         };
         let channels = rec.channels();
         let columns = Columns {
-            name: widest(&mut channels.iter().map(|c| c.name.clone())),
+            name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned())),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
             unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
             rate: widest(&mut channels.iter().map(|c| list_rate(rec.grid(c.grid)))),
@@ -758,6 +764,16 @@ fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[us
 }
 
 /// A stream's name as the list shows it: "Stream 3" for one without a name.
+/// How the channel list names `channel`: grouped by stream, its name within its stream
+/// where that is shorter ([`Channel::in_stream`](kymo_core::Channel::in_stream)), else its
+/// name.
+fn list_name(channel: &kymo_core::Channel, grouped: bool) -> &str {
+    match &channel.in_stream {
+        Some(short) if grouped => short,
+        _ => &channel.name,
+    }
+}
+
 fn stream_name(stream: &Stream) -> String {
     if stream.name.trim().is_empty() {
         format!("Stream {}", stream.id)
@@ -796,7 +812,7 @@ fn channel_list(
     let mut closed: Vec<usize> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
     let items = list_items(document, view, grouped, &closed);
     let mut toggled = None;
-    let columns = Columns::of(ui, document);
+    let columns = Columns::of(ui, document, grouped);
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
@@ -881,26 +897,31 @@ fn channel_list(
                 grip(ui, rect, &channel.name, Drag::Channel(id));
                 ui.add_space(indent);
                 let name = &channel.name;
+                // Under its stream, the name within it ("X" for "ACC X").
+                let listed = list_name(channel, grouped);
                 let grid = rec.grid(channel.grid);
                 let (unit, _) = display_unit(channel);
-                let short_name = elide_middle(ui.ctx(), name, &body, fit.name);
+                let short_name = elide_middle(ui.ctx(), listed, &body, fit.name);
                 let short_unit = fit
                     .unit
                     .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
                 // The row's whole text where some of it is shortened or left out.
-                let full = (short_name.is_some() || short_unit.is_some() || !fit.all(!grouped))
-                    .then(|| {
-                        let unit = if unit.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" \u{b7} {unit}")
-                        };
-                        format!(
-                            "{name}\n{}{unit} \u{b7} {}",
-                            kind_name(channel.kind),
-                            full_rate(grid)
-                        )
-                    });
+                let full = (short_name.is_some()
+                    || listed != name
+                    || short_unit.is_some()
+                    || !fit.all(!grouped))
+                .then(|| {
+                    let unit = if unit.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" \u{b7} {unit}")
+                    };
+                    format!(
+                        "{name}\n{}{unit} \u{b7} {}",
+                        kind_name(channel.kind),
+                        full_rate(grid)
+                    )
+                });
 
                 let mut shown = view.is_shown(id);
                 let response = ui.add(Checkbox::without_text(&mut shown));
@@ -917,13 +938,13 @@ fn channel_list(
                 } else {
                     type_color(channel.kind, type_colors, ui.visuals())
                 };
-                let text = short_name.as_deref().unwrap_or(name);
+                let text = short_name.as_deref().unwrap_or(listed);
                 let label = Label::new(RichText::new(text).color(color))
                     .sense(Sense::click())
                     .selectable(false)
                     .extend();
                 let mut response = cell(ui, fit.name, left, label);
-                if short_name.is_some() {
+                if text != name {
                     accessible_text(ui, &response, name.clone());
                 }
                 let hover = match (&full, shown) {
@@ -1262,7 +1283,14 @@ fn stream_row(
         .copied()
         .collect::<Vec<_>>()
         .join(" \u{b7} ");
-    let full = format!("{name}\n{full}");
+    // Streams start and end at different times.
+    let clock = Clock::for_end(rec.duration());
+    let span = format!(
+        "from {} to {}",
+        format_time(grid.time_of(0), 1, clock),
+        format_time(grid.time_of(grid.len()), 1, clock)
+    );
+    let full = format!("{name}\n{full}\n{span}");
 
     let (_, rect) = ui.allocate_space(vec2(name_room, row_height));
     let label = Label::new(RichText::new(short.as_deref().unwrap_or(&name)).strong())

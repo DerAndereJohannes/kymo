@@ -205,6 +205,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             // upper 8 are the amplifier's own (CMS in range, battery, ...).
             trigger_mask: (bdf && kind == ChannelKind::Stim).then_some(0xffff),
             events: true,
+            in_stream: None,
             // TODO(later): duplicate labels stay as stored ("POL", "POL", ...). MNE renames
             // them "POL-0", "POL-1", ...; the Python round trip (bads by name) may need the
             // same names.
