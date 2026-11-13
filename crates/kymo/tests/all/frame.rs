@@ -383,23 +383,27 @@ proptest! {
                 if b < 0.0 || a > f64::from(width) {
                     continue;
                 }
-                // A tile may be drawn more than once (around a sparse stretch).
-                let draw = frame
+                // A tile may be drawn more than once (around a sparse stretch). An item in
+                // the seam column of the draw before its own (the last column, say, which
+                // its own draw then doesn't reach) is drawn as that draw's next part.
+                let part = frame
                     .draws
                     .iter()
-                    .find(|d| d.part.tile.key() == key && d.part.items.contains(&(item as u32)));
-                let Some(draw) = draw else {
+                    .flat_map(|d| [Some(&d.part), d.next.as_ref()])
+                    .flatten()
+                    .find(|p| p.tile.key() == key && p.items.contains(&(item as u32)));
+                let Some(part) = part else {
                     prop_assert!(false, "{key:?} item {item} reaches the screen, but isn't drawn");
                     unreachable!()
                 };
-                let items = &draw.part.items;
-                let xs = draw.part.xs.as_ref().unwrap();
+                let items = &part.items;
+                let xs = part.xs.as_ref().unwrap();
                 let i = (item as u32 - items.start()) as usize;
                 // A start or end far off screen is as precise as an f32 there.
                 let slack = |x: f64| 1e-3 + x.abs() * f64::from(f32::EPSILON);
                 prop_assert!((f64::from(xs[i]) - a).abs() < slack(a), "{key:?} item {item}: {} vs {a}", xs[i]);
                 prop_assert!((f64::from(xs[i + 1]) - b).abs() < slack(b), "{key:?} item {item} end");
-                prop_assert!(draw.part.hold);
+                prop_assert!(part.hold);
             }
         }
     }
