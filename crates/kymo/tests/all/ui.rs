@@ -5593,6 +5593,95 @@ fn the_legend_lines_up_with_the_channel_list_and_folds() {
     assert_eq!(top(&harness), open);
 }
 
+/// The line between the channel list and the legend drags: the legend from one row to all
+/// of them, the channel list keeping three; a double click puts it back; folding
+/// "Annotations" still shrinks it to that row, and unfolding brings back the dragged height.
+#[test]
+fn the_line_above_the_legend_drags() {
+    // 30 descriptions, 8 rows shown.
+    let file = without_triggers("edf+d-mixed");
+    let mut harness = window_with_short_frames(file.path());
+    ready(&mut harness);
+    let top = |h: &Harness<'_, KymoApp>| h.get_by_label("Show Annotations").rect().top();
+    let stride = {
+        let style = harness.ctx.global_style();
+        style.spacing.interact_size.y + style.spacing.item_spacing.y
+    };
+    // The panel's top, its margin above "Annotations".
+    let line = |h: &Harness<'_, KymoApp>| top(h) - 6.0;
+    let x = harness.get_by_label("Show Annotations").rect().center().x + 60.0;
+    let open = top(&harness);
+    // Its cursor on hover.
+    let at = egui::pos2(x, line(&harness));
+    hover(&mut harness, at);
+    harness.step();
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::ResizeVertical
+    );
+
+    // Three rows taller.
+    let from = egui::pos2(x, line(&harness));
+    drag(&mut harness, from, from - egui::vec2(0.0, 3.0 * stride));
+    harness.run_steps(2);
+    assert!(
+        (top(&harness) - (open - 3.0 * stride)).abs() <= 1.0,
+        "{} {open}",
+        top(&harness)
+    );
+    let taller = top(&harness);
+
+    // Folded, one row; unfolded, the dragged height again.
+    harness.get_by_label("Collapse Annotations").click();
+    harness.run_steps(3);
+    assert!(top(&harness) > open);
+    harness.get_by_label("Expand Annotations").click();
+    harness.run_steps(3);
+    assert_eq!(top(&harness), taller);
+
+    // As short as one row.
+    let from = egui::pos2(x, line(&harness));
+    drag(&mut harness, from, from + egui::vec2(0.0, 2000.0));
+    harness.run_steps(2);
+    let short = top(&harness);
+    assert!(
+        (short - (open + 7.0 * stride)).abs() <= 1.0,
+        "{short} {open}"
+    );
+
+    // As tall as the channel list allows: three of its rows stay.
+    let from = egui::pos2(x, line(&harness));
+    drag(&mut harness, from, egui::pos2(x, 0.0));
+    harness.run_steps(2);
+    let list = harness.get_by_label("Collapse EEG channels").rect().top();
+    assert!(
+        top(&harness) >= list + 3.0 * stride,
+        "{} {list}",
+        top(&harness)
+    );
+    assert!(
+        top(&harness) < list + 6.0 * stride,
+        "{} {list}",
+        top(&harness)
+    );
+
+    // A double click puts it back.
+    let at = egui::pos2(x, line(&harness));
+    double_click(&mut harness, at);
+    harness.run_steps(2);
+    assert_eq!(top(&harness), open);
+
+    // Never taller than all its rows: two streams and four descriptions, all shown already.
+    let file = marker_streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let open = top(&harness);
+    let from = egui::pos2(x, line(&harness));
+    drag(&mut harness, from, from - egui::vec2(0.0, 3.0 * stride));
+    harness.run_steps(2);
+    assert_eq!(top(&harness), open);
+}
+
 /// The labels of what collapses rows in the channel list.
 fn folds(harness: &Harness<'_, KymoApp>) -> Vec<String> {
     harness

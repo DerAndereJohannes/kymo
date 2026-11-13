@@ -126,7 +126,11 @@ pub fn header_panel(
 
     ui.add_space(6.0);
     let rule = ui.separator().rect.center().y;
-    // The legend at the bottom, so the channel list fills the space above it.
+    // The legend at the bottom, so the channel list fills the space above it, leaving it
+    // at least a few rows.
+    let stride = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+    let room = ui.available_height() - LIST_MIN_ROWS * stride;
+    let mut legend_rect = None;
     if !legend.is_empty() || field.is_some() {
         let panel = egui::Panel::bottom("legend")
             .resizable(false)
@@ -142,15 +146,76 @@ pub fn header_panel(
                         document.recording.streams(),
                         legend,
                         annotation_colors,
+                        room,
                     );
                 }
             });
-        if legend.by_stream() {
-            fold_all_legend(ui, recording, legend, panel.response.rect);
-        }
+        legend_rect = Some(panel.response.rect);
     }
     channel_list(ui, recording, document, view, type_colors, rule);
+    // On top of both lists, as each would take the drag near the line between them.
+    if let Some(rect) = legend_rect {
+        let folded = ui
+            .data(|d| d.get_temp::<bool>(legend_folded_id(recording)))
+            .unwrap_or(false);
+        if !legend.is_empty() && !folded {
+            legend_edge(ui, recording, rect);
+        }
+        if legend.by_stream() {
+            fold_all_legend(ui, recording, legend, rect);
+        }
+    }
     relabel
+}
+
+/// Rows the channel list keeps when the legend is dragged taller.
+const LIST_MIN_ROWS: f32 = 3.0;
+
+/// Half the height of the band around the line between the channel list and the legend
+/// that drags it, in points.
+const LEGEND_EDGE_GRAB: f32 = 3.0;
+
+/// The line between the channel list and the legend (`panel`'s top): dragging it sets the
+/// legend's height while the recording is open (from one row to all of them, leaving the
+/// channel list [`LIST_MIN_ROWS`]), a double click puts it back (up to [`LEGEND_ROWS`] rows).
+fn legend_edge(ui: &mut Ui, recording: u64, panel: egui::Rect) {
+    let y = panel.top();
+    let band =
+        egui::Rect::from_x_y_ranges(panel.x_range(), y - LEGEND_EDGE_GRAB..=y + LEGEND_EDGE_GRAB);
+    let id = Id::unique(("kymo legend edge", recording));
+    let response = ui.interact(band, id, Sense::click_and_drag());
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+        let stroke = ui.visuals().widgets.hovered.fg_stroke;
+        ui.painter().hline(panel.x_range(), y, stroke);
+    }
+    let key = legend_height_id(recording);
+    if response.double_clicked() {
+        ui.data_mut(|d| d.remove::<f32>(key));
+    } else if response.dragged() {
+        let shown: f32 = ui
+            .data(|d| d.get_temp(legend_shown_height_id(recording)))
+            .unwrap_or(0.0);
+        // Up makes it taller.
+        let height = shown - response.drag_delta().y;
+        ui.data_mut(|d| d.insert_temp(key, height));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The legend's rows' height as dragged, for `recording`; none: [`LEGEND_ROWS`] rows.
+fn legend_height_id(recording: u64) -> Id {
+    Id::unique(("kymo legend height", recording))
+}
+
+/// The legend's rows' height as last shown, for `recording`.
+fn legend_shown_height_id(recording: u64) -> Id {
+    Id::unique(("kymo legend shown height", recording))
+}
+
+/// Whether the legend is folded to its "Annotations" row, for `recording`.
+fn legend_folded_id(recording: u64) -> Id {
+    Id::unique(("kymo legend folded", recording))
 }
 
 /// Widest a warning tooltip gets before its text wraps, in points.
@@ -293,10 +358,11 @@ fn legend_list(
     streams: &[Stream],
     legend: &mut Legend,
     picked: &mut AnnotationColors,
+    room: f32,
 ) {
     let (shown, all) = legend.shown_count();
     let row_height = ui.spacing().interact_size.y;
-    let folded_key = Id::unique(("kymo legend folded", recording));
+    let folded_key = legend_folded_id(recording);
     let folded: bool = ui.data(|d| d.get_temp(folded_key)).unwrap_or(false);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
     let mut row = legend_row(ui, rect);
@@ -363,10 +429,20 @@ fn legend_list(
     let depth = if grouped { 2.0 } else { 1.0 };
     let indent = GRIP_WIDTH + GRIP_GAP + CHEVRON_WIDTH + gap + depth * LEVEL;
     let mut toggled = None;
-    // Exactly as tall as its rows, up to LEGEND_ROWS: the panel holding it would otherwise
-    // keep its first height.
-    let height = (all_rows as f32).min(LEGEND_ROWS) * (row_height + ui.spacing().item_spacing.y)
-        - ui.spacing().item_spacing.y;
+    // As tall as dragged (see `legend_edge`), else as its rows up to LEGEND_ROWS; from one
+    // row to all of them, and within `room`, less what the panel has above them and its
+    // margins. Exactly so tall: the panel holding it would otherwise keep its first height.
+    let gap = ui.spacing().item_spacing.y;
+    let rows_height = |n: f32| n * (row_height + gap) - gap;
+    let tallest = rows_height(all_rows as f32);
+    let dragged: Option<f32> = ui.data(|d| d.get_temp(legend_height_id(recording)));
+    let above = ui.min_rect().height() + gap + 12.0;
+    let height = dragged
+        .unwrap_or_else(|| rows_height((all_rows as f32).min(LEGEND_ROWS)))
+        .min(room - above)
+        .min(tallest)
+        .max(row_height.min(tallest));
+    ui.data_mut(|d| d.insert_temp(legend_shown_height_id(recording), height));
     from_top(ui, "legend", recording, ScrollArea::vertical())
         .id_salt("legend")
         .min_scrolled_height(height)
