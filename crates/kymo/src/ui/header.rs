@@ -53,6 +53,33 @@ pub fn description_field_id() -> egui::Id {
     egui::Id::unique("kymo description field")
 }
 
+/// Room between the summary's keys and values, in points.
+const SUMMARY_SPACING: f32 = 12.0;
+
+fn summary_short_id() -> Id {
+    Id::unique("kymo summary short by")
+}
+
+fn list_short_id() -> Id {
+    Id::unique("kymo channel list short by")
+}
+
+/// How much wider the sidebar would have to be (negative: could be narrower) to show the
+/// summary's values and every column of the channel list in full, as the last frame laid
+/// them out; `None` before the sidebar has been shown.
+pub fn sidebar_fit(ctx: &egui::Context) -> Option<f32> {
+    let (summary, list) = ctx.data(|d| {
+        (
+            d.get_temp::<f32>(summary_short_id()),
+            d.get_temp::<f32>(list_short_id()),
+        )
+    });
+    match (summary, list) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Rows of the annotation legend shown before it scrolls.
 const LEGEND_ROWS: f32 = 8.0;
 
@@ -92,9 +119,29 @@ pub fn header_panel(
     );
     ui.add_space(6.0);
 
+    // How much wider the summary would have to be to show its values in full.
+    let summary_width = ui.fonts_mut(|f| {
+        let font = TextStyle::Body.resolve(ui.style());
+        let mut width = |text: &str| {
+            f.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let rows = summary.sidebar_rows();
+        let keys = rows.iter().map(|r| width(&r.key)).fold(0.0, f32::max);
+        let values = rows
+            .iter()
+            .flat_map(|r| r.value.lines())
+            .map(&mut width)
+            .fold(0.0, f32::max);
+        keys + SUMMARY_SPACING + values
+    });
+    let summary_short = summary_width - ui.available_width();
+    ui.data_mut(|d| d.insert_temp(summary_short_id(), summary_short));
+
     egui::Grid::new("summary")
         .num_columns(2)
-        .spacing([12.0, 4.0])
+        .spacing([SUMMARY_SPACING, 4.0])
         .show(ui, |ui| {
             // Keys at their full width; values, in the last column, shorten to what is left.
             for row in summary.sidebar_rows() {
@@ -375,19 +422,19 @@ fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut An
         });
 }
 
-/// Widest a channel name in the channel list gets, in ems (the body font's size): longer
-/// names are shortened in the middle.
-const LIST_NAME_EMS: f32 = 12.0;
-
-/// Narrowest the list's names get, in ems, before columns drop out.
+/// Narrowest the list's names get, in ems (the body font's size), before columns drop out;
+/// narrower names are shortened in the middle.
 const LIST_MIN_NAME_EMS: f32 = 6.0;
 
-/// Widest a unit gets in the channel list, in ems: units kymo doesn't know can be long
-/// ("normalized_signed").
-const LIST_UNIT_EMS: f32 = 4.0;
+/// Narrowest the list's units get, in ems, before the names narrow: units kymo doesn't know
+/// can be long ("normalized_signed").
+const LIST_MIN_UNIT_EMS: f32 = 4.0;
 
-/// Widths of the channel list's text columns, fitting every channel's entry up to their caps,
-/// so they stay put while the list scrolls (only the rows in view are drawn).
+/// Gap between the channel list's columns, in points.
+const LIST_GAP: f32 = 8.0;
+
+/// Widths of the channel list's text columns, fitting every channel's entry, so they stay
+/// put while the list scrolls (only the rows in view are drawn).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Columns {
     name: f32,
@@ -430,11 +477,10 @@ impl Columns {
             })
         };
         let channels = rec.channels();
-        let em = font.size;
         let columns = Columns {
-            name: widest(&mut channels.iter().map(|c| c.name.clone())).min(LIST_NAME_EMS * em),
+            name: widest(&mut channels.iter().map(|c| c.name.clone())),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
-            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)).min(LIST_UNIT_EMS * em),
+            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
             rate: widest(&mut channels.iter().map(|c| list_rate(rec.grid(c.grid)))),
         };
         ui.data_mut(|d| {
@@ -450,30 +496,41 @@ impl Columns {
         columns
     }
 
-    /// What a row of `width` shows: the type, unit and rate columns, and the name's width.
-    /// Everything fits at full width; with too little room the name narrows first, down to
-    /// `min_name`; then the rate drops out, then the unit, then the type, the name widening
-    /// again (to its column's width) into the room they leave. `fixed` is what every row
-    /// has besides (the checkbox, the Bad toggle and the gaps between them and the name).
-    fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32) -> RowColumns {
+    /// The width of a row showing everything in full, with `fixed` for the checkbox, the
+    /// Bad toggle and the gaps beside them.
+    fn full(&self, fixed: f32, gap: f32) -> f32 {
+        fixed + self.name + 3.0 * gap + self.kind + self.unit + self.rate
+    }
+
+    /// What a row of `width` shows: the type, unit and rate columns, and the name's and
+    /// unit's widths. Everything in full where it fits; with too little room the unit narrows
+    /// first, down to `min_unit`, then the name, down to `min_name`; then the rate drops out,
+    /// then the unit, then the type, the name and then the unit widening again into the room
+    /// they leave. `fixed` is what every row has besides (the checkbox, the Bad toggle and
+    /// the gaps between them and the name).
+    fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32, min_unit: f32) -> RowColumns {
         let options = [
             (true, true, true),
             (true, true, false),
             (true, false, false),
         ];
         let min_name = min_name.min(self.name);
+        let min_unit = min_unit.min(self.unit);
         for (kind, unit, rate) in options {
-            let others = [(kind, self.kind), (unit, self.unit), (rate, self.rate)]
+            let others = [(kind, self.kind), (unit, 0.0), (rate, self.rate)]
                 .iter()
                 .filter(|(shown, _)| *shown)
                 .map(|(_, w)| gap + w)
                 .sum::<f32>();
+            // The room for the name and the unit.
             let room = width - fixed - others;
-            if room >= min_name {
+            let unit_least = if unit { min_unit } else { 0.0 };
+            if room >= min_name + unit_least {
+                let name = (room - unit_least).min(self.name);
                 return RowColumns {
-                    name: room.min(self.name),
+                    name,
                     kind,
-                    unit,
+                    unit: unit.then(|| (room - name).min(self.unit)),
                     rate,
                 };
             }
@@ -481,24 +538,25 @@ impl Columns {
         RowColumns {
             name: (width - fixed).clamp(0.0, self.name),
             kind: false,
-            unit: false,
+            unit: None,
             rate: false,
         }
     }
 }
 
-/// What a row of the channel list shows (see [`Columns::fit`]).
+/// What a row of the channel list shows (see [`Columns::fit`]): the name's width, the type,
+/// the unit's width and the rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RowColumns {
     name: f32,
     kind: bool,
-    unit: bool,
+    unit: Option<f32>,
     rate: bool,
 }
 
 impl RowColumns {
     fn all(&self) -> bool {
-        self.kind && self.unit && self.rate
+        self.kind && self.unit.is_some() && self.rate
     }
 }
 
@@ -521,12 +579,13 @@ fn full_rate(grid: &kymo_core::Grid) -> String {
 }
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
-/// any channel up to their caps (longer names and units shortened in the middle). Per
-/// channel: whether it is shown, its name (a click scrolls the traces to it), whether it is
-/// bad, its type, its unit as the readout shows values (µV for EEG whatever the file
-/// stores) and its rate (right-aligned; "≈ 300 Hz" for an irregular grid's average). A list
-/// too narrow for all of it narrows the names and then leaves out the rate, unit and type
-/// (see [`Columns::fit`]); hovering a row whose text is shortened or left out shows it all.
+/// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
+/// it), whether it is bad, its type, its unit as the readout shows values (µV for EEG
+/// whatever the file stores) and its rate (right-aligned; "≈ 300 Hz" for an irregular
+/// grid's average). A list too narrow for all of it narrows the units and names (shortened
+/// in the middle) and then leaves out the rate, unit and type (see [`Columns::fit`]);
+/// hovering a row whose text is shortened or left out shows it all. Keeps how much wider
+/// the list would have to be to show everything in full for [`sidebar_fit`].
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -537,7 +596,7 @@ fn channel_list(
     let rec = &document.recording;
     let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
-    let gap = 8.0;
+    let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
     // The width of a row's checkbox and Bad toggle with the gaps beside them, as the last
     // frame laid them out (a guess before).
@@ -549,12 +608,15 @@ fn channel_list(
     from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, rec.channels().len(), |ui, rows| {
+            let width = ui.available_width();
             let fit = columns.fit(
-                ui.available_width(),
+                width,
                 fixed,
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
+                LIST_MIN_UNIT_EMS * body.size,
             );
+            ui.data_mut(|d| d.insert_temp(list_short_id(), columns.full(fixed, gap) - width));
             for i in rows {
                 let (rect, row_response) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -587,7 +649,9 @@ fn channel_list(
                 let grid = rec.grid(channel.grid);
                 let (unit, _) = display_unit(channel);
                 let short_name = elide_middle(ui.ctx(), name, &body, fit.name);
-                let short_unit = elide_middle(ui.ctx(), &unit, &body, columns.unit);
+                let short_unit = fit
+                    .unit
+                    .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
                 // The row's whole text where some of it is shortened or left out.
                 let full =
                     (short_name.is_some() || short_unit.is_some() || !fit.all()).then(|| {
@@ -663,10 +727,10 @@ fn channel_list(
                 if fit.kind {
                     cells.push(cell(ui, columns.kind, left, weak(kind_name(channel.kind))));
                 }
-                if fit.unit {
+                if let Some(width) = fit.unit {
                     let response = cell(
                         ui,
-                        columns.unit,
+                        width,
                         left,
                         weak(short_unit.as_deref().unwrap_or(&unit)),
                     );

@@ -1158,10 +1158,10 @@ fn tooltip(harness: &mut Harness<'_, KymoApp>, text: &str) -> bool {
     harness.query_by_label_contains(text).is_some()
 }
 
-/// The channel list shows units as symbols ("microvolts" as µV, for Misc channels too),
-/// shortens long names and units in the middle (screen readers get them whole), shows an
-/// irregular grid's rate as "≈ 50 Hz", and in a narrow sidebar narrows the names, then
-/// leaves out the rate, unit and type, which hovering the row shows.
+/// The channel list shows units as symbols ("microvolts" as µV, for Misc channels too) and
+/// an irregular grid's rate as "≈ 50 Hz", everything in full where the sidebar is wide
+/// enough; in a narrower one it shortens units and then names in the middle (screen readers
+/// get them whole), then leaves out the rate, unit and type, which hovering the row shows.
 #[test]
 fn the_channel_list_fits_its_width() {
     use egui::accesskit::Role;
@@ -1185,29 +1185,33 @@ fn the_channel_list_fits_its_width() {
     assert!(harness.query_by_label("microvolts").is_none());
     let por = row_of(&harness, "POR X - (Point of regard), left eye");
     assert!(in_row(&harness, por, "100 Hz"));
-    // The long unit and name, shortened to their columns.
-    let unit = harness
-        .get_by_role_and_label(Role::Label, "normalized_signed")
-        .rect();
-    assert!(unit.width() <= 4.0 * em + 1.0, "{unit:?}");
-    let name =
-        harness.get_by_role_and_label(Role::Label, "IPD - Interpupillary distance, both eyes");
-    assert!(name.rect().width() <= 12.0 * em + 1.0, "{:?}", name.rect());
-    let ipd = name.rect().center().y;
+    // The long unit and names in full.
+    let full = |h: &Harness<'_, KymoApp>, label: &str| {
+        let rect = h.get_by_role_and_label(Role::Label, label).rect();
+        let font = egui::TextStyle::Body.resolve(&h.ctx.global_style());
+        let text = h.ctx.fonts_mut(|f| {
+            f.layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE)
+                .size()
+                .x
+        });
+        rect.width() >= text - 0.5
+    };
+    assert!(full(&harness, "normalized_signed"));
+    assert!(full(&harness, "IPD - Interpupillary distance, both eyes"));
+    assert!(full(&harness, "POR X - (Point of regard), left eye"));
+    let ipd = row_of(&harness, "IPD - Interpupillary distance, both eyes");
     let rate = harness
         .query_all_by_role_and_label(Role::Label, "\u{2248} 50 Hz")
         .find(|n| (n.rect().center().y - ipd).abs() < 1.0)
         .unwrap()
         .rect();
-    // A shortened row shows all of it on hover; this one's rate is part of it.
+    // An irregular rate in full on hover; nothing else is shortened.
     hover(&mut harness, rate.center());
-    assert!(tooltip(
-        &mut harness,
-        "IPD - Interpupillary distance, both eyes\nMisc \u{b7} mm \u{b7} irregular, 50 Hz on average"
-    ));
+    assert!(tooltip(&mut harness, "irregular, 50 Hz on average"));
+    assert!(harness.query_by_label_contains("both eyes\n").is_none());
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
-    // Default: the names narrow, then the rate drops out.
+    // Default: the unit and then the names narrow, then the rate drops out.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -1218,6 +1222,12 @@ fn the_channel_list_fits_its_width() {
         .get_by_role_and_label(Role::Label, "POR X - (Point of regard), left eye")
         .rect();
     assert!(name.width() >= 6.0 * em - 1.0, "{name:?}");
+    assert!(!full(&harness, "POR X - (Point of regard), left eye"));
+    let unit = harness
+        .get_by_role_and_label(Role::Label, "normalized_signed")
+        .rect();
+    assert!(unit.width() <= 4.0 * em + 0.5, "{unit:?}");
+    assert!(!full(&harness, "normalized_signed"));
     // Hovering the row shows what it leaves out.
     let misc = harness
         .query_all_by_role_and_label(Role::Label, "Misc")
@@ -1249,6 +1259,72 @@ fn the_channel_list_fits_its_width() {
         rights.iter().all(|&r| r <= sidebar),
         "{rights:?} past {sidebar}"
     );
+}
+
+/// A double click on the sidebar's edge fits the sidebar to its contents: wider where a
+/// column or summary value doesn't fit, narrower where everything would fit in less.
+#[test]
+fn double_clicking_the_sidebar_edge_fits_it() {
+    use egui::accesskit::Role;
+    let sidebar = |h: &Harness<'_, KymoApp>| viewer(h).layout().unwrap().names.left() - 8.0;
+    let in_row = |h: &Harness<'_, KymoApp>, name: &str, label: &str| {
+        let y = h.get_by_role_and_label(Role::Label, name).rect().center().y;
+        h.query_all_by_role_and_label(Role::Label, label)
+            .any(|n| (n.rect().center().y - y).abs() < 1.0)
+    };
+
+    let file = long_names_xdf();
+    let mut harness = window_with_short_frames(file.path());
+    ready(&mut harness);
+    assert!(!in_row(&harness, "AUX1", "100 Hz"));
+    let edge = egui::pos2(sidebar(&harness), 300.0);
+    double_click(&mut harness, edge);
+    harness.run_steps(3);
+    let wide = sidebar(&harness);
+    assert!(wide > 300.0, "{wide}");
+    assert!(in_row(&harness, "AUX1", "100 Hz"));
+    assert!(in_row(
+        &harness,
+        "POR X - (Point of regard), left eye",
+        "normalized_signed"
+    ));
+    // Just wide enough: the rates end within it, near its edge.
+    let rate = harness
+        .query_all_by_role_and_label(Role::Label, "100 Hz")
+        .map(|n| n.rect().right())
+        .fold(0.0, f32::max);
+    assert!(rate <= wide && rate > wide - 30.0, "{rate} in {wide}");
+    // Narrowed by hand, it fits again.
+    drag(
+        &mut harness,
+        egui::pos2(wide, 300.0),
+        egui::pos2(250.0, 300.0),
+    );
+    harness.run_steps(3);
+    assert!(sidebar(&harness) < 260.0, "{}", sidebar(&harness));
+    // egui counts the drag's release as a click: a double click right after is a third.
+    harness.run_steps(30);
+    let edge = egui::pos2(sidebar(&harness), 300.0);
+    double_click(&mut harness, edge);
+    harness.run_steps(3);
+    assert!(
+        (sidebar(&harness) - wide).abs() < 1.0,
+        "{}",
+        sidebar(&harness)
+    );
+
+    // Short names, units and rates: narrower than the default, nothing left out.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window_with_short_frames(file.path());
+    ready(&mut harness);
+    let edge = egui::pos2(sidebar(&harness), 300.0);
+    double_click(&mut harness, edge);
+    harness.run_steps(3);
+    let narrow = sidebar(&harness);
+    assert!(narrow < 290.0, "{narrow}");
+    assert!(in_row(&harness, "A1", "EEG"));
+    assert!(in_row(&harness, "A1", "\u{b5}V"));
+    assert!(in_row(&harness, "A1", "512 Hz"));
 }
 
 /// The body font's size: an em.
