@@ -47,6 +47,10 @@ pub enum Action {
     LastChannels,
     MoreChannels,
     FewerChannels,
+    /// Puts the channels (and streams) back in the file's order.
+    FileOrder,
+    /// Sorts the channels by type, within each stream.
+    TypeOrder,
     /// Taller traces: a smaller amplitude per channel spacing.
     ScaleUp,
     ScaleDown,
@@ -86,7 +90,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 48] = [
+    pub const ALL: [Action; 50] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -117,6 +121,8 @@ impl Action {
         Action::LastChannels,
         Action::MoreChannels,
         Action::FewerChannels,
+        Action::FileOrder,
+        Action::TypeOrder,
         Action::ScaleUp,
         Action::ScaleDown,
         Action::AutoScale,
@@ -171,6 +177,8 @@ impl Action {
             Action::LastChannels => "Last Channels",
             Action::MoreChannels => "More Channels",
             Action::FewerChannels => "Fewer Channels",
+            Action::FileOrder => "File Order",
+            Action::TypeOrder => "By Type",
             Action::ScaleUp => "Scale Up",
             Action::ScaleDown => "Scale Down",
             Action::AutoScale => "Auto Scale",

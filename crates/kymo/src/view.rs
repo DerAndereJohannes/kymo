@@ -433,6 +433,8 @@ impl ViewState {
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
             Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
+            Action::FileOrder => self.sort(ChannelOrder::File),
+            Action::TypeOrder => self.sort(ChannelOrder::Type),
             Action::ToggleDc
             | Action::Open
             | Action::GoToTime
