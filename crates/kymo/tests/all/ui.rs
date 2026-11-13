@@ -998,7 +998,7 @@ fn the_channel_list_shows_hides_and_marks_bad() {
             .query_by_role_and_label(Role::CheckBox, "Show EMG channels")
             .is_none()
     );
-    harness.get_by_label("2 of 2 shown");
+    harness.get_by_label("2 \u{b7} 512 Hz");
     // A type's channels are half a level in: their boxes halfway from its box to its name.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
     let halfway =
@@ -1023,7 +1023,6 @@ fn the_channel_list_shows_hides_and_marks_bad() {
         toggled(&harness, Role::CheckBox, "Show EEG channels"),
         Toggled::Mixed
     );
-    harness.get_by_label("1 of 2 shown");
     // A mixed type's box shows them all, and then hides them all.
     click_in_list(&mut harness, Role::CheckBox, "Show EEG channels");
     assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
@@ -1145,33 +1144,74 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
-/// Rates of different lengths ("64 Hz", "256 Hz") end at the same edge; an EDF stim channel
-/// shows no unit either.
+/// The rates are in the types' rows, with their numbers of channels, all ending at the same
+/// edge: a type whose channels differ in rate gives the range, and its channels their rates
+/// on hover; the channels' rows have none. An EDF stim channel shows no unit either.
 #[test]
-fn the_channel_list_right_aligns_rates() {
+fn types_rows_give_their_rates() {
     use egui::accesskit::Role;
+    // EEG Fz to Oz at 256 Hz and EEG DC at 512 Hz, Resp at 64 Hz, a trigger at 512 Hz.
     let file = TempFile::preset("edf+d-mixed");
     let mut harness = window(file.path());
     ready(&mut harness);
-    let rights: Vec<(String, f32)> = ["64 Hz", "256 Hz", "512 Hz"]
-        .iter()
-        .flat_map(|rate| {
-            harness
-                .query_all_by_role_and_label(Role::Label, rate)
-                .map(|n| (rate.to_string(), n.rect().right()))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    // The rows in view: each rate at least once.
+    let rights: Vec<f32> = [
+        "5 \u{b7} 256\u{2013}512 Hz",
+        "1 \u{b7} 64 Hz",
+        "1 \u{b7} 512 Hz",
+    ]
+    .iter()
+    .map(|text| {
+        harness
+            .get_by_role_and_label(Role::Label, text)
+            .rect()
+            .right()
+    })
+    .collect();
+    assert!(rights.iter().all(|&r| r == rights[0]), "{rights:?}");
     for rate in ["64 Hz", "256 Hz", "512 Hz"] {
-        assert!(rights.iter().any(|r| r.0 == rate), "{rights:?}");
+        assert!(
+            harness.query_by_role_and_label(Role::Label, rate).is_none(),
+            "{rate}"
+        );
     }
-    assert!(rights.iter().all(|r| r.1 == rights[0].1), "{rights:?}");
-    let lefts: Vec<f32> = ["64 Hz", "256 Hz"]
-        .iter()
-        .map(|rate| harness.get_all_by_label(rate).next().unwrap().rect().left())
-        .collect();
-    assert!(lefts[0] > lefts[1], "{lefts:?}");
+    let fz = harness.get_by_role_and_label(Role::Label, "EEG Fz").rect();
+    hover(&mut harness, fz.center());
+    assert!(tooltip(
+        &mut harness,
+        "EEG Fz\nEEG \u{b7} \u{b5}V \u{b7} 256 Hz"
+    ));
+    let eeg = kind_name_rect(&harness, "EEG");
+    hover(&mut harness, eeg.center());
+    assert!(tooltip(
+        &mut harness,
+        "EEG\n5 channels \u{b7} 256 to 512 Hz"
+    ));
+    // A row too narrow (the narrowest sidebar, in a large font) leaves the count and rate
+    // out, and still shows them on hover.
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+    sidebar_to(&mut harness, 100.0);
+    harness.ctx.all_styles_mut(|s| {
+        s.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size *= 1.6;
+    });
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label_contains("256\u{2013}512 Hz")
+            .is_none()
+    );
+    // The row's right end.
+    let row = harness.get_by_label("Show EEG channels").rect().center().y;
+    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    hover(&mut harness, egui::pos2(sidebar - 30.0, row));
+    assert!(tooltip(
+        &mut harness,
+        "EEG\n5 channels \u{b7} 256 to 512 Hz"
+    ));
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+    harness.ctx.all_styles_mut(|s| {
+        s.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size /= 1.6;
+    });
+    sidebar_to(&mut harness, 600.0);
 
     // Scrolled to the end, where the trigger channel is.
     let first = harness
@@ -1506,11 +1546,13 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     ready(&mut harness);
     let rate = viewer(&harness).document().recording.grids()[0].rate();
     assert_eq!(format!("{rate:.4}"), "500.0065");
-    // Every channel's row and the summary's Sampling row.
-    let rounded = harness
-        .query_all_by_role_and_label(Role::Label, "500.01 Hz")
-        .count();
-    assert_eq!(rounded, spec.channels.len() + 1);
+    // Every type's row and the summary's Sampling row.
+    let rec = &viewer(&harness).document().recording;
+    let mut kinds: Vec<_> = rec.channels().iter().map(|c| c.kind).collect();
+    kinds.sort_unstable_by_key(|k| format!("{k:?}"));
+    kinds.dedup();
+    let rounded = harness.query_all_by_label_contains("500.01 Hz").count();
+    assert_eq!(rounded, kinds.len() + 1);
     let exact = format!("{rate} Hz: {} channels, ", spec.channels.len());
     assert!(harness.query_by_label_contains(&exact).is_none());
     let sampling = harness
@@ -5248,6 +5290,19 @@ fn streams_of_several_types_group_their_channels_by_type() {
     let misc = left(&harness, "Show Misc channels in Amp");
     assert!(near(misc - left(&harness, "Show Amp"), level));
     assert!(near(left(&harness, "Show AUX1") - misc, level));
+    // Its count, without the rate, which the stream's row has.
+    let row = harness
+        .get_by_label("Show Misc channels in Amp")
+        .rect()
+        .center()
+        .y;
+    let in_row: Vec<String> = harness
+        .query_all_by_role(Role::Label)
+        .filter(|n| (n.rect().center().y - row).abs() < 1.0)
+        .filter_map(|n| n.accesskit_node().value())
+        .collect();
+    assert_eq!(in_row, ["Misc", "2"]);
+    harness.get_by_label("3 \u{b7} 100 Hz");
     let tracker = left(&harness, "Show Tracker");
     let ipd = "IPD - Interpupillary distance, both eyes";
     assert!(near(
@@ -5496,7 +5551,7 @@ fn recordings_without_several_streams_show_no_groups() {
         folds(&harness),
         ["Collapse EEG channels", "Collapse Stim channels"]
     );
-    // The channels' rows have their rates, besides the summary's.
+    // The types' rows have their rates, besides the summary's.
     let rates = |h: &Harness<'_, KymoApp>| h.query_all_by_label_contains(" Hz").count();
     assert!(rates(&harness) > 1);
 

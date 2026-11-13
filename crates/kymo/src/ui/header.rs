@@ -597,7 +597,6 @@ const CHEVRON_WIDTH: f32 = 10.0;
 struct Columns {
     name: f32,
     unit: f32,
-    rate: f32,
 }
 
 /// Column widths with the font and scale they were measured for.
@@ -642,7 +641,6 @@ impl Columns {
         let columns = Columns {
             name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned())),
             unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
-            rate: widest(&mut channels.iter().map(|c| list_rate(rec.grid(c.grid)))),
         };
         ui.data_mut(|d| {
             d.insert_temp(
@@ -657,64 +655,37 @@ impl Columns {
         columns
     }
 
-    /// What a row of `width` shows: the unit and rate columns, and the name's and unit's
-    /// widths. Everything in full where it fits; with too little room the unit narrows
-    /// first, down to `min_unit`, then the name, down to `min_name`; then the rate drops out,
-    /// then the unit, the name and then the unit widening again into the room they leave.
-    /// (A channel's type is the row it is under.) `fixed` is what every row has besides (the checkbox, the Bad toggle and
+    /// What a row of `width` shows: the unit column, and the name's and unit's widths.
+    /// Everything in full where it fits; with too little room the unit narrows first, down
+    /// to `min_unit`, then the name, down to `min_name`; then the unit drops out, the name
+    /// widening again into the room it leaves. (A channel's type and rate are in the row it
+    /// is under.) `fixed` is what every row has besides (the checkbox, the Bad toggle and
     /// the gaps between them and the name). Without `rated` rows have no rate column.
-    fn fit(
-        &self,
-        width: f32,
-        fixed: f32,
-        gap: f32,
-        min_name: f32,
-        min_unit: f32,
-        rated: bool,
-    ) -> RowColumns {
-        let options = [(true, rated), (true, false)];
+    fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32, min_unit: f32) -> RowColumns {
         let min_name = min_name.min(self.name);
         let min_unit = min_unit.min(self.unit);
-        for (unit, rate) in options {
-            let others = [(unit, 0.0), (rate, self.rate)]
-                .iter()
-                .filter(|(shown, _)| *shown)
-                .map(|(_, w)| gap + w)
-                .sum::<f32>();
-            // The room for the name and the unit.
-            let room = width - fixed - others;
-            let unit_least = if unit { min_unit } else { 0.0 };
-            if room >= min_name + unit_least {
-                let name = (room - unit_least).min(self.name);
-                return RowColumns {
-                    name,
-                    unit: unit.then(|| (room - name).min(self.unit)),
-                    rate,
-                };
-            }
+        // The room for the name and the unit.
+        let room = width - fixed - gap;
+        if room >= min_name + min_unit {
+            let name = (room - min_unit).min(self.name);
+            return RowColumns {
+                name,
+                unit: Some((room - name).min(self.unit)),
+            };
         }
         RowColumns {
             name: (width - fixed).clamp(0.0, self.name),
             unit: None,
-            rate: false,
         }
     }
 }
 
-/// What a row of the channel list shows (see [`Columns::fit`]): the name's width, the
-/// unit's width and the rate.
+/// What a row of the channel list shows (see [`Columns::fit`]): the name's width, and the
+/// unit's, if it shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RowColumns {
     name: f32,
     unit: Option<f32>,
-    rate: bool,
-}
-
-impl RowColumns {
-    /// Whether the row shows every column it has; `rated` if it has a rate column.
-    fn all(&self, rated: bool) -> bool {
-        self.unit.is_some() && (self.rate || !rated)
-    }
 }
 
 /// A grid's rate in the channel list: an irregular grid's average rate as "≈ 300 Hz".
@@ -732,6 +703,46 @@ fn full_rate(grid: &kymo_core::Grid) -> String {
         format!("{} on average", grid_rate(grid))
     } else {
         grid_rate(grid)
+    }
+}
+
+/// The rate of a group's channels, as its row shows it: their rate if they share one, else
+/// the range ("128–512 Hz", in full "128 to 512 Hz").
+struct GroupRate {
+    list: String,
+    full: String,
+    mixed: bool,
+}
+
+fn group_rate(document: &Document, view: &ViewState, group: Group) -> GroupRate {
+    let rec = &document.recording;
+    let grids: Vec<&kymo_core::Grid> = view
+        .order()
+        .iter()
+        .filter(|&&c| view.group_of(c) == group)
+        .map(|&c| rec.grid(rec.channel(c).grid))
+        .collect();
+    let Some(first) = grids.first() else {
+        return GroupRate {
+            list: String::new(),
+            full: String::new(),
+            mixed: false,
+        };
+    };
+    if grids.iter().all(|g| list_rate(g) == list_rate(first)) {
+        return GroupRate {
+            list: list_rate(first),
+            full: full_rate(first),
+            mixed: false,
+        };
+    }
+    let rates = grids.iter().map(|g| g.rate());
+    let (low, high) = rates.fold((f64::INFINITY, 0.0f64), |(l, h), r| (l.min(r), h.max(r)));
+    let number = |rate: f64| format_rate(rate).trim_end_matches(" Hz").to_owned();
+    GroupRate {
+        list: format!("{}\u{2013}{}", number(low), format_rate(high)),
+        full: format!("{} to {}", number(low), format_rate(high)),
+        mixed: true,
     }
 }
 
@@ -836,18 +847,18 @@ fn stream_name(stream: &Stream) -> String {
 
 /// All channels in the view's order, under their types (see [`kind_row`]), drawing only the
 /// rows in view, in columns as wide as the widest entry of any channel. Per channel:
-/// whether it is shown, its name (a click scrolls the traces to it), whether it is bad, its
-/// unit as the readout shows values (µV for EEG whatever the file stores) and its rate
-/// (right-aligned; "≈ 300 Hz" for an irregular grid's average). A list too narrow for all of
-/// it narrows the units and names (shortened in the middle) and then leaves out the rate
-/// and unit (see [`Columns::fit`]); hovering a row whose text is shortened or left out
-/// shows it all, its type too. Rows under a type or stream are half a level in.
+/// whether it is shown, its name (a click scrolls the traces to it), whether it is bad, and
+/// its unit as the readout shows values (µV for EEG whatever the file stores); its type and
+/// rate are in the rows above it. A list too narrow for all of it narrows the units and
+/// names (shortened in the middle) and then leaves out the unit (see [`Columns::fit`]);
+/// hovering a row whose text is shortened or left out shows it all, its type and rate too,
+/// as does a channel whose type's channels differ in rate. Rows under a type or stream are
+/// a level in.
 ///
 /// A recording with several streams of channels (XDF) groups them by stream: a row per
-/// stream (see [`stream_row`]) above its channels, which leave out the rate, the stream's,
-/// and are under their types only in a stream of several types. Streams the file has but
-/// doesn't show are listed at the end, grayed, with the reason on hover. Nothing of streams
-/// shows for other recordings.
+/// stream (see [`stream_row`]) above its channels, which are under their types only in a
+/// stream of several types. Streams the file has but doesn't show are listed at the end,
+/// grayed, with the reason on hover. Nothing of streams shows for other recordings.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -891,6 +902,16 @@ fn channel_list(
     let fixed = ui.data(|d| d.get_temp::<f32>(fixed_key)).unwrap_or(
         GRIP_WIDTH + GRIP_GAP + ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap,
     );
+    // Ungrouped, the types whose channels differ in rate: their rows give a range.
+    let mixed_rates: Vec<Group> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Kind(group, _) if !grouped && group_rate(document, view, *group).mixed => {
+                Some(*group)
+            }
+            _ => None,
+        })
+        .collect();
     let mut measured = None;
     let mut moved = None;
     let area = from_top(ui, "channels", recording, ScrollArea::vertical())
@@ -902,7 +923,6 @@ fn channel_list(
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
-                !grouped,
             );
             // The rows laid out, by their index in `items`, for dropping a dragged one.
             let mut placed = Vec::new();
@@ -933,7 +953,7 @@ fn channel_list(
                 };
                 let left = Layout::left_to_right(Align::Center);
 
-                let (id, depth) = match items[i] {
+                let (id, group, depth) = match items[i] {
                     Item::Stream(s) => {
                         let open = !closed.contains(&Fold::Stream(s));
                         let name = stream_name(&streams[s]);
@@ -956,6 +976,10 @@ fn channel_list(
                             group,
                             label: name,
                             open: !closed.contains(&fold),
+                            // Under a stream, the stream's row has the rate.
+                            rate: in_stream
+                                .is_none()
+                                .then(|| group_rate(document, view, group)),
                         };
                         if kind_row(ui, view, kind, type_colors, row_response) {
                             toggled = Some(fold);
@@ -968,7 +992,7 @@ fn channel_list(
                         not_shown_row(ui, &streams[s], row_response);
                         continue;
                     }
-                    Item::Channel(id, _, depth) => (id, depth),
+                    Item::Channel(id, group, depth) => (id, group, depth),
                 };
                 let channel = rec.channel(id);
                 grip(ui, rect, &channel.name, Drag::Channel(id));
@@ -983,23 +1007,26 @@ fn channel_list(
                 let short_unit = fit
                     .unit
                     .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
-                // The row's whole text where some of it is shortened or left out.
+                // The row's whole text where some of it is shortened or left out, or its
+                // rate isn't its type's alone.
+                let mixed = mixed_rates.contains(&group);
                 let full = (short_name.is_some()
                     || listed != name
                     || short_unit.is_some()
-                    || !fit.all(!grouped))
-                .then(|| {
-                    let unit = if unit.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" \u{b7} {unit}")
-                    };
-                    format!(
-                        "{name}\n{}{unit} \u{b7} {}",
-                        kind_name(channel.kind),
-                        full_rate(grid)
-                    )
-                });
+                    || fit.unit.is_none()
+                    || mixed)
+                    .then(|| {
+                        let unit = if unit.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" \u{b7} {unit}")
+                        };
+                        format!(
+                            "{name}\n{}{unit} \u{b7} {}",
+                            kind_name(channel.kind),
+                            full_rate(grid)
+                        )
+                    });
 
                 let mut shown = view.is_shown(id);
                 let response = ui.add(Checkbox::without_text(&mut shown));
@@ -1078,15 +1105,6 @@ fn channel_list(
                         accessible_text(ui, &response, unit.clone());
                     }
                     cells.push(response);
-                }
-                if fit.rate {
-                    let right = Layout::right_to_left(Align::Center);
-                    let response = cell(ui, columns.rate, right, weak(&list_rate(grid)));
-                    if grid.times().is_some() && full.is_none() {
-                        response.on_hover_text(full_rate(grid));
-                    } else {
-                        cells.push(response);
-                    }
                 }
                 if let Some(full) = full {
                     for response in cells {
@@ -1485,13 +1503,16 @@ struct KindRow {
     /// What its controls are named (see [`kind_label`]).
     label: String,
     open: bool,
+    /// Its channels' rate, unless the row above gives it.
+    rate: Option<GroupRate>,
 }
 
 /// A type's row in the channel list: a chevron that shows or hides its channels' rows, a
 /// checkbox that shows or hides them in the traces (mixed while some are shown), its name in
 /// its trace color (a click scrolls the traces to its first shown channel), and at the right
-/// how many of its channels are shown ("62 of 64 shown"), left out where the row is too
-/// narrow and then shown on hover. Returns whether the chevron was clicked.
+/// its number of channels and, unless a stream's row above gives it, their rate ("2 · 512
+/// Hz"), as a stream's row has them; a narrow row leaves those out, and hovering shows it
+/// all. Returns whether the chevron was clicked.
 fn kind_row(
     ui: &mut Ui,
     view: &mut ViewState,
@@ -1499,7 +1520,12 @@ fn kind_row(
     type_colors: &TypeColors,
     row: Response,
 ) -> bool {
-    let KindRow { group, label, open } = spec;
+    let KindRow {
+        group,
+        label,
+        open,
+        rate,
+    } = spec;
     let (stream, kind) = group;
     let name = kind_name(kind);
     let (shown, all) = view.group_shown(stream, kind);
@@ -1509,7 +1535,6 @@ fn kind_row(
     let mut checked = shown == all;
     let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
     let response = ui.add(checkbox);
-    note_checkbox_width(ui, &response);
     accessible_label(ui, &response, format!("Show {label}"));
     if response.changed() {
         view.set_group_shown(stream, kind, checked);
@@ -1523,7 +1548,14 @@ fn kind_row(
                 .x
         })
     };
-    let count = format!("{shown} of {all} shown");
+    let channels = format!("{all} channel{}", plural(all));
+    let (count, full) = match &rate {
+        Some(rate) => (
+            format!("{all} \u{b7} {}", rate.list),
+            format!("{name}\n{channels} \u{b7} {}", rate.full),
+        ),
+        None => (all.to_string(), format!("{name}\n{channels}")),
+    };
     let gap = ui.spacing().item_spacing.x;
     let room = ui.available_width();
     let name_width = width(name);
@@ -1552,31 +1584,32 @@ fn kind_row(
         .iter()
         .copied()
         .find(|&c| view.group_of(c) == group && view.is_shown(c));
-    let hover = match (show_count, first_shown) {
-        (true, Some(_)) => Some("Show in Traces".to_owned()),
-        (false, Some(_)) => Some(format!("{count}\n\nShow in Traces")),
-        (false, None) => Some(count.clone()),
-        (true, None) => None,
-    };
-    if let Some(hover) = hover {
-        response = response.on_hover_text(hover);
-    }
     if let Some(first) = first_shown {
-        let response = response.on_hover_cursor(CursorIcon::PointingHand);
+        response = response
+            .on_hover_text(format!("{full}\n\nShow in Traces"))
+            .on_hover_cursor(CursorIcon::PointingHand);
         if response.clicked() {
             view.scroll_to(first);
         }
-    }
-    if show_count {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add(
-                Label::new(RichText::new(count).weak())
-                    .selectable(false)
-                    .extend(),
-            )
-        });
     } else {
-        row.on_hover_text(count);
+        response.on_hover_text(&full);
+    }
+    // The name hides the row from the pointer: the count shows the row's whole text too.
+    let mut cells = vec![row];
+    if show_count {
+        let response = ui
+            .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(
+                    Label::new(RichText::new(count).weak())
+                        .selectable(false)
+                        .extend(),
+                )
+            })
+            .inner;
+        cells.push(response);
+    }
+    for cell in cells {
+        cell.on_hover_text(&full);
     }
     clicked
 }
