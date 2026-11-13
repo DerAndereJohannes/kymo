@@ -209,7 +209,8 @@ pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform
     let width = widest(&|r| r.action) + COLUMN_GAP + widest(&|r| &r.keys) + 2.0 * padding;
     // Room for the scroll bar, which floats over the content's right edge.
     let scroll = &style.spacing.scroll;
-    let content_width = width + scroll.bar_width + scroll.bar_inner_margin;
+    let room = scroll.bar_width + scroll.bar_inner_margin;
+    let content_width = width + room;
     egui::Window::new(Action::Shortcuts.label())
         .id(Overlay::Shortcuts.id())
         .frame(frame)
@@ -219,14 +220,17 @@ pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform
         // Exactly as wide as the rows and the scroll bar's room. A window never shrinks by
         // itself (egui keeps the widest size it had, across runs too), so one that was ever
         // wider (fonts or scale settling, an older layout) would keep a strip right of the
-        // scroll bar.
-        .min_width(content_width)
-        .max_width(content_width)
+        // scroll bar. These widths count the frame's left margin: without it, the rows
+        // would reach past the title bar.
+        .min_width(content_width + f32::from(margin.left))
+        .max_width(content_width + f32::from(margin.left))
         .default_height(480.0)
         .show(ctx, |ui| {
             let row_height = ui.spacing().interact_size.y;
             ScrollArea::vertical().show(ui, |ui| {
-                ui.set_min_width(content_width);
+                // The rows end where the scroll bar's room starts, in whatever width the
+                // window gives them (within a point or two of `width`).
+                let width = ui.available_width() - room;
                 for (i, section) in sections.iter().enumerate() {
                     if i > 0 {
                         ui.add_space(10.0);

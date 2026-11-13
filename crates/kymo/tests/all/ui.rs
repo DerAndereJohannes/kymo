@@ -5830,6 +5830,16 @@ fn the_shortcut_overview_shrinks_back_to_its_rows() {
             "{platform:?}: keys end at {}, the window at {right}, room {room}",
             keys.right()
         );
+        // The title bar reaches the right corner too: its close button is nearer the edge
+        // than the window's margin (the rows reached past the title bar by a margin).
+        let close = harness.get_by_label("Close window").rect();
+        let margin = f32::from(harness.ctx.global_style().spacing.window_margin.left);
+        assert!(
+            window.right() - close.right() < margin,
+            "{platform:?}: close button ends at {}, the window at {}",
+            close.right(),
+            window.right()
+        );
     }
 }
 
