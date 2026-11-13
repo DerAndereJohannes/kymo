@@ -125,10 +125,10 @@ pub fn header_panel(
     }
 
     ui.add_space(6.0);
-    ui.separator();
+    let rule = ui.separator().rect.center().y;
     // The legend at the bottom, so the channel list fills the space above it.
     if !legend.is_empty() || field.is_some() {
-        egui::Panel::bottom("legend")
+        let panel = egui::Panel::bottom("legend")
             .resizable(false)
             .frame(Frame::NONE.inner_margin(Margin::symmetric(0, 6)))
             .show(ui, |ui| {
@@ -145,8 +145,11 @@ pub fn header_panel(
                     );
                 }
             });
+        if legend.by_stream() {
+            fold_all_legend(ui, recording, legend, panel.response.rect);
+        }
     }
-    channel_list(ui, recording, document, view, type_colors);
+    channel_list(ui, recording, document, view, type_colors, rule);
     relabel
 }
 
@@ -307,7 +310,7 @@ fn legend_list(
     });
 
     let grouped = legend.by_stream();
-    let closed_key = ui.scope_id().with(("closed annotation streams", recording));
+    let closed_key = legend_closed_id(recording);
     let mut closed: Vec<Option<usize>> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
     let group_name = |stream: Option<usize>| {
         stream
@@ -426,14 +429,75 @@ fn legend_list(
             }
         });
     if let Some(stream) = toggled {
-        if let Some(i) = closed.iter().position(|&c| c == stream) {
-            closed.remove(i);
-        } else {
+        let open = !closed.contains(&stream);
+        if ui.input(|i| i.modifiers.alt) {
+            // Every stream as this one goes.
+            closed = if open { legend.streams() } else { Vec::new() };
+        } else if open {
             closed.push(stream);
+        } else {
+            closed.retain(|&c| c != stream);
         }
         ui.data_mut(|d| d.insert_temp(closed_key, closed));
     }
 }
+
+/// Where the legend keeps the streams whose rows are folded, for `recording`.
+fn legend_closed_id(recording: u64) -> Id {
+    Id::unique(("kymo closed annotation streams", recording))
+}
+
+/// The legend's [`fold_all`] button, on the edge of its panel at `panel`'s top.
+fn fold_all_legend(ui: &mut Ui, recording: u64, legend: &Legend, panel: egui::Rect) {
+    let key = legend_closed_id(recording);
+    let closed: Vec<Option<usize>> = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    let streams = legend.streams();
+    let any_open = streams.iter().any(|s| !closed.contains(s));
+    if fold_all(ui, "Annotations", panel, panel.top(), any_open) {
+        let closed = if any_open { streams } else { Vec::new() };
+        ui.data_mut(|d| d.insert_temp(key, closed));
+    }
+}
+
+/// While the pointer is over a list's `area` (or the button), a button that folds all of
+/// its groups (`any_open`) or unfolds them: two small chevrons at the right end of the
+/// rule at `y` above the list, so it takes no room ("Collapse All" or "Expand All" on
+/// hover, and with `what` for screen readers: "Collapse All Channels"). Returns whether it
+/// was clicked.
+fn fold_all(ui: &mut Ui, what: &str, area: egui::Rect, y: f32, any_open: bool) -> bool {
+    let size = vec2(FOLD_ALL_WIDTH, 12.0);
+    let rect = egui::Rect::from_center_size(egui::pos2(area.right() - size.x / 2.0, y), size);
+    if !ui.rect_contains_pointer(area.union(rect)) || DragAndDrop::has_any_payload(ui.ctx()) {
+        return false;
+    }
+    let verb = if any_open { "Collapse" } else { "Expand" };
+    let id = Id::unique(("kymo fold all", what));
+    let response = ui.interact(rect, id, Sense::click());
+    accessible_label(ui, &response, format!("{verb} All {what}"));
+    let color = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let painter = ui.painter().with_clip_rect(rect.expand(1.0));
+    // The rule's line gives way to the button.
+    painter.rect_filled(rect, 2.0, ui.visuals().panel_fill);
+    // Two chevrons pointing up (fold) or down (unfold).
+    let s = 3.0;
+    let tip = if any_open { -s / 2.0 } else { s / 2.0 };
+    for dy in [-2.5, 2.5] {
+        let c = rect.center() + vec2(0.0, dy);
+        let points = vec![c + vec2(-s, -tip), c + vec2(0.0, tip), c + vec2(s, -tip)];
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
+    }
+    let response = response
+        .on_hover_text(format!("{verb} All"))
+        .on_hover_cursor(CursorIcon::PointingHand);
+    response.clicked()
+}
+
+/// Width of the button that folds or unfolds all groups, in points.
+const FOLD_ALL_WIDTH: f32 = 16.0;
 
 /// How far rows under a stream are indented beyond its checkbox: half the way to its name
 /// (half a checkbox without text, as a stream's row last laid one out (a guess before),
@@ -790,6 +854,7 @@ fn channel_list(
     document: &Document,
     view: &mut ViewState,
     type_colors: &TypeColors,
+    rule: f32,
 ) {
     let rec = &document.recording;
     let streams = rec.streams();
@@ -828,7 +893,7 @@ fn channel_list(
     );
     let mut measured = None;
     let mut moved = None;
-    from_top(ui, "channels", recording, ScrollArea::vertical())
+    let area = from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, items.len(), |ui, rows| {
             let fit = columns.fit(
@@ -1030,7 +1095,8 @@ fn channel_list(
                 }
             }
             moved = dragging(ui, &items, &placed);
-        });
+        })
+        .inner_rect;
     match moved {
         Some(Move::Channel(c, before)) => {
             view.move_channel(c, before);
@@ -1049,12 +1115,33 @@ fn channel_list(
         ui.data_mut(|d| d.insert_temp(fixed_key, width));
         ui.ctx().request_repaint();
     }
+    // Every row that folds, with nothing folded.
+    let folds: Vec<Fold> = list_items(document, view, grouped, &[])
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Stream(s) => Some(Fold::Stream(s)),
+            Item::Kind(group, _) => Some(Fold::Kind(group)),
+            _ => None,
+        })
+        .collect();
+    let any_open = folds.iter().any(|f| !closed.contains(f));
+    if fold_all(ui, "Channels", area, rule, any_open) {
+        closed = if any_open { folds.clone() } else { Vec::new() };
+        ui.data_mut(|d| d.insert_temp(closed_key, closed.clone()));
+    }
     if let Some(fold) = toggled {
-        match closed.iter().position(|&c| c == fold) {
-            Some(at) => {
-                closed.remove(at);
+        let open = !closed.contains(&fold);
+        let level = |f: &Fold| matches!(f, Fold::Stream(_)) == matches!(fold, Fold::Stream(_));
+        if ui.input(|i| i.modifiers.alt) {
+            // Every row of its level (streams, or types) as this one goes.
+            closed.retain(|f| !level(f));
+            if open {
+                closed.extend(folds.iter().filter(|f| level(f)));
             }
-            None => closed.push(fold),
+        } else if open {
+            closed.push(fold);
+        } else {
+            closed.retain(|&f| f != fold);
         }
         ui.data_mut(|d| d.insert_temp(closed_key, closed));
     }

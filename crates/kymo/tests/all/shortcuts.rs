@@ -98,6 +98,12 @@ fn gestures_use_the_platform_modifiers() {
         "Pinch or Ctrl + scroll"
     );
     assert!(keys(&linux, "Pan Time").contains("Shift + wheel"));
+    let fold = "Collapse or Expand All Groups";
+    assert_eq!(keys(&mac, fold), "⌥ + click a group's arrow in the sidebar");
+    assert_eq!(
+        keys(&linux, fold),
+        "Alt + click a group's arrow in the sidebar"
+    );
     // A row per action.
     for section in [mac, linux] {
         let mut actions: Vec<_> = section.rows.iter().map(|r| r.action).collect();

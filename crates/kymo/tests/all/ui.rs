@@ -5345,11 +5345,142 @@ fn a_dragged_type_stays_in_its_stream() {
     assert_eq!(order(&harness), [1, 0, 2, 3]);
 }
 
+/// While the pointer is over the channel list, a button at the right end of the rule above
+/// it folds all of its rows and then unfolds them; Alt-click on a chevron folds or unfolds
+/// all of its level.
+#[test]
+fn all_channel_groups_fold_and_unfold_at_once() {
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let list = harness.get_by_label("Show A1").rect().center();
+    // Only while the pointer is over the list.
+    hover(&mut harness, egui::pos2(900.0, 300.0));
+    assert!(harness.query_by_label_contains("All Channels").is_none());
+    hover(&mut harness, list);
+    let button = harness.get_by_label("Collapse All Channels").rect();
+    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    assert!(
+        button.right() <= sidebar && sidebar - button.right() < 20.0,
+        "{button:?}"
+    );
+    // On the rule, clear of the first row.
+    assert!(button.bottom() <= harness.get_by_label("Collapse EEG channels").rect().top());
+    hover(&mut harness, button.center());
+    assert!(tooltip(&mut harness, "Collapse All"));
+    harness.get_by_label("Collapse All Channels").click();
+    harness.run_steps(2);
+    assert_eq!(folds(&harness), Vec::<String>::new());
+    for name in ["A1", "EOG L", "Status"] {
+        assert!(
+            harness.query_by_label(&format!("Show {name}")).is_none(),
+            "{name}"
+        );
+    }
+    // The traces keep their channels.
+    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+    harness.get_by_label("Expand All Channels").click();
+    harness.run_steps(2);
+    assert_eq!(folds(&harness).len(), 4);
+    harness.get_by_label("Show Status");
+
+    // Alt-click on one type's chevron: all types.
+    harness
+        .get_by_label("Collapse EOG channels")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(folds(&harness), Vec::<String>::new());
+    harness
+        .get_by_label("Expand Stim channels")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(folds(&harness).len(), 4);
+    // A plain click, just its own.
+    harness.get_by_label("Collapse EOG channels").click();
+    harness.run_steps(2);
+    assert_eq!(folds(&harness).len(), 3);
+}
+
+/// Grouped by stream, Alt-click folds a level: the streams, or the types; the button folds
+/// both and unfolds both.
+#[test]
+fn folding_all_reaches_streams_and_their_types() {
+    // Amp (EEG and misc types), Tracker.
+    let file = long_names_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness
+        .get_by_label("Collapse Misc channels in Amp")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(folds(&harness), ["Collapse Amp", "Collapse Tracker"]);
+    harness
+        .get_by_label("Collapse Tracker")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(folds(&harness), Vec::<String>::new());
+    harness
+        .get_by_label("Expand Amp")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    // The streams open, their types as they were.
+    assert_eq!(folds(&harness), ["Collapse Amp", "Collapse Tracker"]);
+    harness.get_by_label("Expand EEG channels in Amp");
+
+    let list = harness.get_by_label("Show Amp").rect().center();
+    hover(&mut harness, list);
+    harness.get_by_label("Collapse All Channels").click();
+    harness.run_steps(2);
+    assert_eq!(folds(&harness), Vec::<String>::new());
+    harness.get_by_label("Expand All Channels").click();
+    harness.run_steps(2);
+    assert_eq!(folds(&harness).len(), 4);
+}
+
+/// A grouped legend folds all its streams at once, by the button on its top edge while the
+/// pointer is over it, or by Alt-click on a stream's chevron.
+#[test]
+fn all_legend_streams_fold_and_unfold_at_once() {
+    let file = marker_streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let open = |h: &Harness<'_, KymoApp>| {
+        ["Keyboard", "Task"].map(|s| h.query_by_label(&format!("Show go in {s}")).is_some())
+    };
+    assert_eq!(open(&harness), [true, true]);
+    let legend = harness.get_by_label("Show go in Task").rect().center();
+    hover(&mut harness, legend);
+    assert!(harness.query_by_label_contains("All Channels").is_none());
+    let button = harness.get_by_label("Collapse All Annotations").rect();
+    assert!(button.bottom() <= harness.get_by_label("Annotations").rect().top());
+    harness.get_by_label("Collapse All Annotations").click();
+    harness.run_steps(2);
+    assert_eq!(open(&harness), [false, false]);
+    harness.get_by_label("Expand All Annotations").click();
+    harness.run_steps(2);
+    assert_eq!(open(&harness), [true, true]);
+
+    harness
+        .get_by_label("Collapse Keyboard")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(open(&harness), [false, false]);
+    harness
+        .get_by_label("Expand Task")
+        .click_modifiers(Modifiers::ALT);
+    harness.run_steps(2);
+    assert_eq!(open(&harness), [true, true]);
+    harness.get_by_label("Collapse Task").click();
+    harness.run_steps(2);
+    assert_eq!(open(&harness), [true, false]);
+}
+
 /// The labels of what collapses rows in the sidebar.
 fn folds(harness: &Harness<'_, KymoApp>) -> Vec<String> {
     harness
         .query_all_by_label_contains("Collapse ")
         .filter_map(|n| n.accesskit_node().label())
+        .filter(|l| !l.starts_with("Collapse All"))
         .collect()
 }
 

@@ -106,5 +106,9 @@ fn gestures(platform: Platform) -> Vec<Row> {
             "Click its name beside the traces".into(),
         ),
         row("Go to a Channel", "Click its name in the sidebar".into()),
+        row(
+            "Collapse or Expand All Groups",
+            format!("{alt} + click a group's arrow in the sidebar"),
+        ),
     ]
 }
