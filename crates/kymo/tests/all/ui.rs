@@ -202,6 +202,29 @@ fn click(harness: &mut Harness<'_, KymoApp>, pos: egui::Pos2) {
     harness.step();
 }
 
+/// Two primary clicks at `pos`, a double click where the harness's frames are short enough
+/// (each event gets its own; see [`window_with_short_frames`]).
+fn double_click(harness: &mut Harness<'_, KymoApp>, pos: egui::Pos2) {
+    hover(harness, pos);
+    for pressed in [true, false, true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    harness.step();
+}
+
+/// [`window`] with frames of 1/60 s rather than kittest's 1/4 s, for a double click.
+fn window_with_short_frames(path: &Path) -> Harness<'static, KymoApp> {
+    window_from(
+        Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0),
+        path,
+    )
+}
+
 /// A trackpad scroll of `delta` points at the pointer.
 fn scroll(harness: &mut Harness<'_, KymoApp>, delta: egui::Vec2, modifiers: Modifiers) {
     harness.event(egui::Event::MouseWheel {
@@ -1079,6 +1102,234 @@ fn the_channel_list_right_aligns_rates() {
     harness.run_steps(2);
     assert!(harness.query_by_label("TRIGGER").is_some());
     assert!(harness.query_by_label("Boolean").is_none());
+}
+
+/// An XDF file as eye tracking recordings come: EEG in "microvolts", an AUX channel in
+/// microvolts (Misc, as MNE has no AUX type), a long name in a long unit, and an irregular
+/// 50 Hz stream with a long name.
+fn long_names_xdf() -> TempFile {
+    use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStamps, XdfStream};
+    let f = kymo_testgen::Format::Xdf;
+    let channels = vec![
+        ChannelSpec::xdf("Fz", "EEG", "microvolts", 100, XdfFormat::F32),
+        ChannelSpec::xdf("AUX1", "AUX", "microvolts", 100, XdfFormat::F32),
+        ChannelSpec::xdf(
+            "POR X - (Point of regard), left eye",
+            "ScreenX",
+            "normalized_signed",
+            100,
+            XdfFormat::F32,
+        ),
+        ChannelSpec::xdf(
+            "IPD - Interpupillary distance, both eyes",
+            "Gaze",
+            "mm",
+            50,
+            XdfFormat::F32,
+        ),
+    ];
+    let mut spec = Spec::new(f, channels, 1.0, 30);
+    spec.xdf.streams = vec![
+        XdfStream::new(1, "Amp", "EEG", vec![0, 1, 2]),
+        XdfStream {
+            stamps: XdfStamps::All,
+            irregular: true,
+            ..XdfStream::new(2, "Tracker", "Gaze", vec![3])
+        },
+    ];
+    TempFile::written(&spec)
+}
+
+/// Drags the sidebar's edge from its default 300 points to `x`.
+fn sidebar_to(harness: &mut Harness<'_, KymoApp>, x: f32) {
+    // The trace region starts a panel margin past the sidebar's edge.
+    let edge = viewer(harness).layout().unwrap().names.left() - 8.0;
+    let from = egui::pos2(edge, 300.0);
+    drag(harness, from, egui::pos2(x, 300.0));
+    harness.run_steps(3);
+}
+
+/// Steps until a tooltip containing `text` shows (tooltips wait for the pointer to rest).
+fn tooltip(harness: &mut Harness<'_, KymoApp>, text: &str) -> bool {
+    let end = Instant::now() + Duration::from_secs(2);
+    while harness.query_by_label_contains(text).is_none() && Instant::now() < end {
+        harness.step();
+    }
+    harness.query_by_label_contains(text).is_some()
+}
+
+/// The channel list shows units as symbols ("microvolts" as µV, for Misc channels too),
+/// shortens long names and units in the middle (screen readers get them whole), shows an
+/// irregular grid's rate as "≈ 50 Hz", and in a narrow sidebar narrows the names, then
+/// leaves out the rate, unit and type, which hovering the row shows.
+#[test]
+fn the_channel_list_fits_its_width() {
+    use egui::accesskit::Role;
+    let file = long_names_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let row_of = |h: &Harness<'_, KymoApp>, name: &str| {
+        h.get_by_role_and_label(Role::Label, name).rect().center().y
+    };
+    let in_row = |h: &Harness<'_, KymoApp>, y: f32, label: &str| {
+        h.query_all_by_role_and_label(Role::Label, label)
+            .any(|n| (n.rect().center().y - y).abs() < 1.0)
+    };
+    let em = body_size(&harness);
+
+    // Wide: every column.
+    sidebar_to(&mut harness, 600.0);
+    let aux = row_of(&harness, "AUX1");
+    assert!(in_row(&harness, aux, "Misc"));
+    assert!(in_row(&harness, aux, "\u{b5}V"));
+    assert!(harness.query_by_label("microvolts").is_none());
+    let por = row_of(&harness, "POR X - (Point of regard), left eye");
+    assert!(in_row(&harness, por, "100 Hz"));
+    // The long unit and name, shortened to their columns.
+    let unit = harness
+        .get_by_role_and_label(Role::Label, "normalized_signed")
+        .rect();
+    assert!(unit.width() <= 4.0 * em + 1.0, "{unit:?}");
+    let name =
+        harness.get_by_role_and_label(Role::Label, "IPD - Interpupillary distance, both eyes");
+    assert!(name.rect().width() <= 12.0 * em + 1.0, "{:?}", name.rect());
+    let ipd = name.rect().center().y;
+    let rate = harness
+        .query_all_by_role_and_label(Role::Label, "\u{2248} 50 Hz")
+        .find(|n| (n.rect().center().y - ipd).abs() < 1.0)
+        .unwrap()
+        .rect();
+    // A shortened row shows all of it on hover; this one's rate is part of it.
+    hover(&mut harness, rate.center());
+    assert!(tooltip(
+        &mut harness,
+        "IPD - Interpupillary distance, both eyes\nMisc \u{b7} mm \u{b7} irregular, 50 Hz on average"
+    ));
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+
+    // Default: the names narrow, then the rate drops out.
+    let file = long_names_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let por = row_of(&harness, "POR X - (Point of regard), left eye");
+    assert!(in_row(&harness, por, "Misc"));
+    assert!(!in_row(&harness, por, "100 Hz"));
+    let name = harness
+        .get_by_role_and_label(Role::Label, "POR X - (Point of regard), left eye")
+        .rect();
+    assert!(name.width() >= 6.0 * em - 1.0, "{name:?}");
+    // Hovering the row shows what it leaves out.
+    let misc = harness
+        .query_all_by_role_and_label(Role::Label, "Misc")
+        .find(|n| (n.rect().center().y - por).abs() < 1.0)
+        .unwrap()
+        .rect();
+    hover(&mut harness, misc.center());
+    assert!(tooltip(
+        &mut harness,
+        "POR X - (Point of regard), left eye\nMisc \u{b7} normalized_signed \u{b7} 100 Hz"
+    ));
+    hover(&mut harness, egui::pos2(900.0, 650.0));
+
+    // Narrowest (200 points): no unit or rate, and nothing in the row past the sidebar.
+    sidebar_to(&mut harness, 100.0);
+    let fz = row_of(&harness, "Fz");
+    for label in ["\u{b5}V", "100 Hz"] {
+        assert!(!in_row(&harness, fz, label), "{label}");
+    }
+    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    let rights: Vec<f32> = harness
+        .query_all_by_role(Role::Label)
+        .chain(harness.query_all_by_role(Role::Button))
+        .filter(|n| (n.rect().center().y - fz).abs() < 1.0)
+        .map(|n| n.rect().right())
+        .collect();
+    assert!(rights.len() >= 2, "{rights:?}");
+    assert!(
+        rights.iter().all(|&r| r <= sidebar),
+        "{rights:?} past {sidebar}"
+    );
+}
+
+/// The body font's size: an em.
+fn body_size(harness: &Harness<'_, KymoApp>) -> f32 {
+    harness.ctx.global_style().text_styles[&egui::TextStyle::Body].size
+}
+
+/// Names longer than the names column (10 em) are shortened in the middle, whole on hover;
+/// the boundary between names and traces drags (not marking channels bad or panning), and a
+/// double click fits the names again.
+#[test]
+fn long_names_shorten_and_the_names_column_resizes() {
+    let file = long_names_xdf();
+    let mut harness = window_with_short_frames(file.path());
+    ready(&mut harness);
+    let em = body_size(&harness);
+    let pad = 6.0;
+    let layout = viewer(&harness).layout().unwrap();
+    let fitted = layout.names.width();
+    assert!((fitted - (10.0 * em + 2.0 * pad)).abs() < 1.0, "{fitted}");
+    let rows = viewer(&harness).view().rows() as f32;
+    let row_y = |names: egui::Rect, i: f32| names.top() + (i + 0.5) * names.height() / rows;
+
+    // The third row's name, shortened: whole on hover.
+    hover(
+        &mut harness,
+        egui::pos2(layout.names.center().x, row_y(layout.names, 2.0)),
+    );
+    assert!(tooltip(
+        &mut harness,
+        "POR X - (Point of regard), left eye\n\nMark as Bad"
+    ));
+    // Fz's isn't shortened.
+    hover(
+        &mut harness,
+        egui::pos2(layout.names.center().x, row_y(layout.names, 0.0)),
+    );
+    assert!(tooltip(&mut harness, "Mark as Bad"));
+    assert!(harness.query_by_label_contains("Fz\n").is_none());
+
+    let time = viewer(&harness).view().time();
+    let edge = |h: &Harness<'_, KymoApp>| {
+        let names = viewer(h).layout().unwrap().names;
+        egui::pos2(names.right(), row_y(names, 1.0))
+    };
+    let width = |h: &Harness<'_, KymoApp>| viewer(h).layout().unwrap().names.width();
+    let from = edge(&harness);
+    drag(&mut harness, from, from + egui::vec2(100.0, 0.0));
+    harness.run_steps(2);
+    assert!(
+        (width(&harness) - (fitted + 100.0)).abs() < 1.0,
+        "{}",
+        width(&harness)
+    );
+    assert_eq!(viewer(&harness).view().time(), time);
+    let view = viewer(&harness).view();
+    assert!((0..4).all(|c| !view.is_bad(kymo_core::ChannelId(c))));
+    // Within its limits: half the trace region, 3 em.
+    let from = edge(&harness);
+    drag(&mut harness, from, egui::pos2(1190.0, from.y));
+    harness.run_steps(2);
+    let region = SIZE.x - 300.0;
+    assert!(width(&harness) <= region * 0.5 + 1.0, "{}", width(&harness));
+    let from = edge(&harness);
+    drag(&mut harness, from, egui::pos2(0.0, from.y));
+    harness.run_steps(2);
+    assert!(
+        (width(&harness) - (3.0 * em + 2.0 * pad)).abs() < 1.0,
+        "{}",
+        width(&harness)
+    );
+
+    // A double click fits the names again.
+    let at = edge(&harness);
+    double_click(&mut harness, at);
+    harness.run_steps(2);
+    assert!(
+        (width(&harness) - fitted).abs() < 1.0,
+        "{}",
+        width(&harness)
+    );
 }
 
 /// A rate that isn't round shows two decimals in the channel list and the summary; hovering

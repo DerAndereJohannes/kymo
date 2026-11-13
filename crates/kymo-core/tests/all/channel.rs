@@ -119,6 +119,40 @@ fn unit_labels_give_factors_and_quantities() {
 }
 
 #[test]
+fn units_show_as_symbols() {
+    let cases = [
+        ("microvolts", "\u{b5}V"),
+        ("Microvolt", "\u{b5}V"),
+        ("millivolts", "mV"),
+        ("nanovolts", "nV"),
+        ("volts", "V"),
+        ("femtotesla", "fT"),
+        ("picoteslas", "pT"),
+        ("Tesla", "T"),
+        ("siemens", "S"),
+        ("microsiemens", "\u{b5}S"),
+        ("uV", "\u{b5}V"),
+        ("UV", "\u{b5}V"),
+        ("uv", "\u{b5}V"),
+        ("\u{3bc}V", "\u{b5}V"),
+        ("\u{b5}V", "\u{b5}V"),
+        ("uS", "\u{b5}S"),
+        ("uT/cm", "\u{b5}T/cm"),
+        (" mV ", "mV"),
+        ("fT/cm", "fT/cm"),
+        // Unknown labels stay as they are, "u" and all.
+        ("normalized_signed", "normalized_signed"),
+        ("units", "units"),
+        ("uA", "uA"),
+        (" AU", "AU"),
+        ("", ""),
+    ];
+    for (label, symbol) in cases {
+        assert_eq!(Unit::from_label(label).symbol(), symbol, "{label:?}");
+    }
+}
+
+#[test]
 fn edf_labels_and_units_give_kinds() {
     let file = TempFile::written(&Spec::preset("edf+c-kinds").unwrap());
     let (rec, _) = Recording::new(kymo_core::open(file.path()).unwrap()).unwrap();

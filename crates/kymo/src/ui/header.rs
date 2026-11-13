@@ -7,11 +7,11 @@ use eframe::egui::{
 use kymo_core::{ChannelId, ChannelKind};
 
 use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
-use crate::document::{Document, Summary, grid_rate, plural};
+use crate::document::{Document, Summary, format_rate, grid_rate, plural};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
-use crate::ui::text_button;
+use crate::ui::{elide_middle, text_button};
 use crate::view::{KINDS, ViewState};
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
@@ -375,8 +375,19 @@ fn legend_list(ui: &mut Ui, recording: u64, legend: &mut Legend, picked: &mut An
         });
 }
 
-/// Widths of the channel list's text columns, fitting every channel's entry, so they stay
-/// put while the list scrolls (only the rows in view are drawn).
+/// Widest a channel name in the channel list gets, in ems (the body font's size): longer
+/// names are shortened in the middle.
+const LIST_NAME_EMS: f32 = 12.0;
+
+/// Narrowest the list's names get, in ems, before columns drop out.
+const LIST_MIN_NAME_EMS: f32 = 6.0;
+
+/// Widest a unit gets in the channel list, in ems: units kymo doesn't know can be long
+/// ("normalized_signed").
+const LIST_UNIT_EMS: f32 = 4.0;
+
+/// Widths of the channel list's text columns, fitting every channel's entry up to their caps,
+/// so they stay put while the list scrolls (only the rows in view are drawn).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Columns {
     name: f32,
@@ -419,11 +430,12 @@ impl Columns {
             })
         };
         let channels = rec.channels();
+        let em = font.size;
         let columns = Columns {
-            name: widest(&mut channels.iter().map(|c| c.name.clone())),
+            name: widest(&mut channels.iter().map(|c| c.name.clone())).min(LIST_NAME_EMS * em),
             kind: widest(&mut channels.iter().map(|c| kind_name(c.kind).to_owned())),
-            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
-            rate: widest(&mut channels.iter().map(|c| grid_rate(rec.grid(c.grid)))),
+            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)).min(LIST_UNIT_EMS * em),
+            rate: widest(&mut channels.iter().map(|c| list_rate(rec.grid(c.grid)))),
         };
         ui.data_mut(|d| {
             d.insert_temp(
@@ -437,12 +449,84 @@ impl Columns {
         });
         columns
     }
+
+    /// What a row of `width` shows: the type, unit and rate columns, and the name's width.
+    /// Everything fits at full width; with too little room the name narrows first, down to
+    /// `min_name`; then the rate drops out, then the unit, then the type, the name widening
+    /// again (to its column's width) into the room they leave. `fixed` is what every row
+    /// has besides (the checkbox, the Bad toggle and the gaps between them and the name).
+    fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32) -> RowColumns {
+        let options = [
+            (true, true, true),
+            (true, true, false),
+            (true, false, false),
+        ];
+        let min_name = min_name.min(self.name);
+        for (kind, unit, rate) in options {
+            let others = [(kind, self.kind), (unit, self.unit), (rate, self.rate)]
+                .iter()
+                .filter(|(shown, _)| *shown)
+                .map(|(_, w)| gap + w)
+                .sum::<f32>();
+            let room = width - fixed - others;
+            if room >= min_name {
+                return RowColumns {
+                    name: room.min(self.name),
+                    kind,
+                    unit,
+                    rate,
+                };
+            }
+        }
+        RowColumns {
+            name: (width - fixed).clamp(0.0, self.name),
+            kind: false,
+            unit: false,
+            rate: false,
+        }
+    }
+}
+
+/// What a row of the channel list shows (see [`Columns::fit`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowColumns {
+    name: f32,
+    kind: bool,
+    unit: bool,
+    rate: bool,
+}
+
+impl RowColumns {
+    fn all(&self) -> bool {
+        self.kind && self.unit && self.rate
+    }
+}
+
+/// A grid's rate in the channel list: an irregular grid's average rate as "≈ 300 Hz".
+fn list_rate(grid: &kymo_core::Grid) -> String {
+    if grid.times().is_some() {
+        format!("\u{2248} {}", format_rate(grid.rate()))
+    } else {
+        format_rate(grid.rate())
+    }
+}
+
+/// A grid's rate in full: an irregular grid's as "irregular, 300 Hz on average".
+fn full_rate(grid: &kymo_core::Grid) -> String {
+    if grid.times().is_some() {
+        format!("{} on average", grid_rate(grid))
+    } else {
+        grid_rate(grid)
+    }
 }
 
 /// All channels, drawing only the rows in view, in columns as wide as the widest entry of
-/// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
-/// it), whether it is bad, its type, its unit as the readout shows values (µV for EEG
-/// whatever the file stores) and its rate (right-aligned).
+/// any channel up to their caps (longer names and units shortened in the middle). Per
+/// channel: whether it is shown, its name (a click scrolls the traces to it), whether it is
+/// bad, its type, its unit as the readout shows values (µV for EEG whatever the file
+/// stores) and its rate (right-aligned; "≈ 300 Hz" for an irregular grid's average). A list
+/// too narrow for all of it narrows the names and then leaves out the rate, unit and type
+/// (see [`Columns::fit`]); hovering a row whose text is shortened or left out shows it all.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -454,18 +538,32 @@ fn channel_list(
     let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
     let gap = 8.0;
+    let body = TextStyle::Body.resolve(ui.style());
+    // The width of a row's checkbox and Bad toggle with the gaps beside them, as the last
+    // frame laid them out (a guess before).
+    let fixed_key = Id::unique("kymo channel list fixed width");
+    let fixed = ui
+        .data(|d| d.get_temp::<f32>(fixed_key))
+        .unwrap_or(ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap);
+    let mut measured = None;
     from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, rec.channels().len(), |ui, rows| {
+            let fit = columns.fit(
+                ui.available_width(),
+                fixed,
+                gap,
+                LIST_MIN_NAME_EMS * body.size,
+            );
             for i in rows {
-                let (rect, _) =
+                let (rect, row_response) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
                 if i % 2 == 1 {
                     let stripe = rect.expand2(vec2(0.0, ui.spacing().item_spacing.y / 2.0));
                     ui.painter()
                         .rect_filled(stripe, 0.0, ui.visuals().faint_bg_color);
                 }
-                // A narrow panel clips the columns on the right.
+                // What is left past the row's right edge is clipped.
                 let mut row = ui.new_child(
                     UiBuilder::new()
                         .max_rect(rect)
@@ -486,6 +584,25 @@ fn channel_list(
                 let id = ChannelId(i as u32);
                 let channel = rec.channel(id);
                 let name = &channel.name;
+                let grid = rec.grid(channel.grid);
+                let (unit, _) = display_unit(channel);
+                let short_name = elide_middle(ui.ctx(), name, &body, fit.name);
+                let short_unit = elide_middle(ui.ctx(), &unit, &body, columns.unit);
+                // The row's whole text where some of it is shortened or left out.
+                let full =
+                    (short_name.is_some() || short_unit.is_some() || !fit.all()).then(|| {
+                        let unit = if unit.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" \u{b7} {unit}")
+                        };
+                        format!(
+                            "{name}\n{}{unit} \u{b7} {}",
+                            kind_name(channel.kind),
+                            full_rate(grid)
+                        )
+                    });
+
                 let mut shown = view.is_shown(id);
                 let response = ui.add(Checkbox::without_text(&mut shown));
                 accessible_label(ui, &response, format!("Show {name}"));
@@ -501,14 +618,25 @@ fn channel_list(
                 } else {
                     type_color(channel.kind, type_colors, ui.visuals())
                 };
-                let label = Label::new(RichText::new(name).color(color))
+                let text = short_name.as_deref().unwrap_or(name);
+                let label = Label::new(RichText::new(text).color(color))
                     .sense(Sense::click())
                     .extend();
-                let response = cell(ui, columns.name, left, label);
+                let mut response = cell(ui, fit.name, left, label);
+                if short_name.is_some() {
+                    accessible_text(ui, &response, name.clone());
+                }
+                let hover = match (&full, shown) {
+                    (Some(full), true) => Some(format!("{full}\n\nShow in Traces")),
+                    (Some(full), false) => Some(full.clone()),
+                    (None, true) => Some("Show in Traces".to_owned()),
+                    (None, false) => None,
+                };
+                if let Some(hover) = hover {
+                    response = response.on_hover_text(hover);
+                }
                 if shown {
-                    let response = response
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_text("Show in Traces");
+                    let response = response.on_hover_cursor(CursorIcon::PointingHand);
                     if response.clicked() {
                         view.scroll_to(id);
                     }
@@ -525,24 +653,57 @@ fn channel_list(
                 if response.clicked() {
                     view.toggle_bad(id);
                 }
+                // Everything but the name, without the gap before the next column.
+                measured = Some(ui.cursor().left() - rect.left() - fit.name - gap);
 
-                let weak = |text: String| Label::new(RichText::new(text).weak()).extend();
-                cell(
-                    ui,
-                    columns.kind,
-                    left,
-                    weak(kind_name(channel.kind).to_owned()),
-                );
-                cell(ui, columns.unit, left, weak(display_unit(channel).0));
-                let right = Layout::right_to_left(Align::Center);
-                cell(
-                    ui,
-                    columns.rate,
-                    right,
-                    weak(grid_rate(rec.grid(channel.grid))),
-                );
+                let weak = |text: &str| Label::new(RichText::new(text).weak()).extend();
+                // Labels are selectable, so they hide the row from the pointer: each cell
+                // shows the row's whole text too.
+                let mut cells = vec![row_response];
+                if fit.kind {
+                    cells.push(cell(ui, columns.kind, left, weak(kind_name(channel.kind))));
+                }
+                if fit.unit {
+                    let response = cell(
+                        ui,
+                        columns.unit,
+                        left,
+                        weak(short_unit.as_deref().unwrap_or(&unit)),
+                    );
+                    if short_unit.is_some() {
+                        accessible_text(ui, &response, unit.clone());
+                    }
+                    cells.push(response);
+                }
+                if fit.rate {
+                    let right = Layout::right_to_left(Align::Center);
+                    let response = cell(ui, columns.rate, right, weak(&list_rate(grid)));
+                    if grid.times().is_some() && full.is_none() {
+                        response.on_hover_text(full_rate(grid));
+                    } else {
+                        cells.push(response);
+                    }
+                }
+                if let Some(full) = full {
+                    for response in cells {
+                        response.on_hover_text(&full);
+                    }
+                }
             }
         });
+    if let Some(width) = measured
+        && width != fixed
+    {
+        ui.data_mut(|d| d.insert_temp(fixed_key, width));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The whole text of a label that shows it shortened, for screen readers (and tests), which
+/// read a label's text as its value.
+fn accessible_text(ui: &Ui, response: &Response, text: String) {
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_value(text));
 }
 
 /// Names a widget whose text doesn't say what it is for, for screen readers (and tests).

@@ -31,15 +31,24 @@ use crate::ui::header::{
     AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
-use crate::ui::{readout, scrollbar, status};
+use crate::ui::{elide_middle, readout, scrollbar, status};
 use crate::view::{Area, ViewState};
 
 /// Narrowest the sidebar can be dragged.
 const SIDEBAR_MIN_WIDTH: f32 = 200.0;
 /// Widest the sidebar can be dragged, as a fraction of the window.
 const SIDEBAR_MAX_FRACTION: f32 = 0.5;
-/// Widest the channel names column gets, as a fraction of the trace region.
+/// Widest the channel names column gets by itself, as a fraction of the trace region and
+/// in ems (the body font's size; "NEDE_FlightParams_0" fits, "POR X - (Point of regard)"
+/// doesn't): longer names are shortened in the middle.
 const NAMES_MAX_FRACTION: f32 = 0.3;
+const NAMES_MAX_EMS: f32 = 10.0;
+/// Narrowest and widest the names column can be dragged, in ems and as a fraction of the
+/// trace region.
+const NAMES_DRAG_MIN_EMS: f32 = 3.0;
+const NAMES_DRAG_MAX_FRACTION: f32 = 0.5;
+/// How far from the boundary between names and traces it can be grabbed, in points.
+const NAMES_EDGE_GRAB: f32 = 3.0;
 /// Padding around channel names, in points.
 const NAME_PADDING: f32 = 6.0;
 /// Length of the axis' tick marks, in points.
@@ -171,6 +180,9 @@ pub struct Viewer {
     width_px: u32,
     /// Widest channel name, measured once per font size.
     names_width: Option<(f32, f32)>,
+    /// The names column's width as dragged, in points, while the recording is open; `None`
+    /// fits the names (up to [`NAMES_MAX_EMS`]).
+    names_dragged: Option<f32>,
     layout: Option<Layout>,
     /// Tiles the last frame wanted that weren't cached.
     missing: usize,
@@ -240,6 +252,7 @@ impl Viewer {
             status: StatusLine::default(),
             width_px: 0,
             names_width: None,
+            names_dragged: None,
             layout: None,
             missing: 0,
             marks: Marks::default(),
@@ -905,8 +918,14 @@ impl Viewer {
         let small = TextStyle::Small.resolve(ui.style());
         let body = TextStyle::Body.resolve(ui.style());
         let bar = scrollbar::THICKNESS;
-        let names_width = (self.names_width(ui, &body) + 2.0 * NAME_PADDING)
-            .min(full.width() * NAMES_MAX_FRACTION);
+        let fitted =
+            self.names_width(ui, &body).min(NAMES_MAX_EMS * body.size) + 2.0 * NAME_PADDING;
+        let names_width = match self.names_dragged {
+            Some(width) => width
+                .max(NAMES_DRAG_MIN_EMS * body.size + 2.0 * NAME_PADDING)
+                .min(full.width() * NAMES_DRAG_MAX_FRACTION),
+            None => fitted.min(full.width() * NAMES_MAX_FRACTION),
+        };
         let axis_height = TICK + ui.fonts_mut(|f| f.row_height(&small)) + 4.0;
 
         // Trace area on whole physical pixels, so its columns are the renderer's.
@@ -950,6 +969,7 @@ impl Viewer {
         };
 
         self.handle_input(ui, id, keymap, traces, names, axis_rect, size_px[0]);
+        self.names_edge(ui, id, names_width, traces);
         if let Some(start) = scrollbar::show(
             ui,
             id.with("time"),
@@ -1137,8 +1157,9 @@ impl Viewer {
             Vec::new()
         };
 
-        // Channel names, centered on their rows.
+        // Channel names, centered on their rows, shortened in the middle where too long.
         let names_painter = painter.with_clip_rect(names);
+        let name_room = names.width() - 2.0 * NAME_PADDING;
         let height = area.height;
         for (i, &channel) in self.view.visible_rows().zip(self.view.visible_channels()) {
             let y = traces.top() + self.view.y_of_row(i as f64 + 0.5, height) as f32;
@@ -1147,10 +1168,12 @@ impl Viewer {
             } else {
                 self.channel_color(channel, visuals)
             };
+            let name = &rec.channel(channel).name;
+            let short = elide_middle(ui.ctx(), name, &body, name_room);
             names_painter.text(
                 pos2(names.left() + NAME_PADDING, y),
                 Align2::LEFT_CENTER,
-                &rec.channel(channel).name,
+                short.as_deref().unwrap_or(name),
                 body.clone(),
                 color,
             );
@@ -1275,10 +1298,18 @@ impl Viewer {
             self.view.toggle_bad(channel);
         }
         if let Some(channel) = hovered {
-            let tip = if self.view.is_bad(channel) {
+            let mark = if self.view.is_bad(channel) {
                 "Mark as Good"
             } else {
                 "Mark as Bad"
+            };
+            // A shortened name in full above it.
+            let name = &self.document.recording.channel(channel).name;
+            let font = TextStyle::Body.resolve(ui.style());
+            let room = names.width() - 2.0 * NAME_PADDING;
+            let tip = match elide_middle(ui.ctx(), name, &font, room) {
+                Some(_) => format!("{name}\n\n{mark}"),
+                None => mark.to_owned(),
             };
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             // At the pointer: the names' area is the whole column.
@@ -1446,6 +1477,27 @@ impl Viewer {
             }
         } else {
             Hover::default()
+        }
+    }
+
+    /// The boundary between the names column (`width` wide) and `traces`: dragging it sets
+    /// the column's width while the recording is open, a double click fits the names again.
+    /// Interacted with after the names and traces, so it is on top of both near the edge.
+    fn names_edge(&mut self, ui: &Ui, id: egui::Id, width: f32, traces: Rect) {
+        let x = traces.left();
+        let edge =
+            Rect::from_x_y_ranges(x - NAMES_EDGE_GRAB..=x + NAMES_EDGE_GRAB, traces.y_range());
+        let response = ui.interact(edge, id.with("names edge"), Sense::click_and_drag());
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            // Just inside the names, as the traces paint over their own left edge.
+            let stroke = ui.visuals().widgets.hovered.fg_stroke;
+            ui.painter().vline(x - 1.0, traces.y_range(), stroke);
+        }
+        if response.double_clicked() {
+            self.names_dragged = None;
+        } else if response.dragged() {
+            self.names_dragged = Some(width + response.drag_delta().x);
         }
     }
 

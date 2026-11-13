@@ -47,12 +47,13 @@ impl Reading {
 /// The unit a channel's readings are shown in, and the factor from the channel's own unit
 /// to it. As MNE shows them: fT for magnetic fields, fT/cm for field gradients, mV for
 /// sEEG and µV for the other voltage types, whatever the file stores (teslas, volts, ...).
-/// Channels of other types and units the type has no unit for keep their own unit.
+/// Channels of other types and units the type has no unit for keep their own unit, as its
+/// symbol ("microvolts" as µV). Stim channels, whose values are codes, have none.
 pub fn display_unit(channel: &Channel) -> (String, f64) {
-    let own = (channel.tile_unit().to_owned(), 1.0);
     if channel.kind == ChannelKind::Stim {
-        return own;
+        return (String::new(), 1.0);
     }
+    let own = (channel.unit.symbol(), 1.0);
     let (Some(quantity), Some(to_si)) = (channel.unit.quantity(), channel.unit.to_si) else {
         return own;
     };

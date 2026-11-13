@@ -157,8 +157,8 @@ fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     if matches!(label, "UV" | "uv") {
         return Some((1e-6, Quantity::Voltage));
     }
-    if let Some(unit) = unit_word(label) {
-        return Some(unit);
+    if let Some((factor, quantity, _)) = unit_word(label) {
+        return Some((factor, quantity));
     }
     let (numerator, per) = match label.split_once('/') {
         Some((n, "m")) => (n, 1.0),
@@ -187,21 +187,22 @@ fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     }
 }
 
-/// A unit written as a word, ignoring case ("microvolts", as XDF streams write them).
-fn unit_word(label: &str) -> Option<(f64, Quantity)> {
+/// A unit written as a word, ignoring case ("microvolts", as XDF streams write them): its
+/// factor to SI, quantity and symbol.
+fn unit_word(label: &str) -> Option<(f64, Quantity, &'static str)> {
     let word = label.to_ascii_lowercase();
     let word = word.strip_suffix('s').unwrap_or(&word);
     Some(match word {
-        "volt" => (1.0, Quantity::Voltage),
-        "millivolt" => (1e-3, Quantity::Voltage),
-        "microvolt" => (1e-6, Quantity::Voltage),
-        "nanovolt" => (1e-9, Quantity::Voltage),
-        "tesla" => (1.0, Quantity::MagneticField),
-        "picotesla" => (1e-12, Quantity::MagneticField),
-        "femtotesla" => (1e-15, Quantity::MagneticField),
+        "volt" => (1.0, Quantity::Voltage, "V"),
+        "millivolt" => (1e-3, Quantity::Voltage, "mV"),
+        "microvolt" => (1e-6, Quantity::Voltage, "\u{b5}V"),
+        "nanovolt" => (1e-9, Quantity::Voltage, "nV"),
+        "tesla" => (1.0, Quantity::MagneticField, "T"),
+        "picotesla" => (1e-12, Quantity::MagneticField, "pT"),
+        "femtotesla" => (1e-15, Quantity::MagneticField, "fT"),
         // "siemens" without its "s".
-        "siemen" => (1.0, Quantity::Conductance),
-        "microsiemen" => (1e-6, Quantity::Conductance),
+        "siemen" => (1.0, Quantity::Conductance, "S"),
+        "microsiemen" => (1e-6, Quantity::Conductance, "\u{b5}S"),
         _ => return None,
     })
 }
@@ -222,6 +223,26 @@ impl Unit {
     /// What the unit measures, if its label is a known unit.
     pub fn quantity(&self) -> Option<Quantity> {
         parse_unit(&self.label).map(|(_, quantity)| quantity)
+    }
+
+    /// The label as a symbol: a known unit written as a word as its symbol ("microvolts" as
+    /// µV), and a known unit's micro prefix as the micro sign (U+00B5: "uV", EDF's "UV" and
+    /// the Greek mu as µV). Other labels stay as they are. Surrounding whitespace is dropped.
+    pub fn symbol(&self) -> String {
+        let label = self.label.trim();
+        if parse_unit(label).is_none() {
+            return label.to_owned();
+        }
+        if matches!(label, "UV" | "uv") {
+            return "\u{b5}V".to_owned();
+        }
+        if let Some((_, _, symbol)) = unit_word(label) {
+            return symbol.to_owned();
+        }
+        match label.strip_prefix(['u', '\u{3bc}']) {
+            Some(rest) => format!("\u{b5}{rest}"),
+            None => label.to_owned(),
+        }
     }
 }
 

@@ -14,7 +14,7 @@ pub mod scrollbar;
 pub mod settings;
 pub mod status;
 
-use eframe::egui::{Button, IntoAtoms, Label, RichText};
+use eframe::egui::{Button, Color32, Context, FontId, IntoAtoms, Label, RichText};
 
 /// Corner radius of buttons in a line of text, as [`text_button`] makes them.
 pub const TEXT_BUTTON_RADIUS: f32 = 4.0;
@@ -29,6 +29,46 @@ pub fn text_button<'a>(atoms: impl IntoAtoms<'a>, selected: Option<bool>) -> But
         None => Button::new(atoms).frame_when_inactive(false),
     };
     button.corner_radius(TEXT_BUTTON_RADIUS)
+}
+
+/// `text` shortened in the middle to fit `width` in `font`: as much of its start and end as
+/// fits around "…", the start a character longer where they differ, so names that differ
+/// only at their ends ("NEDE_FlightParams_0", "…_1") stay apart, as do those that differ at
+/// their starts. `None` if the whole text fits; just "…" if nothing more does.
+pub fn elide_middle(ctx: &Context, text: &str, font: &FontId, width: f32) -> Option<String> {
+    ctx.fonts_mut(|fonts| {
+        let mut fits = |s: String| {
+            fonts
+                .layout_no_wrap(s, font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+                <= width
+        };
+        if fits(text.to_owned()) {
+            return None;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let shortened = |kept: usize| -> String {
+            let tail = kept / 2;
+            let head = kept - tail;
+            let mut s: String = chars[..head].iter().collect();
+            s.push('\u{2026}');
+            s.extend(&chars[n - tail..]);
+            s
+        };
+        // The most characters kept that still fit: wider with each one kept.
+        let (mut lo, mut hi) = (0, n.saturating_sub(1));
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if fits(shortened(mid)) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Some(shortened(lo))
+    })
 }
 
 /// Size of hints, in points: below the body text's 14, so a hint reads as secondary to the
