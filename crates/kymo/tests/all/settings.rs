@@ -270,22 +270,24 @@ fn awkward_descriptions_read_back() {
 #[test]
 fn recent_recordings_are_newest_first_each_once_and_capped() {
     use kymo::recent::Recent;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
+    // "/data" is absolute only on Unix; Windows would give it the current drive.
+    let path = |k: usize| std::env::temp_dir().join("data").join(format!("r{k}.edf"));
     let mut recent = Recent::default();
     for k in 0..12 {
-        recent.add(Path::new(&format!("/data/r{k}.edf")));
+        recent.add(&path(k));
     }
     assert_eq!(recent.paths().len(), Recent::MAX);
-    assert_eq!(recent.get(0), Some(Path::new("/data/r11.edf")));
-    assert_eq!(recent.get(9), Some(Path::new("/data/r2.edf")));
+    assert_eq!(recent.get(0), Some(path(11).as_path()));
+    assert_eq!(recent.get(9), Some(path(2).as_path()));
     // Opened again, it moves to the top rather than showing twice.
-    recent.add(Path::new("/data/r5.edf"));
-    assert_eq!(recent.get(0), Some(Path::new("/data/r5.edf")));
+    recent.add(&path(5));
+    assert_eq!(recent.get(0), Some(path(5).as_path()));
     assert_eq!(recent.paths().len(), Recent::MAX);
-    recent.remove(Path::new("/data/r5.edf"));
-    assert!(!recent.paths().contains(&PathBuf::from("/data/r5.edf")));
+    recent.remove(&path(5));
+    assert!(!recent.paths().contains(&path(5)));
     // Relative paths are kept as absolute ones.
-    recent.add(Path::new("relative.edf"));
+    recent.add(&PathBuf::from("relative.edf"));
     assert!(recent.get(0).unwrap().is_absolute());
     recent.clear();
     assert!(recent.paths().is_empty());

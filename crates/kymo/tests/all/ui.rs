@@ -6316,9 +6316,18 @@ fn legends_group_where_several_streams_hold_annotations() {
 fn the_shortcut_overview_shrinks_back_to_its_rows() {
     use kymo::keymap::Platform;
     for platform in Platform::ALL {
-        let mut harness = Harness::builder()
+        let mut builder = Harness::builder()
             .with_size(SIZE)
-            .with_context_setup(system_fonts)
+            .with_context_setup(|ctx| {
+                system_fonts(ctx);
+                kymo::ui::menus::add_symbol_font(ctx);
+            });
+        // The app draws only its own platform's shortcuts; another's symbols (⌫ for the
+        // Mac) may be in no font here, as on Windows, and a box is as good for the widths.
+        if platform != Platform::current() {
+            builder = builder.allow_missing_glyphs();
+        }
+        let mut harness = builder
             .build_ui(move |ui| kymo::ui::menus::shortcuts_window(ui.ctx(), &mut true, platform));
         let body = |h: &Harness<'_>| h.ctx.global_style().text_styles[&egui::TextStyle::Body].size;
         let normal = body(&harness);
