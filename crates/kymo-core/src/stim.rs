@@ -98,6 +98,7 @@ pub fn annotations(
         .iter()
         .flat_map(|s| {
             let grid = recording.grid(recording.channel(s.channel).grid);
+            let stream = recording.stream_of(s.channel);
             events(&s.changes, options)
                 .into_iter()
                 .map(move |e| AnnotationData {
@@ -106,6 +107,7 @@ pub fn annotations(
                     description: e.value.to_string(),
                     channels: vec![s.channel],
                     origin: Origin::Stim,
+                    stream,
                 })
         })
         .collect();

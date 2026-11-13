@@ -83,6 +83,7 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
             description,
             channels,
             origin: Origin::File,
+            stream: None,
         });
     }
     if skipped > 0 {

@@ -107,6 +107,7 @@ pub(super) fn read(
             description: typ.to_string(),
             channels,
             origin: Origin::File,
+            stream: None,
         });
     }
     if before_start > 0 {

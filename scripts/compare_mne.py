@@ -747,21 +747,23 @@ def compare_xdf(path, tmp, header, annotations, windows):
             else:
                 values = [str(v) for v in sample if not np.isnan(v)]
                 items = [",".join(values)] if values else []
-            expected += [(t - t0, item) for item in items]
+            expected += [(t - t0, item, sid) for item in items]
         count = kymo_streams[sid]["annotations"]
         if count != len(expected) - before:
             problems.append(f"stream {sid}: {count} annotations, pyxdf {len(expected) - before}")
-    # Sorted by onset (to the microsecond, as both are rounded), then text.
+    # Sorted by onset (to the microsecond, as both are rounded), then text and stream.
     ours = sorted(
-        ((a["onset"], a["description"]) for a in annotations),
-        key=lambda a: (round(a[0], 6), a[1]),
+        ((a["onset"], a["description"], a["stream"]) for a in annotations),
+        key=lambda a: (round(a[0], 6), a[1], a[2]),
     )
-    expected.sort(key=lambda a: (round(a[0], 6), a[1]))
+    expected.sort(key=lambda a: (round(a[0], 6), a[1], a[2]))
     if len(ours) != len(expected):
         problems.append(f"{len(ours)} annotations, pyxdf {len(expected)}")
     else:
         bad = [
-            (o, e) for o, e in zip(ours, expected) if o[1] != e[1] or abs(o[0] - e[0]) > 1e-6
+            (o, e)
+            for o, e in zip(ours, expected)
+            if o[1:] != e[1:] or abs(o[0] - e[0]) > 1e-6
         ]
         if bad:
             problems.append(f"{len(bad)} annotations differ, first: {bad[0]}")

@@ -101,6 +101,7 @@ pub(super) fn read(
             description: descriptions[k].clone(),
             channels: ids,
             origin: Origin::File,
+            stream: None,
         });
     }
     if !unknown.is_empty() {

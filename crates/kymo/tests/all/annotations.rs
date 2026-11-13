@@ -25,6 +25,7 @@ fn data(onset: f64, duration: f64, description: &str, channels: &[u32]) -> Annot
         description: description.into(),
         channels: channels.iter().copied().map(ChannelId).collect(),
         origin: Origin::File,
+        stream: None,
     }
 }
 
@@ -547,7 +548,7 @@ fn union(mut items: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 }
 
 /// Annotations on a grid of quarter seconds, so ends that touch are exactly equal; few
-/// descriptions and channel sets, so many are of a kind.
+/// descriptions, channel sets and streams, so many are of a kind.
 fn any_mergeable() -> impl Strategy<Value = AnnotationData> {
     (
         0u8..40,
@@ -564,10 +565,12 @@ fn any_mergeable() -> impl Strategy<Value = AnnotationData> {
             3 => Just(Origin::Viewer),
             1 => Just(Origin::Stim)
         ],
+        prop_oneof![3 => Just(None), 1 => Just(Some(0)), 1 => Just(Some(1))],
     )
         .prop_map(
-            |(onset, duration, description, channels, origin)| AnnotationData {
+            |(onset, duration, description, channels, origin, stream)| AnnotationData {
                 origin,
+                stream,
                 ..data(
                     f64::from(onset) / 4.0,
                     f64::from(duration) / 4.0,
@@ -578,14 +581,15 @@ fn any_mergeable() -> impl Strategy<Value = AnnotationData> {
         )
 }
 
-/// Whether `a` and `b` merge, without `annotations::same_kind`: the same description and
-/// channels as sets, neither from the stim channel.
+/// Whether `a` and `b` merge, without `annotations::same_kind`: the same description,
+/// channels as sets and stream, neither from the stim channel.
 fn of_a_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
     let set = |d: &AnnotationData| d.channels.iter().copied().collect::<BTreeSet<_>>();
     a.origin != Origin::Stim
         && b.origin != Origin::Stim
         && a.description == b.description
         && set(a) == set(b)
+        && a.stream == b.stream
 }
 
 proptest! {

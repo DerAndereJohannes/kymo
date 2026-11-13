@@ -272,7 +272,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     // Annotations at their synchronized times (irregular streams aren't dejittered).
     let mut annotations = Vec::new();
     let mut stream_annotations = vec![0; streams.len()];
-    for ((stream, clock), count) in streams.iter().zip(&clocks).zip(&mut stream_annotations) {
+    let annotation_streams = streams.iter().zip(&clocks).zip(&mut stream_annotations);
+    for (index, ((stream, clock), count)) in annotation_streams.enumerate() {
         if stream.mode != Mode::Annotations {
             continue;
         }
@@ -286,6 +287,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 description: text.clone(),
                 channels: Vec::new(),
                 origin: Origin::File,
+                stream: Some(index),
             })
         }));
         *count = annotations.len() - before;

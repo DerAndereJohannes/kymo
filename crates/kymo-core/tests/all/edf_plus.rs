@@ -22,6 +22,7 @@ fn expected_annotations(spec: &Spec) -> Vec<AnnotationData> {
                 description: text.clone(),
                 channels: vec![],
                 origin: Origin::File,
+                stream: None,
             })
         })
         .collect();

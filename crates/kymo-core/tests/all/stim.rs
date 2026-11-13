@@ -238,6 +238,8 @@ proptest! {
             prop_assert_eq!(a.duration, 0.0);
             prop_assert_eq!(a.origin, Origin::Stim);
             prop_assert_eq!(a.channels.len(), 1);
+            // A recording without streams.
+            prop_assert_eq!(a.stream, None);
         }
         let mut got: Vec<(f64, String, ChannelId)> = annotations
             .into_iter()

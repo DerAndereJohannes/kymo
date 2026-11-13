@@ -12,6 +12,7 @@ fn data(onset: f64, duration: f64, description: &str, origin: Origin) -> Annotat
         description: description.to_owned(),
         channels: Vec::new(),
         origin,
+        stream: None,
     }
 }
 

@@ -434,8 +434,8 @@ pub fn grip(left: f64, right: f64, x: f64, edge: f64, line: f64) -> Option<Grip>
     }
 }
 
-/// Whether `a` and `b` are of a kind that merges: the same description and the same
-/// channels, neither a stim annotation.
+/// Whether `a` and `b` are of a kind that merges: the same description, channels and
+/// stream, neither a stim annotation.
 pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
     let sorted = |c: &[ChannelId]| {
         let mut c = c.to_vec();
@@ -447,6 +447,7 @@ pub fn same_kind(a: &AnnotationData, b: &AnnotationData) -> bool {
         && b.origin != Origin::Stim
         && a.description == b.description
         && sorted(&a.channels) == sorted(&b.channels)
+        && a.stream == b.stream
 }
 
 /// The changes that merge annotation `id` with every annotation of its kind (see
@@ -525,7 +526,7 @@ pub fn merge_shown(store: &AnnotationStore, shown: impl Fn(&str) -> bool) -> Vec
         }
         out.push(merged);
     }
-    let mut runs: HashMap<(&str, Vec<ChannelId>), Run> = HashMap::new();
+    let mut runs: HashMap<(&str, Vec<ChannelId>, Option<usize>), Run> = HashMap::new();
     let mut out = Vec::new();
     // By onset, so a group is complete once an annotation of its kind starts after its end.
     for a in store.iter() {
@@ -535,7 +536,7 @@ pub fn merge_shown(store: &AnnotationStore, shown: impl Fn(&str) -> bool) -> Vec
         let mut channels = a.data.channels.clone();
         channels.sort();
         channels.dedup();
-        let key = (a.data.description.as_str(), channels);
+        let key = (a.data.description.as_str(), channels, a.data.stream);
         // Closed intervals: one starting where the group ends touches it.
         match runs.get_mut(&key) {
             Some(run) if a.data.onset <= run.end => {

@@ -253,18 +253,23 @@ fn slots(grid: &kymo_core::Grid) -> Vec<u64> {
 /// The annotations kymo should read from `spec`'s marker streams, as (onset, description),
 /// sorted: string texts as they are, numeric ones without NaN values, irregular numeric
 /// streams not of an event type left out.
-fn expected_annotations(spec: &Spec) -> Vec<(f64, String)> {
+/// The annotations of `spec`'s marker streams read as annotations: onset, text and the
+/// stream's id, by onset.
+fn expected_annotations(spec: &Spec) -> Vec<(f64, String, u32)> {
     // Markers are written at their true times, which synchronization restores.
     let first = timeline(spec).1 - spec.xdf.clock;
-    let mut expected: Vec<(f64, String)> = spec
+    let mut expected: Vec<(f64, String, u32)> = spec
         .xdf
         .markers
         .iter()
         .filter(|m| !marker_grids(spec).contains(m))
-        .flat_map(|m| marker_annotations(spec, m))
-        .map(|(onset, text)| (onset - first, text))
+        .flat_map(|m| {
+            marker_annotations(spec, m)
+                .into_iter()
+                .map(move |(onset, text)| (onset - first, text, m.id))
+        })
         .collect();
-    expected.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    expected.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     expected
 }
 
@@ -329,12 +334,19 @@ fn check_streams(spec: &Spec, rec: &Recording) {
     assert_eq!(rec.streams(), expected);
 }
 
-fn same_annotations(spec: &Spec, annotations: &[AnnotationData]) -> bool {
-    let mut got: Vec<(f64, String)> = annotations
+/// Whether `rec`'s `annotations` are `spec`'s, each in its stream.
+fn same_annotations(spec: &Spec, rec: &Recording, annotations: &[AnnotationData]) -> bool {
+    let Some(mut got) = annotations
         .iter()
-        .map(|a| (a.onset, a.description.clone()))
-        .collect();
-    got.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        .map(|a| {
+            let stream = rec.streams().get(a.stream?)?;
+            Some((a.onset, a.description.clone(), stream.id))
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    got.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     let expected = expected_annotations(spec);
     let tolerance = 1e-9 * spec.xdf.clock.abs().max(1.0);
     annotations
@@ -344,7 +356,7 @@ fn same_annotations(spec: &Spec, annotations: &[AnnotationData]) -> bool {
         && got
             .iter()
             .zip(&expected)
-            .all(|(g, e)| (g.0 - e.0).abs() <= tolerance && g.1 == e.1)
+            .all(|(g, e)| (g.0 - e.0).abs() <= tolerance && g.1 == e.1 && g.2 == e.2)
 }
 
 /// Marker streams of `spec` that kymo shows as channels: irregular, numeric, not of an
@@ -658,7 +670,7 @@ fn presets_open_with_their_channels() {
             rec.warnings()
         );
         assert!(
-            same_annotations(&spec, &annotations),
+            same_annotations(&spec, &rec, &annotations),
             "{preset}: {:?}",
             annotations
                 .iter()
@@ -1093,6 +1105,11 @@ fn streams_kymo_doesnt_show() {
             (9, "Quiet", "Markers", &not_shown("it has no samples")),
         ]
     );
+    // Annotation files name only streams that can hold annotations.
+    assert_eq!(
+        kymo_core::annotation_file::Context::of(&rec).streams,
+        [Some(1), None, None, None, None, None]
+    );
 
     // Not an XDF file at all, given to the reader.
     let built = Built::new(b"EDF+ or so");
@@ -1496,7 +1513,7 @@ fn marker_streams_of_the_generator() {
         annotations: pairs,
     });
     let (rec, annotations) = open_with(TempFile::written(&spec).path());
-    assert!(same_annotations(&spec, &annotations));
+    assert!(same_annotations(&spec, &rec, &annotations));
     // The EEG, the codes, and the irregular "Ints" and "Mouse" pairs on their own time
     // stamps.
     assert_eq!(rec.grids().len(), 4);
@@ -1590,7 +1607,7 @@ fn garbage_is_skipped_to_the_next_boundary_chunk() {
     );
     assert_eq!(rec.warnings().len(), 1);
     check_grids(&spec, &rec, None);
-    assert!(same_annotations(&spec, &annotations));
+    assert!(same_annotations(&spec, &rec, &annotations));
 }
 
 #[test]

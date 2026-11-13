@@ -13,6 +13,8 @@ fn context(first_sample: f64) -> Context {
         channels: ["Fz", "C:z", "a;b", "back\\slash", " spaced "]
             .map(String::from)
             .into(),
+        // Stream 1 isn't shown, so it holds no annotations.
+        streams: vec![Some(1), None, Some(7), Some(3)],
     }
 }
 
@@ -33,6 +35,7 @@ fn data(onset: f64, duration: f64, description: &str, channels: &[u32]) -> Annot
         description: description.into(),
         channels: channels.iter().copied().map(ChannelId).collect(),
         origin: Origin::Viewer,
+        stream: None,
     }
 }
 
@@ -65,14 +68,18 @@ fn any_annotation() -> impl Strategy<Value = AnnotationData> {
         prop_oneof![Just(0.0), 0.0f64..5.0],
         any_description(),
         proptest::collection::btree_set(0u32..5, 0..3),
+        prop_oneof![Just(None), Just(Some(0)), Just(Some(2)), Just(Some(3))],
     )
-        .prop_map(|(onset, duration, description, channels)| AnnotationData {
-            onset,
-            duration,
-            description,
-            channels: channels.into_iter().map(ChannelId).collect(),
-            origin: Origin::Viewer,
-        })
+        .prop_map(
+            |(onset, duration, description, channels, stream)| AnnotationData {
+                onset,
+                duration,
+                description,
+                channels: channels.into_iter().map(ChannelId).collect(),
+                origin: Origin::Viewer,
+                stream,
+            },
+        )
 }
 
 proptest! {
@@ -98,12 +105,17 @@ proptest! {
                 );
             }
         }
-        // The channels column only when some annotation has channels.
-        let header = text.lines().next().unwrap();
-        prop_assert_eq!(
-            header.ends_with("\tchannels"),
-            annotations.iter().any(|a| !a.channels.is_empty())
-        );
+        // The channels and stream columns only when some annotation has channels or a
+        // stream.
+        let header: Vec<&str> = text.lines().next().unwrap().split('\t').collect();
+        let mut want = vec!["onset", "duration", "trial_type"];
+        if annotations.iter().any(|a| !a.channels.is_empty()) {
+            want.push("channels");
+        }
+        if annotations.iter().any(|a| a.stream.is_some()) {
+            want.push("stream_id");
+        }
+        prop_assert_eq!(header, want);
     }
 
     #[test]
@@ -116,6 +128,8 @@ proptest! {
                 Just("description".to_owned()),
                 Just("ch_names".to_owned()),
                 Just("channels".to_owned()),
+                Just("stream_id".to_owned()),
+                Just("7".to_owned()),
                 Just("\t".to_owned()),
                 Just(",".to_owned()),
                 Just("\n".to_owned()),
@@ -331,4 +345,35 @@ fn files_count_from_the_first_sample() {
             (want.onset, want.duration, &want.description)
         );
     }
+}
+
+#[test]
+fn streams_are_kept_by_their_id() {
+    let context = context(0.0);
+    let mut with_stream = data(1.0, 0.0, "a", &[]);
+    with_stream.stream = Some(2);
+    let text = table(&context, &[with_stream.clone(), data(2.0, 0.0, "b", &[])]);
+    assert_eq!(
+        text,
+        "onset\tduration\ttrial_type\tstream_id\n1\t0\ta\t7\n2\t0\tb\tn/a\n"
+    );
+    // Only ids of the recording's streams that hold annotations or channels count, not
+    // others (such as a stream that isn't shown), nor text.
+    let loaded = load(
+        "onset\tduration\ttrial_type\tstream_id\n\
+         1\t0\ta\t7\n2\t0\tb\t3\n3\t0\tc\t5\n4\t0\td\t2\n5\t0\te\tn/a\n6\t0\tf\tx\n7\t0\tg\t\n",
+        Format::Table,
+        &context,
+    )
+    .unwrap();
+    let streams: Vec<Option<usize>> = loaded.annotations.iter().map(|a| a.stream).collect();
+    assert_eq!(streams, [Some(2), Some(3), None, None, None, None, None]);
+    // MNE's CSV has no streams.
+    let loaded = load(
+        "onset,duration,description,stream_id\n2024-01-02 03:04:06,0,a,7\n",
+        Format::MneCsv,
+        &context,
+    )
+    .unwrap();
+    assert_eq!(loaded.annotations[0].stream, None);
 }

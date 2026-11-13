@@ -1391,6 +1391,7 @@ impl Viewer {
                         description: self.description.clone(),
                         channels: Vec::new(),
                         origin: Origin::Viewer,
+                        stream: None,
                     },
                     press,
                     hold: Hold::Edge {

@@ -55,6 +55,7 @@ pub(crate) fn index(
                         description: text,
                         channels: Vec::new(),
                         origin: Origin::File,
+                        stream: None,
                     });
                 }
             }

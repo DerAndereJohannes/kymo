@@ -33,6 +33,11 @@ pub struct AnnotationData {
     /// Channels the annotation applies to; empty means all channels.
     pub channels: Vec<ChannelId>,
     pub origin: Origin,
+    /// The stream it came from, an index into [`Recording::streams`](crate::Recording::streams):
+    /// an XDF stream of annotations, or the stream of the stim channel it is an event of.
+    /// `None` for annotations added in the viewer (unless loaded with their stream) and
+    /// in formats without streams.
+    pub stream: Option<usize>,
 }
 
 impl AnnotationData {

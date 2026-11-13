@@ -2,6 +2,7 @@ use crate::common;
 
 use std::ops::Range;
 
+use kymo_core::stim::{self, Change, EventOptions, StimChanges};
 use kymo_core::testing::{self, MemData};
 use kymo_core::{
     AnnotationData, Channel, ChannelId, Grid, GridId, ModelError, Opened, Origin, ReadError,
@@ -62,6 +63,7 @@ fn annotation(onset: f64, duration: f64, channels: Vec<ChannelId>) -> Annotation
         description: "x".into(),
         channels,
         origin: Origin::File,
+        stream: None,
     }
 }
 
@@ -631,4 +633,89 @@ proptest! {
             .collect();
         prop_assert_eq!(bits(&physical), bits(&expected_physical));
     }
+}
+
+/// Streams for [`two_grids`]: annotations, Fz and Resp, one not shown, Cz.
+fn two_grids_streams() -> Vec<Stream> {
+    vec![
+        stream(4, StreamContent::Annotations(1)),
+        stream(1, channels(&[0, 1])),
+        stream(2, StreamContent::NotShown("it has no samples".into())),
+        stream(9, channels(&[2])),
+    ]
+}
+
+#[test]
+fn annotations_belong_to_streams_that_hold_something() {
+    let with_stream = |stream| AnnotationData {
+        stream,
+        ..annotation(1.0, 0.0, vec![])
+    };
+    for (stream, valid) in [
+        (None, true),
+        (Some(0), true),
+        (Some(1), true),
+        (Some(2), false),
+        (Some(3), true),
+        (Some(4), false),
+    ] {
+        let mut opened = two_grids();
+        opened.header.streams = two_grids_streams();
+        opened.annotations = vec![annotation(0.0, 1.0, vec![]), with_stream(stream)];
+        match Recording::new(opened) {
+            Ok((_, annotations)) => {
+                assert!(valid, "{stream:?}");
+                assert_eq!(annotations[1].stream, stream);
+            }
+            Err(error) => {
+                assert!(!valid, "{stream:?}");
+                assert!(
+                    matches!(error, ModelError::InvalidAnnotation { index: 1, .. }),
+                    "{error:?}"
+                );
+            }
+        }
+    }
+    // Without streams, none.
+    let mut opened = two_grids();
+    opened.annotations = vec![with_stream(Some(0))];
+    assert!(matches!(
+        model_error(opened),
+        ModelError::InvalidAnnotation { index: 0, .. }
+    ));
+}
+
+#[test]
+fn stim_events_belong_to_their_channels_stream() {
+    let changes = |channel| StimChanges {
+        channel: ChannelId(channel),
+        // The first is the channel's value at its start, not an event.
+        changes: vec![
+            Change {
+                sample: 0,
+                value: 0,
+            },
+            Change {
+                sample: 3,
+                value: 5,
+            },
+        ],
+    };
+    let mut opened = two_grids();
+    opened.header.streams = two_grids_streams();
+    let rec = recording(opened);
+    assert_eq!(rec.stream_of(ChannelId(0)), Some(1));
+    assert_eq!(rec.stream_of(ChannelId(1)), Some(1));
+    assert_eq!(rec.stream_of(ChannelId(2)), Some(3));
+    let options = EventOptions::default();
+    let events = stim::annotations(&rec, &[changes(1), changes(2)], options);
+    let mut streams: Vec<(ChannelId, Option<usize>)> =
+        events.iter().map(|a| (a.channels[0], a.stream)).collect();
+    streams.sort();
+    assert_eq!(streams, [(ChannelId(1), Some(1)), (ChannelId(2), Some(3))]);
+
+    let rec = recording(two_grids());
+    assert_eq!(rec.stream_of(ChannelId(2)), None);
+    let events = stim::annotations(&rec, &[changes(2)], options);
+    assert_eq!(events[0].stream, None);
 }

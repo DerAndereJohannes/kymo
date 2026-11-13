@@ -141,7 +141,7 @@ impl Recording {
             reader,
         } = opened;
         validate_header(&header)?;
-        validate_annotations(&annotations, header.channels.len())?;
+        validate_annotations(&annotations, header.channels.len(), &header.streams)?;
         let recording = Recording {
             header,
             warnings,
@@ -171,6 +171,15 @@ impl Recording {
     /// The file's streams; empty for formats without streams.
     pub fn streams(&self) -> &[Stream] {
         &self.header.streams
+    }
+
+    /// The stream holding `channel` (an index into [`streams`](Self::streams)); `None`
+    /// for formats without streams.
+    pub fn stream_of(&self, channel: ChannelId) -> Option<usize> {
+        self.header.streams.iter().position(|s| match &s.content {
+            StreamContent::Channels(channels) => channels.contains(&channel),
+            _ => false,
+        })
     }
 
     pub fn channels(&self) -> &[Channel] {
@@ -490,12 +499,19 @@ fn validate_streams(streams: &[Stream], n_channels: usize) -> Result<(), ModelEr
 fn validate_annotations(
     annotations: &[AnnotationData],
     n_channels: usize,
+    streams: &[Stream],
 ) -> Result<(), ModelError> {
     for (index, a) in annotations.iter().enumerate() {
         let reason = if let Some(reason) = a.timing_error() {
             reason
         } else if let Some(c) = a.channels.iter().find(|c| c.0 as usize >= n_channels) {
             format!("channel {c:?} does not exist")
+        } else if let Some(stream) = a.stream
+            && !streams
+                .get(stream)
+                .is_some_and(|s| !matches!(s.content, StreamContent::NotShown(_)))
+        {
+            format!("stream {stream} does not exist or isn't shown")
         } else {
             continue;
         };

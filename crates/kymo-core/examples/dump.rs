@@ -13,7 +13,8 @@
 //!   `not_shown` (why); none for formats without streams), and grids (rate, start, length, segments, the time base's pieces as [first sample, start,
 //!   rate] (none for an irregular one), whether it is irregular and holds its values,
 //!   sample type, channel ids)
-//! - `annotations.json`: onset, duration, description and channel names of each annotation
+//! - `annotations.json`: onset, duration, description, channel names and stream id (`null`
+//!   without one) of each annotation
 //! - `windows.json`: per grid, the sample ranges that were dumped
 //! - `grid{g}.f32`: for each window in turn, the physical values (little-endian f32, NaN in
 //!   gaps) of all channels of grid g, channel-major
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
         let sep = if k == 0 { "" } else { "," };
         let _ = write!(
             json,
-            "{sep}\n  {{\"onset\": {}, \"duration\": {}, \"description\": {}, \"channels\": [{}]}}",
+            "{sep}\n  {{\"onset\": {}, \"duration\": {}, \"description\": {}, \"channels\": [{}], \"stream\": {}}}",
             a.onset,
             a.duration,
             string(&a.description),
@@ -70,7 +71,9 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|&c| string(&rec.channel(c).name))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            a.stream
+                .map_or_else(|| "null".to_owned(), |s| rec.streams()[s].id.to_string())
         );
     }
     json.push_str("\n]\n");

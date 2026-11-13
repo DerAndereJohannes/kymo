@@ -14,6 +14,7 @@ fn data(onset: f64, duration: f64, description: &str) -> AnnotationData {
         description: description.into(),
         channels: vec![],
         origin: Origin::File,
+        stream: None,
     }
 }
 
@@ -221,6 +222,7 @@ fn annotation_data() -> impl Strategy<Value = AnnotationData> {
                 description,
                 channels: channels.into_iter().map(ChannelId).collect(),
                 origin,
+                stream: None,
             },
         )
 }

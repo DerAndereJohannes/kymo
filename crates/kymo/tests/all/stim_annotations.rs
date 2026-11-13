@@ -20,6 +20,7 @@ fn file_annotations() -> AnnotationStore {
         description: description.into(),
         channels: vec![],
         origin: Origin::File,
+        stream: None,
     };
     AnnotationStore::from_data(vec![data(2.0, "a"), data(50.0, "b")])
 }

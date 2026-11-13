@@ -347,6 +347,7 @@ fn events(
             description,
             channels: Vec::new(),
             origin: Origin::File,
+            stream: None,
         });
     }
     if no_latency > 0 {

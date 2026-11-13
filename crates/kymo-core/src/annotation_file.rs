@@ -2,12 +2,14 @@
 //!
 //! kymo saves a BIDS-style events table (`.tsv`): a header row, then per annotation its
 //! onset and duration in seconds, its description as `trial_type`, and, if any annotation
-//! has channels, their names joined by `;` (`\;` and `\\` inside a name). Fields with a tab,
+//! has channels, their names joined by `;` (`\;` and `\\` inside a name), and, if any
+//! has a stream, its id as `stream_id` (`n/a` for those without). Fields with a tab,
 //! a quote or a line break are quoted as in CSV. Onsets count from the first sample, MNE's
 //! time base for onsets, at full precision.
 //!
 //! It loads those tables (also with `description` or `value` in place of `trial_type`, and
-//! `n/a` durations) and MNE's CSV as `Annotations.save` writes it: onsets as dates and times,
+//! `n/a` durations; a `stream_id` that isn't one of the recording's streams with channels or
+//! annotations leaves the annotation without a stream) and MNE's CSV as `Annotations.save` writes it: onsets as dates and times,
 //! the start time (or 1970-01-01 without one) plus the time since the first sample, and
 //! channel names joined by `:` (`{COLON}` inside a name).
 //!
@@ -19,7 +21,7 @@ use std::path::Path;
 
 use jiff::civil::DateTime;
 
-use crate::{AnnotationData, ChannelId, Origin, Recording};
+use crate::{AnnotationData, ChannelId, Origin, Recording, StreamContent};
 
 /// The file formats, told apart by their extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,9 @@ pub struct Context {
     pub end: f64,
     /// Channel names, by id.
     pub channels: Vec<String>,
+    /// Per stream (by index into [`Recording::streams`]) its id, `None` for a stream that
+    /// isn't shown and so holds no annotations.
+    pub streams: Vec<Option<u32>>,
 }
 
 impl Context {
@@ -70,6 +75,11 @@ impl Context {
                 .channels()
                 .iter()
                 .map(|c| c.name.clone())
+                .collect(),
+            streams: recording
+                .streams()
+                .iter()
+                .map(|s| (!matches!(s.content, StreamContent::NotShown(_))).then_some(s.id))
                 .collect(),
         }
     }
@@ -105,6 +115,7 @@ pub fn write_table<'a>(
 ) -> std::io::Result<()> {
     let annotations: Vec<&AnnotationData> = annotations.into_iter().collect();
     let with_channels = annotations.iter().any(|a| !a.channels.is_empty());
+    let with_streams = annotations.iter().any(|a| a.stream.is_some());
     let mut writer = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .terminator(csv::Terminator::Any(b'\n'))
@@ -112,6 +123,9 @@ pub fn write_table<'a>(
     let mut header = vec!["onset", "duration", "trial_type"];
     if with_channels {
         header.push("channels");
+    }
+    if with_streams {
+        header.push("stream_id");
     }
     writer.write_record(&header).map_err(io_error)?;
     for a in annotations {
@@ -127,6 +141,12 @@ pub fn write_table<'a>(
                 .map(|&c| escape(&channel_name(context, c)))
                 .collect();
             record.push(names.join(";"));
+        }
+        if with_streams {
+            let id = a
+                .stream
+                .and_then(|s| context.streams.get(s).copied().flatten());
+            record.push(id.map_or_else(|| "n/a".to_owned(), |id| id.to_string()));
         }
         writer.write_record(&record).map_err(io_error)?;
     }
@@ -160,6 +180,10 @@ pub fn read(input: impl Read, format: Format, context: &Context) -> Result<Loade
     let description_column =
         column(description_names).ok_or_else(|| missing(description_names[0]))?;
     let channels_column = column(&[channel_name]);
+    let stream_column = match format {
+        Format::Table => column(&["stream_id"]),
+        Format::MneCsv => None,
+    };
 
     let mut loaded = Loaded::default();
     for record in reader.records() {
@@ -216,9 +240,17 @@ pub fn read(input: impl Read, format: Format, context: &Context) -> Result<Loade
             description: record.get(description_column).unwrap_or("").to_owned(),
             channels,
             origin: Origin::Viewer,
+            stream: stream_column.and_then(|i| stream(field(i), context)),
         });
     }
     Ok(loaded)
+}
+
+/// The stream (an index into the recording's streams) whose id is `text`, if one with
+/// channels or annotations has it.
+fn stream(text: &str, context: &Context) -> Option<usize> {
+    let id: u32 = text.parse().ok()?;
+    context.streams.iter().position(|&s| s == Some(id))
 }
 
 /// A finite number of seconds.
