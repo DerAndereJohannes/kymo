@@ -717,8 +717,9 @@ fn channel_list(
                 if response.clicked() {
                     view.toggle_bad(id);
                 }
-                // Everything but the name, without the gap before the next column.
-                measured = Some(ui.cursor().left() - rect.left() - fit.name - gap);
+                // Everything but the name, without the gap before the next column; in whole
+                // points, so positions rounded to pixels don't change it from frame to frame.
+                measured = Some((ui.cursor().left() - rect.left() - fit.name - gap).ceil());
 
                 let weak = |text: &str| Label::new(RichText::new(text).weak()).extend();
                 // Labels are selectable, so they hide the row from the pointer: each cell

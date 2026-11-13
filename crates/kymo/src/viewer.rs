@@ -64,8 +64,8 @@ const SIDEBAR_MAX_FRACTION: f32 = 0.5;
 /// doesn't): longer names are shortened in the middle.
 const NAMES_MAX_FRACTION: f32 = 0.3;
 const NAMES_MAX_EMS: f32 = 10.0;
-/// Narrowest and widest the names column can be dragged, in ems and as a fraction of the
-/// trace region.
+/// Narrowest and widest the names column can be dragged, in ems (or as narrow as the names
+/// fit, where that is less) and as a fraction of the trace region.
 const NAMES_DRAG_MIN_EMS: f32 = 3.0;
 const NAMES_DRAG_MAX_FRACTION: f32 = 0.5;
 /// How far from the boundary between names and traces it can be grabbed, in points.
@@ -204,6 +204,8 @@ pub struct Viewer {
     /// The names column's width as dragged, in points, while the recording is open; `None`
     /// fits the names (up to [`NAMES_MAX_EMS`]).
     names_dragged: Option<f32>,
+    /// The width channel names get in the names column, set each frame.
+    name_room: f32,
     layout: Option<Layout>,
     /// Tiles the last frame wanted that weren't cached.
     missing: usize,
@@ -274,6 +276,7 @@ impl Viewer {
             width_px: 0,
             names_width: None,
             names_dragged: None,
+            name_room: 0.0,
             layout: None,
             missing: 0,
             marks: Marks::default(),
@@ -948,10 +951,14 @@ impl Viewer {
             self.names_width(ui, &body).min(NAMES_MAX_EMS * body.size) + 2.0 * NAME_PADDING;
         let names_width = match self.names_dragged {
             Some(width) => width
-                .max(NAMES_DRAG_MIN_EMS * body.size + 2.0 * NAME_PADDING)
+                .max((NAMES_DRAG_MIN_EMS * body.size + 2.0 * NAME_PADDING).min(fitted))
                 .min(full.width() * NAMES_DRAG_MAX_FRACTION),
             None => fitted.min(full.width() * NAMES_MAX_FRACTION),
         };
+        // The room for a name: from the column's width before the trace area's edge is
+        // rounded to a pixel, which would otherwise shorten the widest names in some frames
+        // and not in others as the edge moves (with the sidebar's).
+        self.name_room = names_width - 2.0 * NAME_PADDING;
         let axis_height = TICK + ui.fonts_mut(|f| f.row_height(&small)) + 4.0;
 
         // Trace area on whole physical pixels, so its columns are the renderer's.
@@ -1185,7 +1192,7 @@ impl Viewer {
 
         // Channel names, centered on their rows, shortened in the middle where too long.
         let names_painter = painter.with_clip_rect(names);
-        let name_room = names.width() - 2.0 * NAME_PADDING;
+        let name_room = self.name_room;
         let height = area.height;
         for (i, &channel) in self.view.visible_rows().zip(self.view.visible_channels()) {
             let y = traces.top() + self.view.y_of_row(i as f64 + 0.5, height) as f32;
@@ -1332,8 +1339,7 @@ impl Viewer {
             // A shortened name in full above it.
             let name = &self.document.recording.channel(channel).name;
             let font = TextStyle::Body.resolve(ui.style());
-            let room = names.width() - 2.0 * NAME_PADDING;
-            let tip = match elide_middle(ui.ctx(), name, &font, room) {
+            let tip = match elide_middle(ui.ctx(), name, &font, self.name_room) {
                 Some(_) => format!("{name}\n\n{mark}"),
                 None => mark.to_owned(),
             };

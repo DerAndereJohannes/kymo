@@ -1261,6 +1261,71 @@ fn the_channel_list_fits_its_width() {
     );
 }
 
+/// The texts painted in the last frame that contain `needle`.
+fn painted(harness: &Harness<'_, KymoApp>, needle: &str) -> Vec<String> {
+    fn texts(shape: &egui::Shape, needle: &str, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text().contains(needle) => {
+                out.push(t.galley.text().to_owned())
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, needle, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &harness.output().shapes {
+        texts(&clipped.shape, needle, &mut out);
+    }
+    out
+}
+
+/// Names that fit their column stay whole while the sidebar's edge moves the trace area by
+/// fractions of a pixel (its left edge is rounded to one), and the names column drags as
+/// narrow as a double click fits it, where the names fit in less than 3 em.
+#[test]
+fn short_names_stay_whole_and_their_column_drags_to_its_fit() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window_with_short_frames(file.path());
+    ready(&mut harness);
+    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    let from = egui::pos2(sidebar, 300.0);
+    hover(&mut harness, from);
+    harness.drag_at(from);
+    harness.step();
+    for k in 1..=40 {
+        let at = from + egui::vec2(k as f32 * 0.13, 0.0);
+        hover(&mut harness, at);
+        let names = viewer(&harness).layout().unwrap().names;
+        assert!(names.left() > sidebar, "the sidebar didn't move");
+        assert_eq!(
+            painted(&harness, "\u{2026}"),
+            Vec::<String>::new(),
+            "at {at:?}"
+        );
+    }
+    harness.drop_at(from + egui::vec2(40.0 * 0.13, 0.0));
+    harness.step();
+
+    // The names fit in less than 3 em; dragging the column narrower stops at that width,
+    // which a double click gives too.
+    let em = body_size(&harness);
+    let fitted = viewer(&harness).layout().unwrap().names.width();
+    assert!(fitted < 3.0 * em + 12.0, "{fitted}");
+    let edge = |h: &Harness<'_, KymoApp>| {
+        let names = viewer(h).layout().unwrap().names;
+        egui::pos2(names.right(), names.center().y)
+    };
+    let from = edge(&harness);
+    drag(&mut harness, from, from + egui::vec2(60.0, 0.0));
+    harness.run_steps(2);
+    let from = edge(&harness);
+    drag(&mut harness, from, egui::pos2(0.0, from.y));
+    harness.run_steps(2);
+    let width = viewer(&harness).layout().unwrap().names.width();
+    assert!((width - fitted).abs() < 1.0, "{width} vs {fitted}");
+    assert_eq!(painted(&harness, "\u{2026}"), Vec::<String>::new());
+}
+
 /// A double click on the sidebar's edge fits the sidebar to its contents: wider where a
 /// column or summary value doesn't fit, narrower where everything would fit in less.
 #[test]
