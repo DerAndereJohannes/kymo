@@ -5773,3 +5773,46 @@ fn legends_group_where_several_streams_hold_annotations() {
     assert!(groups(file(true).path()));
     assert!(!groups(file(false).path()));
 }
+
+/// The shortcut overview stays as wide as its rows and scroll bar on every platform, even
+/// after it was wider once (here with a larger font for a few frames): a window doesn't
+/// shrink by itself, which left a strip right of the scroll bar.
+#[test]
+fn the_shortcut_overview_shrinks_back_to_its_rows() {
+    use kymo::keymap::Platform;
+    for platform in Platform::ALL {
+        let mut harness = Harness::builder()
+            .with_size(SIZE)
+            .with_context_setup(system_fonts)
+            .build_ui(move |ui| kymo::ui::menus::shortcuts_window(ui.ctx(), &mut true, platform));
+        let body = |h: &Harness<'_>| h.ctx.global_style().text_styles[&egui::TextStyle::Body].size;
+        let normal = body(&harness);
+        harness.ctx.all_styles_mut(|s| {
+            s.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = normal * 1.5;
+        });
+        harness.run_steps(3);
+        let wide = harness
+            .ctx
+            .memory(|m| m.area_rect(kymo::ui::Overlay::Shortcuts.id()))
+            .unwrap();
+        harness.ctx.all_styles_mut(|s| {
+            s.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = normal;
+        });
+        harness.run_steps(3);
+        let window = harness
+            .ctx
+            .memory(|m| m.area_rect(kymo::ui::Overlay::Shortcuts.id()))
+            .unwrap();
+        assert!(window.width() < wide.width(), "{platform:?}");
+        let keys = harness.get_by_label("Scroll up or down").rect();
+        let scroll = harness.ctx.global_style().spacing.scroll;
+        let room = scroll.bar_width + scroll.bar_inner_margin;
+        let stroke = harness.ctx.global_style().visuals.window_stroke.width;
+        let right = window.right() - stroke;
+        assert!(
+            (keys.right() + 6.0 + room - right).abs() <= 1.0,
+            "{platform:?}: keys end at {}, the window at {right}, room {room}",
+            keys.right()
+        );
+    }
+}

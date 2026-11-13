@@ -192,34 +192,41 @@ pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform
     let style = ctx.global_style();
     let margin = style.spacing.window_margin;
     let frame = egui::Frame::window(&style).inner_margin(egui::Margin { right: 0, ..margin });
+    let font = TextStyle::Body.resolve(&style);
+    let color = style.visuals.text_color();
+    let widest = |text: &dyn Fn(&crate::shortcuts::Row) -> &str| {
+        let rows = sections.iter().flat_map(|s| &s.rows);
+        ctx.fonts_mut(|f| {
+            rows.map(|row| {
+                f.layout_no_wrap(text(row).to_owned(), font.clone(), color)
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max)
+        })
+    };
+    let padding = 6.0;
+    let width = widest(&|r| r.action) + COLUMN_GAP + widest(&|r| &r.keys) + 2.0 * padding;
+    // Room for the scroll bar, which floats over the content's right edge.
+    let scroll = &style.spacing.scroll;
+    let content_width = width + scroll.bar_width + scroll.bar_inner_margin;
     egui::Window::new(Action::Shortcuts.label())
         .id(Overlay::Shortcuts.id())
         .frame(frame)
         .open(open)
         .collapsible(false)
         .resizable([false, true])
+        // Exactly as wide as the rows and the scroll bar's room. A window never shrinks by
+        // itself (egui keeps the widest size it had, across runs too), so one that was ever
+        // wider (fonts or scale settling, an older layout) would keep a strip right of the
+        // scroll bar.
+        .min_width(content_width)
+        .max_width(content_width)
         .default_height(480.0)
         .show(ctx, |ui| {
-            let font = TextStyle::Body.resolve(ui.style());
-            let color = ui.visuals().text_color();
-            let widest = |text: &dyn Fn(&crate::shortcuts::Row) -> &str| {
-                let rows = sections.iter().flat_map(|s| &s.rows);
-                ui.fonts_mut(|f| {
-                    rows.map(|row| {
-                        f.layout_no_wrap(text(row).to_owned(), font.clone(), color)
-                            .size()
-                            .x
-                    })
-                    .fold(0.0, f32::max)
-                })
-            };
-            let padding = 6.0;
-            let width = widest(&|r| r.action) + COLUMN_GAP + widest(&|r| &r.keys) + 2.0 * padding;
             let row_height = ui.spacing().interact_size.y;
             ScrollArea::vertical().show(ui, |ui| {
-                // Room for the scroll bar, which floats over the content's right edge.
-                let scroll = &ui.spacing().scroll;
-                ui.set_min_width(width + scroll.bar_width + scroll.bar_inner_margin);
+                ui.set_min_width(content_width);
                 for (i, section) in sections.iter().enumerate() {
                     if i > 0 {
                         ui.add_space(10.0);
