@@ -368,10 +368,10 @@ fn legend_list(
     } else {
         rows.extend(legend.entries().map(|e| LegendRow::Entry(e.clone())));
     }
-    // Grouped, a description's checkbox lines up with its stream's name.
+    // Grouped, a description's checkbox is half a level in from its stream's.
     let gap = ui.spacing().item_spacing.x;
     let indent = if grouped {
-        CHEVRON_WIDTH + gap + checkbox_width(ui) + gap
+        CHEVRON_WIDTH + gap + half_level(ui, gap)
     } else {
         0.0
     };
@@ -469,15 +469,17 @@ fn legend_list(
     }
 }
 
-/// How wide a checkbox without text is, as a stream's row last laid one out (a guess
-/// before): rows under a stream are indented by it, so their checkboxes line up with the
-/// stream's name, a level in.
-fn checkbox_width(ui: &Ui) -> f32 {
-    ui.data(|d| d.get_temp(checkbox_width_id()))
-        .unwrap_or(ui.spacing().interact_size.y)
+/// How far rows under a stream are indented beyond its checkbox: half the way to its name
+/// (half a checkbox without text, as a stream's row last laid one out (a guess before),
+/// and the `gap` after it), in whole points.
+fn half_level(ui: &Ui, gap: f32) -> f32 {
+    let checkbox: f32 = ui
+        .data(|d| d.get_temp(checkbox_width_id()))
+        .unwrap_or(ui.spacing().interact_size.y);
+    ((checkbox + gap) / 2.0).round()
 }
 
-/// Keeps `checkbox`'s width for [`checkbox_width`].
+/// Keeps `checkbox`'s width for [`half_level`].
 fn note_checkbox_width(ui: &Ui, checkbox: &Response) {
     ui.data_mut(|d| d.insert_temp(checkbox_width_id(), checkbox.rect.width()));
 }
@@ -816,9 +818,9 @@ fn channel_list(
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // Grouped, a channel's checkbox lines up with its stream's name, a level in.
+    // Grouped, a channel's checkbox is half a level in from its stream's.
     let indent = if grouped {
-        CHEVRON_WIDTH + gap + checkbox_width(ui) + gap
+        CHEVRON_WIDTH + gap + half_level(ui, gap)
     } else {
         0.0
     };

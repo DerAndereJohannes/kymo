@@ -1251,7 +1251,7 @@ fn the_channel_list_fits_its_width() {
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
     // The default width, plus the room the rows under a stream are indented by beyond
-    // the stream's checkbox (a checkbox and a gap): the unit and then the names narrow.
+    // the stream's checkbox (half a level): the unit and then the names narrow.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -5115,14 +5115,14 @@ fn several_streams_group_the_channel_list() {
     harness.get_by_label("1 \u{b7} 4 Hz");
     assert!(harness.query_by_label("10 Hz").is_none());
     assert_eq!(toggled(&harness, Role::CheckBox, "Show Amp"), Toggled::True);
-    // The channels' boxes are a level in, lined up with their stream's name.
+    // The channels' boxes are half a level in: halfway from their stream's box to its name.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
     let amp = harness
         .get_by_role_and_label(Role::Label, "Amp")
         .rect()
         .left();
-    assert_eq!(left(&harness, "Show Fz"), amp);
-    assert!(left(&harness, "Show Amp") < amp);
+    let halfway = (left(&harness, "Show Amp") + amp) / 2.0;
+    assert!((left(&harness, "Show Fz") - halfway).abs() <= 0.5);
     assert!(left(&harness, "Collapse Amp") < left(&harness, "Show Amp"));
 
     // A stream's box hides and shows its channels; mixed while some are shown.
@@ -5573,13 +5573,13 @@ fn several_annotation_streams_group_the_legend() {
     for pair in order.windows(2) {
         assert!(top(&harness, pair[0]) < top(&harness, pair[1]), "{pair:?}");
     }
-    // A level in, lined up with the stream's name.
+    // Half a level in: halfway from the stream's box to its name.
     let name = harness
         .get_by_role_and_label(Role::Label, "Keyboard")
         .rect()
         .left();
-    assert_eq!(left(&harness, "Show go in Keyboard"), name);
-    assert!(left(&harness, "Show Keyboard") < name);
+    let halfway = (left(&harness, "Show Keyboard") + name) / 2.0;
+    assert!((left(&harness, "Show go in Keyboard") - halfway).abs() <= 0.5);
     assert!(left(&harness, "Collapse Keyboard") < left(&harness, "Show Keyboard"));
     let lines = |h: &Harness<'_, KymoApp>| viewer(h).marks().lines.len();
     assert_eq!(lines(&harness), 5);
