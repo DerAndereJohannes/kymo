@@ -999,11 +999,10 @@ fn the_channel_list_shows_hides_and_marks_bad() {
             .is_none()
     );
     harness.get_by_label("2 \u{b7} 512 Hz");
-    // A type's channels are half a level in: their boxes halfway from its box to its name.
+    // A type's channels are a level (10 points) in.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    let halfway =
-        (left(&harness, "Show EEG channels") + kind_name_rect(&harness, "EEG").left()) / 2.0;
-    assert!((left(&harness, "Show A1") - halfway).abs() <= 0.5);
+    let level = left(&harness, "Show A1") - left(&harness, "Show EEG channels");
+    assert!((level - LEVEL).abs() <= 0.5, "{level}");
     assert!(left(&harness, "Collapse EEG channels") < left(&harness, "Show EEG channels"));
     // Its arrow hides its channels' rows, not their traces.
     harness.get_by_label("Collapse EEG channels").click();
@@ -1068,6 +1067,9 @@ fn the_channel_list_shows_hides_and_marks_bad() {
     click_in_list(&mut harness, Role::Label, "EEG");
     assert_eq!(viewer(&harness).view().top(), 0.0);
 }
+
+/// How far each level of the sidebar's lists moves rows in, in points.
+const LEVEL: f32 = 10.0;
 
 /// Where the channel list's type row of `name` ("EOG") shows its name: the label of that
 /// text in the row of its checkbox.
@@ -1712,7 +1714,7 @@ fn the_legend_shows_and_hides_annotations() {
             .rect()
             .top()
     };
-    let legend = top(&harness, "Annotations");
+    let legend = top(&harness, "Show Annotations");
     let names: Vec<String> = viewer(&harness)
         .document()
         .recording
@@ -1769,7 +1771,7 @@ fn the_legend_shows_and_hides_annotations() {
         found[0]
     };
     let total = viewer(&harness).document().annotations.len();
-    let total = in_row(&harness, "Annotations", &total.to_string());
+    let total = in_row(&harness, "Show Annotations", &total.to_string());
     let count = in_row(&harness, "Show sleep stage N2", "20");
     assert!(
         (total.right() - count.right()).abs() < 0.5,
@@ -1783,12 +1785,12 @@ fn the_legend_shows_and_hides_annotations() {
     );
     assert_eq!(viewer(&harness).legend().shown_count(), (29, 30));
     assert_eq!(
-        toggled(&harness, Role::CheckBox, "Annotations"),
+        toggled(&harness, Role::CheckBox, "Show Annotations"),
         Toggled::Mixed
     );
 
     // A mixed box shows them all; then it hides them all.
-    click_in_list(&mut harness, Role::CheckBox, "Annotations");
+    click_in_list(&mut harness, Role::CheckBox, "Show Annotations");
     assert_eq!(
         colors(&harness),
         (
@@ -1797,7 +1799,7 @@ fn the_legend_shows_and_hides_annotations() {
             3
         )
     );
-    click_in_list(&mut harness, Role::CheckBox, "Annotations");
+    click_in_list(&mut harness, Role::CheckBox, "Show Annotations");
     assert_eq!(colors(&harness), (vec![], vec![], 0));
     assert_eq!(
         toggled(&harness, Role::CheckBox, "Show event 0"),
@@ -1870,7 +1872,7 @@ fn recordings_without_annotations_have_no_legend() {
     let role = egui::accesskit::Role::CheckBox;
     assert!(
         harness
-            .query_by_role_and_label(role, "Annotations")
+            .query_by_role_and_label(role, "Show Annotations")
             .is_none()
     );
     assert_eq!(
@@ -2982,7 +2984,7 @@ fn the_description_field_names_new_annotations() {
     let role = egui::accesskit::Role::CheckBox;
     assert!(
         harness
-            .query_by_role_and_label(role, "Annotations")
+            .query_by_role_and_label(role, "Show Annotations")
             .is_none()
     );
     assert_eq!(
@@ -3198,7 +3200,7 @@ fn opening_another_recording_never_draws_the_last_ones_tiles() {
     // whatever text the window showed before (status lines while loading), so their
     // pixels may differ a little between windows.
     let traces = |harness: &mut Harness<'_, KymoApp>| {
-        click_in_list(harness, egui::accesskit::Role::CheckBox, "Annotations");
+        click_in_list(harness, egui::accesskit::Role::CheckBox, "Show Annotations");
         traces_image(harness)
     };
 
@@ -3249,7 +3251,11 @@ fn dc_removal_brings_an_offset_trace_into_its_row() {
     ready(&mut harness);
     dc_off(&mut harness);
     // Without the annotations' labels, some of which are near the trace color.
-    click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
+    click_in_list(
+        &mut harness,
+        egui::accesskit::Role::CheckBox,
+        "Show Annotations",
+    );
     let trace = harness.ctx.global_style().visuals.text_color();
     // Pixels of the first row (A1) in the trace color.
     let a1_pixels = |harness: &mut Harness<'_, KymoApp>| {
@@ -4239,7 +4245,11 @@ fn merge_annotations_merges_the_shown_ones_in_one_step() {
     assert!(enabled(&mut harness, "Edit", merge));
     // Also through the legend's checkbox for all: mixed, it shows all, then hides all.
     for shown in [true, false] {
-        click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
+        click_in_list(
+            &mut harness,
+            egui::accesskit::Role::CheckBox,
+            "Show Annotations",
+        );
         assert_eq!(enabled(&mut harness, "Edit", merge), shown);
     }
     click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Show BAD");
@@ -4657,7 +4667,11 @@ fn export_writes_the_descriptions_shown() {
     assert!(enabled(&mut harness, "File", "Export Shown"));
     // Mixed, as trigger 3 is hidden: the first click shows all, the second hides all.
     for _ in 0..2 {
-        click_in_list(&mut harness, egui::accesskit::Role::CheckBox, "Annotations");
+        click_in_list(
+            &mut harness,
+            egui::accesskit::Role::CheckBox,
+            "Show Annotations",
+        );
     }
     assert!(!enabled(&mut harness, "File", "Export Shown"));
     click_in_list(
@@ -5199,14 +5213,10 @@ fn several_streams_group_the_channel_list() {
     harness.get_by_label("1 \u{b7} 4 Hz");
     assert!(harness.query_by_label("10 Hz").is_none());
     assert_eq!(toggled(&harness, Role::CheckBox, "Show Amp"), Toggled::True);
-    // The channels' boxes are half a level in: halfway from their stream's box to its name.
+    // The channels' boxes are a level in.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    let amp = harness
-        .get_by_role_and_label(Role::Label, "Amp")
-        .rect()
-        .left();
-    let halfway = (left(&harness, "Show Amp") + amp) / 2.0;
-    assert!((left(&harness, "Show Fz") - halfway).abs() <= 0.5);
+    let level = left(&harness, "Show Fz") - left(&harness, "Show Amp");
+    assert!((level - LEVEL).abs() <= 0.5, "{level}");
     assert!(left(&harness, "Collapse Amp") < left(&harness, "Show Amp"));
 
     // A stream's box hides and shows its channels; mixed while some are shown.
@@ -5281,11 +5291,7 @@ fn streams_of_several_types_group_their_channels_by_type() {
         ]
     );
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    let amp = harness
-        .get_by_role_and_label(Role::Label, "Amp")
-        .rect()
-        .left();
-    let level = (amp - left(&harness, "Show Amp")) / 2.0;
+    let level = LEVEL;
     let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
     let misc = left(&harness, "Show Misc channels in Amp");
     assert!(near(misc - left(&harness, "Show Amp"), level));
@@ -5530,12 +5536,69 @@ fn all_legend_streams_fold_and_unfold_at_once() {
     assert_eq!(open(&harness), [true, false]);
 }
 
-/// The labels of what collapses rows in the sidebar.
+/// The legend's rows look as the channel list's: "Annotations" a group row with a chevron
+/// in line with the types', its descriptions a level in, in line with the channels, rows
+/// striped. Folding "Annotations" (its chevron or its name) shrinks the legend to that row,
+/// which leaves the channel list more room.
+#[test]
+fn the_legend_lines_up_with_the_channel_list_and_folds() {
+    use egui::accesskit::Role;
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    for (legend, list) in [
+        ("Collapse Annotations", "Collapse EEG channels"),
+        ("Show Annotations", "Show EEG channels"),
+        ("Show trigger 0", "Show A1"),
+    ] {
+        assert_eq!(left(&harness, legend), left(&harness, list), "{legend}");
+    }
+    // Striped: every other row from the first description on.
+    let faint = harness.ctx.global_style().visuals.faint_bg_color;
+    let stripes = |h: &Harness<'_, KymoApp>, label: &str| {
+        let y = h.get_by_label(label).rect().center().y;
+        fn find(shape: &egui::Shape, color: egui::Color32, y: f32) -> bool {
+            match shape {
+                egui::Shape::Rect(r) => r.fill == color && r.rect.y_range().contains(y),
+                egui::Shape::Vec(shapes) => shapes.iter().any(|s| find(s, color, y)),
+                _ => false,
+            }
+        }
+        h.output().shapes.iter().any(|c| find(&c.shape, faint, y))
+    };
+    assert!(stripes(&harness, "Show trigger 0"));
+    assert!(!stripes(&harness, "Show trigger 1"));
+    assert!(!stripes(&harness, "Show Annotations"));
+
+    let top = |h: &Harness<'_, KymoApp>| h.get_by_label("Show Annotations").rect().top();
+    let open = top(&harness);
+    harness.get_by_label("Collapse Annotations").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Show trigger 0").is_none());
+    let folded = top(&harness);
+    assert!(folded > open + 100.0, "{open} {folded}");
+    // Its checkbox still shows and hides them all.
+    harness.get_by_label("Show Annotations").click();
+    harness.run_steps(2);
+    assert_eq!(viewer(&harness).legend().shown_count().0, 0);
+    harness.get_by_label("Show Annotations").click();
+    harness.run_steps(2);
+    // A click on its name unfolds it.
+    harness
+        .get_by_role_and_label(Role::Label, "Annotations")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Show trigger 0");
+    assert_eq!(top(&harness), open);
+}
+
+/// The labels of what collapses rows in the channel list.
 fn folds(harness: &Harness<'_, KymoApp>) -> Vec<String> {
     harness
         .query_all_by_label_contains("Collapse ")
         .filter_map(|n| n.accesskit_node().label())
-        .filter(|l| !l.starts_with("Collapse All"))
+        .filter(|l| !l.starts_with("Collapse All") && l != "Collapse Annotations")
         .collect()
 }
 
@@ -5942,13 +6005,11 @@ fn several_annotation_streams_group_the_legend() {
     for pair in order.windows(2) {
         assert!(top(&harness, pair[0]) < top(&harness, pair[1]), "{pair:?}");
     }
-    // Half a level in: halfway from the stream's box to its name.
-    let name = harness
-        .get_by_role_and_label(Role::Label, "Keyboard")
-        .rect()
-        .left();
-    let halfway = (left(&harness, "Show Keyboard") + name) / 2.0;
-    assert!((left(&harness, "Show go in Keyboard") - halfway).abs() <= 0.5);
+    // A stream a level in from "Annotations", its descriptions a level further.
+    let level = left(&harness, "Show Keyboard") - left(&harness, "Show Annotations");
+    assert!((level - LEVEL).abs() <= 0.5, "{level}");
+    let level = left(&harness, "Show go in Keyboard") - left(&harness, "Show Keyboard");
+    assert!((level - LEVEL).abs() <= 0.5, "{level}");
     assert!(left(&harness, "Collapse Keyboard") < left(&harness, "Show Keyboard"));
     let lines = |h: &Harness<'_, KymoApp>| viewer(h).marks().lines.len();
     assert_eq!(lines(&harness), 5);
@@ -5960,7 +6021,7 @@ fn several_annotation_streams_group_the_legend() {
     assert_eq!(entry(&harness, task, "go"), (1, true));
     assert_eq!(lines(&harness), 2);
     assert_eq!(
-        toggled(&harness, Role::CheckBox, "Annotations"),
+        toggled(&harness, Role::CheckBox, "Show Annotations"),
         Toggled::Mixed
     );
     click_in_list(&mut harness, Role::CheckBox, "Show Keyboard");

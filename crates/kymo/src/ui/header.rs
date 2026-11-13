@@ -277,13 +277,16 @@ fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) ->
     }
 }
 
-/// A row for all annotations: a checkbox (mixed while some descriptions are shown) and how
-/// many there are; then a row per description: a checkbox, its color (a click picks
-/// another, kept in `picked`), the description and how many annotations have it. Counts
-/// are right-aligned. Grouped by stream (see [`Legend::by_stream`]), each stream of
-/// `streams` with annotations gets a row first (see [`legend_stream_row`]) and its
-/// descriptions' rows below it, indented; annotations without a stream come last, under
-/// "Added". Scrolls beyond [`LEGEND_ROWS`] rows.
+/// A row for all annotations, as a stream's row in the channel list: a chevron that folds the
+/// rest of the legend away (as does a click on "Annotations"; kept while the recording is
+/// open), a checkbox (mixed while some descriptions are shown), and how many there are; then,
+/// a level in, a row per description: a checkbox, its color (a click picks another, kept in
+/// `picked`), the description and how many annotations have it. Counts are right-aligned,
+/// and rows start where the channel list's start past their grips. Grouped by stream (see
+/// [`Legend::by_stream`]), each stream of `streams` with annotations gets a row a level in
+/// (see [`legend_stream_row`]) and its descriptions' rows below it, a level further;
+/// annotations without a stream come last, under "Added". Scrolls beyond [`LEGEND_ROWS`]
+/// rows.
 fn legend_list(
     ui: &mut Ui,
     recording: u64,
@@ -293,21 +296,38 @@ fn legend_list(
 ) {
     let (shown, all) = legend.shown_count();
     let row_height = ui.spacing().interact_size.y;
+    let folded_key = Id::unique(("kymo legend folded", recording));
+    let folded: bool = ui.data(|d| d.get_temp(folded_key)).unwrap_or(false);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
-    let mut row = ui.new_child(
-        UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::right_to_left(Align::Center)),
-    );
+    let mut row = legend_row(ui, rect);
     row.add(Label::new(RichText::new(legend.total().to_string()).weak()).extend());
-    row.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        let mut checked = shown == all;
-        let checkbox =
-            Checkbox::new(&mut checked, "Annotations").indeterminate(0 < shown && shown < all);
-        if ui.add(checkbox).changed() {
-            legend.set_all_shown(checked);
-        }
-    });
+    let toggle_root = row
+        .with_layout(Layout::left_to_right(Align::Center), |ui| {
+            ui.add_space(GRIP_WIDTH + GRIP_GAP);
+            let name = "Annotations";
+            let arrow = disclosure(ui, !folded, name, row_height);
+            let mut checked = shown == all;
+            let checkbox =
+                Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
+            let response = ui.add(checkbox);
+            accessible_label(ui, &response, format!("Show {name}"));
+            if response.changed() {
+                legend.set_all_shown(checked);
+            }
+            let label = Label::new(RichText::new(name).strong())
+                .sense(Sense::click())
+                .selectable(false)
+                .truncate();
+            let response = ui.add(label);
+            arrow.clicked() || response.clicked()
+        })
+        .inner;
+    if toggle_root {
+        ui.data_mut(|d| d.insert_temp(folded_key, !folded));
+    }
+    if folded {
+        return;
+    }
 
     let grouped = legend.by_stream();
     let closed_key = legend_closed_id(recording);
@@ -337,13 +357,11 @@ fn legend_list(
     } else {
         rows.extend(legend.entries().map(|e| LegendRow::Entry(e.clone())));
     }
-    // Grouped, a description's checkbox is half a level in from its stream's.
-    let gap = ui.spacing().item_spacing.x;
-    let indent = if grouped {
-        CHEVRON_WIDTH + gap + half_level(ui, gap)
-    } else {
-        0.0
-    };
+    // A description is a level in from "Annotations", and grouped, from its stream, which
+    // is a level in itself; in line with the channel list's rows, past where their grips are.
+    let gap = LIST_GAP;
+    let depth = if grouped { 2.0 } else { 1.0 };
+    let indent = GRIP_WIDTH + GRIP_GAP + CHEVRON_WIDTH + gap + depth * LEVEL;
     let mut toggled = None;
     // Exactly as tall as its rows, up to LEGEND_ROWS: the panel holding it would otherwise
     // keep its first height.
@@ -355,14 +373,14 @@ fn legend_list(
         .max_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for item in rows {
+            for (i, item) in rows.into_iter().enumerate() {
                 let (rect, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
-                let mut row = ui.new_child(
-                    UiBuilder::new()
-                        .max_rect(rect)
-                        .layout(Layout::right_to_left(Align::Center)),
-                );
+                // Striped as the channel list, "Annotations" its first row.
+                if i % 2 == 0 {
+                    stripe(ui, rect);
+                }
+                let mut row = legend_row(ui, rect);
                 let entry = match item {
                     LegendRow::Stream(stream) => {
                         let open = !closed.contains(&stream);
@@ -442,6 +460,26 @@ fn legend_list(
     }
 }
 
+/// The background of every other row of a list, the row in `rect` and half the gaps beside
+/// it.
+fn stripe(ui: &Ui, rect: egui::Rect) {
+    let stripe = rect.expand2(vec2(0.0, ui.spacing().item_spacing.y / 2.0));
+    ui.painter()
+        .rect_filled(stripe, 0.0, ui.visuals().faint_bg_color);
+}
+
+/// A row of the legend in `rect`, laid out from the right (its count first, so a long
+/// description truncates), with the channel list's gaps.
+fn legend_row(ui: &mut Ui, rect: egui::Rect) -> Ui {
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    row.spacing_mut().item_spacing.x = LIST_GAP;
+    row
+}
+
 /// Where the legend keeps the streams whose rows are folded, for `recording`.
 fn legend_closed_id(recording: u64) -> Id {
     Id::unique(("kymo closed annotation streams", recording))
@@ -499,24 +537,9 @@ fn fold_all(ui: &mut Ui, what: &str, area: egui::Rect, y: f32, any_open: bool) -
 /// Width of the button that folds or unfolds all groups, in points.
 const FOLD_ALL_WIDTH: f32 = 16.0;
 
-/// How far rows under a stream are indented beyond its checkbox: half the way to its name
-/// (half a checkbox without text, as a stream's row last laid one out (a guess before),
-/// and the `gap` after it), in whole points.
-fn half_level(ui: &Ui, gap: f32) -> f32 {
-    let checkbox: f32 = ui
-        .data(|d| d.get_temp(checkbox_width_id()))
-        .unwrap_or(ui.spacing().interact_size.y);
-    ((checkbox + gap) / 2.0).round()
-}
-
-/// Keeps `checkbox`'s width for [`half_level`].
-fn note_checkbox_width(ui: &Ui, checkbox: &Response) {
-    ui.data_mut(|d| d.insert_temp(checkbox_width_id(), checkbox.rect.width()));
-}
-
-fn checkbox_width_id() -> Id {
-    Id::unique("kymo stream checkbox width")
-}
+/// How far each level of a list moves its rows' checkboxes in, in points: under a type, a
+/// stream or "Annotations".
+const LEVEL: f32 = 10.0;
 
 /// A row of the annotation legend.
 enum LegendRow {
@@ -549,12 +572,13 @@ fn legend_stream_row(row: &mut Ui, legend: &mut Legend, group: LegendGroup<'_>) 
     let row_height = row.max_rect().height();
     row.add(Label::new(RichText::new(legend.stream_total(stream).to_string()).weak()).extend());
     row.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        // A level in from "Annotations".
+        ui.add_space(GRIP_WIDTH + GRIP_GAP + LEVEL);
         let arrow = disclosure(ui, open, &name, row_height);
 
         let mut checked = shown == all;
         let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
         let response = ui.add(checkbox);
-        note_checkbox_width(ui, &response);
         accessible_label(ui, &response, format!("Show {name}"));
         if response.changed() {
             legend.set_stream_shown(stream, checked);
@@ -882,9 +906,8 @@ fn channel_list(
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // Each level in moves a row's checkbox half the way from its fold's checkbox to its
-    // fold's name; a channel's row has no chevron.
-    let level = half_level(ui, gap);
+    // A channel's row has no chevron.
+    let level = LEVEL;
     let indent = |depth: usize| CHEVRON_WIDTH + gap + depth as f32 * level;
     // The columns are laid out for the deepest channel, and the names of the others are
     // wider by what they are less indented, so all columns after the names line up.
@@ -931,9 +954,7 @@ fn channel_list(
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
                 placed.push((i, rect));
                 if i % 2 == 1 {
-                    let stripe = rect.expand2(vec2(0.0, ui.spacing().item_spacing.y / 2.0));
-                    ui.painter()
-                        .rect_filled(stripe, 0.0, ui.visuals().faint_bg_color);
+                    stripe(ui, rect);
                 }
                 // What is left past the row's right edge is clipped.
                 let mut row = ui.new_child(
@@ -1372,7 +1393,6 @@ fn stream_row(
     let mut checked = shown == all;
     let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
     let response = ui.add(checkbox);
-    note_checkbox_width(ui, &response);
     accessible_label(ui, &response, format!("Show {name}"));
     if response.changed() {
         view.set_stream_shown(s, checked);
