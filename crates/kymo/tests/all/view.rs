@@ -457,6 +457,8 @@ fn channels_stay_within_their_stream_and_streams_move_together() {
 
     // A hidden channel keeps its place and moves with its stream.
     view.set_shown(ChannelId(4), false);
+    assert_eq!(view.stream_shown(2), (2, 3));
+    assert_eq!(view.stream_shown(1), (0, 0));
     assert!(view.move_stream(2, None));
     assert_eq!(view.order(), ids(&[6, 7, 2, 1, 0, 3, 4, 5]));
     assert_eq!(view.visible_channels(), ids(&[6, 7, 2, 1, 0, 3, 5]));
@@ -469,6 +471,16 @@ fn channels_stay_within_their_stream_and_streams_move_together() {
     assert_eq!(view.order(), ids(&[6, 7, 0, 1, 2, 3, 4, 5]));
     view.sort(ChannelOrder::File);
     assert_eq!(view.order(), ids(&[0, 1, 2, 3, 4, 5, 6, 7]));
+
+    // A stream's channels shown and hidden together.
+    view.set_stream_shown(2, false);
+    assert_eq!(view.stream_shown(2), (0, 3));
+    assert_eq!(view.visible_channels(), ids(&[0, 1, 2, 6, 7]));
+    view.set_stream_shown(2, true);
+    assert_eq!(view.stream_shown(2), (3, 3));
+    assert_eq!(view.row_count(), 8);
+    view.set_stream_shown(1, false);
+    assert_eq!(view.row_count(), 8);
 
     // A stream of one channel: moving it within its stream leaves it where it is.
     let rec = recording_with(2, 60, true);

@@ -1198,9 +1198,10 @@ fn tooltip(harness: &mut Harness<'_, KymoApp>, text: &str) -> bool {
 }
 
 /// The channel list shows units as symbols ("microvolts" as µV, for Misc channels too) and
-/// an irregular grid's rate as "≈ 50 Hz", everything in full where the sidebar is wide
-/// enough; in a narrower one it shortens units and then names in the middle (screen readers
-/// get them whole), then leaves out the rate, unit and type, which hovering the row shows.
+/// an irregular grid's rate as "≈ 50 Hz" (in its stream's row, as the file has two streams),
+/// everything in full where the sidebar is wide enough; in a narrower one it shortens units
+/// and then names in the middle (screen readers get them whole), then leaves out the unit
+/// and type, which hovering the row shows.
 #[test]
 fn the_channel_list_fits_its_width() {
     use egui::accesskit::Role;
@@ -1222,8 +1223,10 @@ fn the_channel_list_fits_its_width() {
     assert!(in_row(&harness, aux, "Misc"));
     assert!(in_row(&harness, aux, "\u{b5}V"));
     assert!(harness.query_by_label("microvolts").is_none());
+    // The rates are in the streams' rows.
     let por = row_of(&harness, "POR X - (Point of regard), left eye");
-    assert!(in_row(&harness, por, "100 Hz"));
+    assert!(!in_row(&harness, por, "100 Hz"));
+    harness.get_by_role_and_label(Role::Label, "3 \u{b7} 100 Hz");
     // The long unit and names in full.
     let full = |h: &Harness<'_, KymoApp>, label: &str| {
         let rect = h.get_by_role_and_label(Role::Label, label).rect();
@@ -1238,11 +1241,8 @@ fn the_channel_list_fits_its_width() {
     assert!(full(&harness, "normalized_signed"));
     assert!(full(&harness, "IPD - Interpupillary distance, both eyes"));
     assert!(full(&harness, "POR X - (Point of regard), left eye"));
-    let ipd = row_of(&harness, "IPD - Interpupillary distance, both eyes");
     let rate = harness
-        .query_all_by_role_and_label(Role::Label, "\u{2248} 50 Hz")
-        .find(|n| (n.rect().center().y - ipd).abs() < 1.0)
-        .unwrap()
+        .get_by_role_and_label(Role::Label, "1 \u{b7} \u{2248} 50 Hz")
         .rect();
     // An irregular rate in full on hover; nothing else is shortened.
     hover(&mut harness, rate.center());
@@ -1250,7 +1250,7 @@ fn the_channel_list_fits_its_width() {
     assert!(harness.query_by_label_contains("both eyes\n").is_none());
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
-    // Default: the unit and then the names narrow, then the rate drops out.
+    // Default: the unit and then the names narrow.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -5006,4 +5006,137 @@ fn settings_labels_are_level_with_their_first_control() {
             center(control)
         );
     }
+}
+
+/// An XDF file of four streams: "Amp" (EEG, three channels at 10 Hz), "Tracker" (Gaze, one
+/// channel at 4 Hz), "Empty" (no samples) and "Markers" (strings).
+fn streams_xdf() -> TempFile {
+    use kymo_testgen::XdfFormat;
+    use kymo_testgen::xdf::{Chunks, header_xml};
+    let described = |labels: &[&str], kind: &str| -> Vec<(String, String, String)> {
+        labels
+            .iter()
+            .map(|l| ((*l).to_owned(), kind.to_owned(), "microvolts".to_owned()))
+            .collect()
+    };
+    let mut c = Chunks::new(None);
+    let amp = described(&["Fz", "Cz", "Pz"], "EEG");
+    c.stream_header(1, &header_xml("Amp", "EEG", 3, 10.0, "float32", Some(&amp)));
+    let tracker = described(&["Pupil"], "Misc");
+    c.stream_header(
+        2,
+        &header_xml("Tracker", "Gaze", 1, 4.0, "float32", Some(&tracker)),
+    );
+    c.stream_header(3, &header_xml("Empty", "EEG", 2, 10.0, "float32", None));
+    c.stream_header(4, &header_xml("Markers", "Markers", 1, 0.0, "string", None));
+    let samples = |n: usize, rate: f64, channels: usize| -> Vec<(Option<f64>, Vec<f64>)> {
+        (0..n)
+            .map(|i| (Some(i as f64 / rate), vec![i as f64; channels]))
+            .collect()
+    };
+    c.numeric(1, XdfFormat::F32, &samples(300, 10.0, 3));
+    c.numeric(2, XdfFormat::F32, &samples(120, 4.0, 1));
+    c.strings(4, &[(Some(1.0), vec!["go".into()])]);
+    for id in 1..=4 {
+        c.footer(id, "<info/>");
+    }
+    let file = TempFile::new("xdf");
+    std::fs::write(file.path(), &c.bytes).unwrap();
+    file
+}
+
+/// A recording with several streams of channels groups its channel list by stream: a row
+/// per stream shows and hides its channels, collapses their rows, scrolls the traces to it,
+/// and has the rate the channels' rows leave out; streams that aren't shown are listed,
+/// grayed, with the reason on hover; the summary counts the streams.
+#[test]
+fn several_streams_group_the_channel_list() {
+    use egui::accesskit::{Role, Toggled};
+    let file = streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.get_by_label("Streams");
+    harness.get_by_label("4 (2 shown as channels)");
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
+    // The streams' rows, with the number of channels and the rate; none in the channels'.
+    harness.get_by_label("3 \u{b7} 10 Hz");
+    harness.get_by_label("1 \u{b7} 4 Hz");
+    assert!(harness.query_by_label("10 Hz").is_none());
+    assert_eq!(toggled(&harness, Role::CheckBox, "Show Amp"), Toggled::True);
+    // The channels' boxes line up with their stream's, past its arrow.
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    assert_eq!(left(&harness, "Show Fz"), left(&harness, "Show Amp"));
+    assert!(left(&harness, "Collapse Amp") < left(&harness, "Show Amp"));
+
+    // A stream's box hides and shows its channels; mixed while some are shown.
+    click_in_list(&mut harness, Role::CheckBox, "Show Amp");
+    assert_eq!(shown(&harness), [3]);
+    assert_eq!(toggled(&harness, Role::CheckBox, "Show Fz"), Toggled::False);
+    click_in_list(&mut harness, Role::CheckBox, "Show Amp");
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
+    click_in_list(&mut harness, Role::CheckBox, "Show Cz");
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show Amp"),
+        Toggled::Mixed
+    );
+    assert_eq!(
+        toggled(&harness, Role::CheckBox, "Show Tracker"),
+        Toggled::True
+    );
+    click_in_list(&mut harness, Role::CheckBox, "Show Amp");
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
+
+    // Its arrow hides its channels' rows, not their traces.
+    harness.get_by_label("Collapse Amp").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Show Fz").is_none());
+    harness.get_by_label("Show Pupil");
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
+    harness.get_by_label("Expand Amp").click();
+    harness.run_steps(2);
+    harness.get_by_label("Show Fz");
+
+    // Its name scrolls the traces to its first shown channel: two rows of four.
+    for _ in 0..2 {
+        harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::Minus);
+        harness.step();
+    }
+    assert_eq!(viewer(&harness).view().rows(), 2);
+    click_in_list(&mut harness, Role::Label, "Tracker");
+    assert_eq!(viewer(&harness).view().top(), 2.0);
+    click_in_list(&mut harness, Role::Label, "Amp");
+    assert_eq!(viewer(&harness).view().top(), 0.0);
+
+    // The empty stream, grayed, says why; the marker stream's annotations are in the
+    // legend.
+    let empty = harness.get_by_role_and_label(Role::Label, "Empty").rect();
+    let amp = harness.get_by_role_and_label(Role::Label, "Amp").rect();
+    assert_eq!(empty.left(), amp.left());
+    hover(&mut harness, empty.center());
+    assert!(tooltip(
+        &mut harness,
+        "Empty isn't shown: it has no samples"
+    ));
+}
+
+/// Nothing of streams shows for a recording without them, nor for one with a single stream
+/// of channels (beside its marker stream, which the summary counts).
+#[test]
+fn recordings_without_several_streams_show_no_groups() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    assert!(harness.query_by_label("Streams").is_none());
+    assert!(harness.query_by_label_contains("Collapse").is_none());
+    // The channels' rows have their rates, besides the summary's.
+    let rates = |h: &Harness<'_, KymoApp>| h.query_all_by_label_contains(" Hz").count();
+    assert!(rates(&harness) > 1);
+
+    let file = TempFile::preset("xdf-float32");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.get_by_label("2 (1 shown as channels)");
+    assert!(harness.query_by_label_contains("Collapse").is_none());
+    assert!(harness.query_by_label("Show BrainAmp").is_none());
+    assert!(rates(&harness) > 1);
 }

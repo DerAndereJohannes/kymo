@@ -4,7 +4,7 @@ use eframe::egui::{
     self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
     RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
 };
-use kymo_core::{ChannelId, ChannelKind};
+use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
 use crate::annotations::{AnnotationColor, AnnotationColors, Legend};
 use crate::document::{Document, Summary, format_rate, grid_rate, plural};
@@ -454,10 +454,18 @@ impl Columns {
     /// first, down to `min_unit`, then the name, down to `min_name`; then the rate drops out,
     /// then the unit, then the type, the name and then the unit widening again into the room
     /// they leave. `fixed` is what every row has besides (the checkbox, the Bad toggle and
-    /// the gaps between them and the name).
-    fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32, min_unit: f32) -> RowColumns {
+    /// the gaps between them and the name). Without `rated` rows have no rate column.
+    fn fit(
+        &self,
+        width: f32,
+        fixed: f32,
+        gap: f32,
+        min_name: f32,
+        min_unit: f32,
+        rated: bool,
+    ) -> RowColumns {
         let options = [
-            (true, true, true),
+            (true, true, rated),
             (true, true, false),
             (true, false, false),
         ];
@@ -502,8 +510,9 @@ struct RowColumns {
 }
 
 impl RowColumns {
-    fn all(&self) -> bool {
-        self.kind && self.unit.is_some() && self.rate
+    /// Whether the row shows every column it has; `rated` if it has a rate column.
+    fn all(&self, rated: bool) -> bool {
+        self.kind && self.unit.is_some() && (self.rate || !rated)
     }
 }
 
@@ -525,13 +534,71 @@ fn full_rate(grid: &kymo_core::Grid) -> String {
     }
 }
 
-/// All channels, drawing only the rows in view, in columns as wide as the widest entry of
-/// any channel. Per channel: whether it is shown, its name (a click scrolls the traces to
-/// it), whether it is bad, its type, its unit as the readout shows values (µV for EEG
-/// whatever the file stores) and its rate (right-aligned; "≈ 300 Hz" for an irregular
-/// grid's average). A list too narrow for all of it narrows the units and names (shortened
-/// in the middle) and then leaves out the rate, unit and type (see [`Columns::fit`]);
-/// hovering a row whose text is shortened or left out shows it all.
+/// One row of the channel list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Item {
+    /// A stream's row (by its index in the recording), above its channels.
+    Stream(usize),
+    Channel(ChannelId),
+    /// A stream of the file that isn't shown, at the end.
+    NotShown(usize),
+}
+
+/// The channel list's rows: the channels in the view's order, grouped by stream (a closed
+/// stream's channels left out) if `grouped`, then the streams that aren't shown.
+fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[usize]) -> Vec<Item> {
+    let streams = document.recording.streams();
+    let stream_of = |c: ChannelId| {
+        streams
+            .iter()
+            .position(|s| matches!(&s.content, StreamContent::Channels(ids) if ids.contains(&c)))
+    };
+    let mut items = Vec::with_capacity(view.order().len() + streams.len());
+    let mut current = None;
+    for &c in view.order() {
+        if grouped {
+            let stream = stream_of(c);
+            if stream != current {
+                current = stream;
+                items.extend(stream.map(Item::Stream));
+            }
+            if stream.is_some_and(|s| closed.contains(&s)) {
+                continue;
+            }
+        }
+        items.push(Item::Channel(c));
+    }
+    items.extend(
+        streams
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s.content, StreamContent::NotShown(_)))
+            .map(|(i, _)| Item::NotShown(i)),
+    );
+    items
+}
+
+/// A stream's name as the list shows it: "Stream 3" for one without a name.
+fn stream_name(stream: &Stream) -> String {
+    if stream.name.trim().is_empty() {
+        format!("Stream {}", stream.id)
+    } else {
+        stream.name.clone()
+    }
+}
+
+/// All channels in the view's order, drawing only the rows in view, in columns as wide as
+/// the widest entry of any channel. Per channel: whether it is shown, its name (a click
+/// scrolls the traces to it), whether it is bad, its type, its unit as the readout shows
+/// values (µV for EEG whatever the file stores) and its rate (right-aligned; "≈ 300 Hz" for
+/// an irregular grid's average). A list too narrow for all of it narrows the units and
+/// names (shortened in the middle) and then leaves out the rate, unit and type (see
+/// [`Columns::fit`]); hovering a row whose text is shortened or left out shows it all.
+///
+/// A recording with several streams of channels (XDF) groups them by stream: a row per
+/// stream (see [`stream_row`]) above its channels, which leave out the rate, the stream's.
+/// Streams the file has but doesn't show are listed at the end, grayed, with the reason on
+/// hover. Nothing of streams shows for other recordings.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -540,26 +607,43 @@ fn channel_list(
     type_colors: &TypeColors,
 ) {
     let rec = &document.recording;
+    let streams = rec.streams();
+    let grouped = streams
+        .iter()
+        .filter(|s| matches!(s.content, StreamContent::Channels(_)))
+        .count()
+        > 1;
+    let closed_key = ui.scope_id().with(("closed streams", recording));
+    let mut closed: Vec<usize> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
+    let items = list_items(document, view, grouped, &closed);
+    let mut toggled = None;
     let columns = Columns::of(ui, document);
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // The width of a row's checkbox and Bad toggle with the gaps beside them, as the last
-    // frame laid them out (a guess before).
+    // Grouped, a channel's checkbox lines up with its stream's, past the disclosure arrow.
+    let indent = if grouped {
+        ui.spacing().icon_width + gap
+    } else {
+        0.0
+    };
+    // The width of a row's checkbox and Bad toggle with the gaps beside them (and the
+    // indent), as the last frame laid them out (a guess before).
     let fixed_key = Id::unique("kymo channel list fixed width");
     let fixed = ui
         .data(|d| d.get_temp::<f32>(fixed_key))
-        .unwrap_or(ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap);
+        .unwrap_or(indent + ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap);
     let mut measured = None;
     from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
-        .show_rows(ui, row_height, rec.channels().len(), |ui, rows| {
+        .show_rows(ui, row_height, items.len(), |ui, rows| {
             let fit = columns.fit(
                 ui.available_width(),
                 fixed,
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
+                !grouped,
             );
             for i in rows {
                 let (rect, row_response) =
@@ -587,7 +671,21 @@ fn channel_list(
                 };
                 let left = Layout::left_to_right(Align::Center);
 
-                let id = ChannelId(i as u32);
+                let id = match items[i] {
+                    Item::Stream(s) => {
+                        let open = !closed.contains(&s);
+                        if stream_row(ui, document, s, open, view, row_response) {
+                            toggled = Some(s);
+                        }
+                        continue;
+                    }
+                    Item::NotShown(s) => {
+                        not_shown_row(ui, &streams[s], row_response);
+                        continue;
+                    }
+                    Item::Channel(id) => id,
+                };
+                ui.add_space(indent);
                 let channel = rec.channel(id);
                 let name = &channel.name;
                 let grid = rec.grid(channel.grid);
@@ -597,8 +695,8 @@ fn channel_list(
                     .unit
                     .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
                 // The row's whole text where some of it is shortened or left out.
-                let full =
-                    (short_name.is_some() || short_unit.is_some() || !fit.all()).then(|| {
+                let full = (short_name.is_some() || short_unit.is_some() || !fit.all(!grouped))
+                    .then(|| {
                         let unit = if unit.is_empty() {
                             String::new()
                         } else {
@@ -705,6 +803,162 @@ fn channel_list(
     {
         ui.data_mut(|d| d.insert_temp(fixed_key, width));
         ui.ctx().request_repaint();
+    }
+    if let Some(s) = toggled {
+        match closed.iter().position(|&c| c == s) {
+            Some(at) => {
+                closed.remove(at);
+            }
+            None => closed.push(s),
+        }
+        ui.data_mut(|d| d.insert_temp(closed_key, closed));
+    }
+}
+
+/// A stream's row in the channel list: a disclosure arrow that shows or hides its channels'
+/// rows, a checkbox that shows or hides its channels in the traces (mixed while some are
+/// shown), its name (a click scrolls the traces to its first shown channel), its type, and
+/// at the right its number of channels and its rate. A narrow row leaves out the type, then
+/// the number and rate, then shortens the name; hovering shows it all. Returns whether the
+/// arrow was clicked.
+fn stream_row(
+    ui: &mut Ui,
+    document: &Document,
+    s: usize,
+    open: bool,
+    view: &mut ViewState,
+    row: Response,
+) -> bool {
+    let rec = &document.recording;
+    let stream = &rec.streams()[s];
+    let StreamContent::Channels(ids) = &stream.content else {
+        return false;
+    };
+    let name = stream_name(stream);
+    let grid = rec.grid(rec.channel(ids[0]).grid);
+    let (shown, all) = view.stream_shown(s);
+    let row_height = row.rect.height();
+    let icon = ui.spacing().icon_width;
+
+    let (_, arrow) = ui.allocate_exact_size(vec2(icon, row_height), Sense::click());
+    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &arrow);
+    let verb = if open { "Collapse" } else { "Expand" };
+    accessible_label(ui, &arrow, format!("{verb} {name}"));
+    let arrow = arrow.on_hover_cursor(CursorIcon::PointingHand);
+    let clicked = arrow.clicked();
+
+    let mut checked = shown == all;
+    let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
+    let response = ui.add(checkbox);
+    accessible_label(ui, &response, format!("Show {name}"));
+    if response.changed() {
+        view.set_stream_shown(s, checked);
+    }
+
+    let body = TextStyle::Body.resolve(ui.style());
+    let width = |text: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(text.to_owned(), body.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+    };
+    let kind = stream.kind.trim();
+    let count = format!("{all} \u{b7} {}", list_rate(grid));
+    let gap = ui.spacing().item_spacing.x;
+    let room = ui.available_width();
+    let (name_width, kind_width, count_width) = (width(&name), width(kind), width(&count));
+    let least = name_width.min(LIST_MIN_NAME_EMS * body.size);
+    let beside = |kind: bool, count: bool| {
+        f32::from(u8::from(kind)) * (gap + kind_width)
+            + f32::from(u8::from(count)) * (gap + count_width)
+    };
+    let (show_kind, show_count) = [(!kind.is_empty(), true), (false, true), (false, false)]
+        .into_iter()
+        .find(|&(k, c)| least + beside(k, c) <= room)
+        .unwrap_or((false, false));
+    let name_room = (room - beside(show_kind, show_count)).clamp(0.0, name_width);
+    let short = elide_middle(ui.ctx(), &name, &body, name_room);
+
+    let channels = format!("{all} channel{}", plural(all));
+    let full = [kind, &channels, &full_rate(grid)]
+        .iter()
+        .filter(|t| !t.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
+    let full = format!("{name}\n{full}");
+
+    let (_, rect) = ui.allocate_space(vec2(name_room, row_height));
+    let label = Label::new(RichText::new(short.as_deref().unwrap_or(&name)).strong())
+        .sense(Sense::click())
+        .extend();
+    let mut response = ui
+        .new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        )
+        .add(label);
+    if short.is_some() {
+        accessible_text(ui, &response, name.clone());
+    }
+    let first_shown = view
+        .order()
+        .iter()
+        .copied()
+        .find(|c| ids.contains(c) && view.is_shown(*c));
+    if let Some(first) = first_shown {
+        response = response
+            .on_hover_text(format!("{full}\n\nShow in Traces"))
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if response.clicked() {
+            view.scroll_to(first);
+        }
+    } else {
+        response.on_hover_text(&full);
+    }
+    let weak = |text: &str| Label::new(RichText::new(text).weak()).extend();
+    // Labels hide the row from the pointer: each shows the row's whole text too.
+    let mut cells = vec![row];
+    if show_kind {
+        cells.push(ui.add(weak(kind)));
+    }
+    if show_count {
+        let response = ui
+            .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(weak(&count))
+            })
+            .inner;
+        cells.push(response);
+    }
+    for cell in cells {
+        cell.on_hover_text(&full);
+    }
+    clicked
+}
+
+/// A stream the file has but kymo doesn't show, grayed, in line with the streams' names;
+/// hovering it says why.
+fn not_shown_row(ui: &mut Ui, stream: &Stream, row: Response) {
+    let StreamContent::NotShown(reason) = &stream.content else {
+        return;
+    };
+    let name = stream_name(stream);
+    let icon = ui.spacing().icon_width;
+    let height = row.rect.height();
+    // Where a stream's arrow and checkbox are.
+    ui.allocate_exact_size(vec2(icon, height), Sense::hover());
+    ui.add_visible(false, Checkbox::without_text(&mut false));
+    let hover = format!("{name} isn't shown: {reason}");
+    let weak = |text: &str| Label::new(RichText::new(text).weak()).truncate();
+    let mut cells = vec![row, ui.add(weak(&name))];
+    let kind = stream.kind.trim();
+    if !kind.is_empty() {
+        cells.push(ui.add(weak(kind)));
+    }
+    for cell in cells {
+        cell.on_hover_text(&hover);
     }
 }
 

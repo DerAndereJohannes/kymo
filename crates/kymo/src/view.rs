@@ -565,6 +565,28 @@ impl ViewState {
         }
     }
 
+    /// How many channels of a stream (by its index in the recording) are shown, and how many
+    /// it has.
+    pub fn stream_shown(&self, stream: usize) -> (usize, usize) {
+        self.stream_of
+            .iter()
+            .zip(&self.hidden)
+            .filter(|&(&s, _)| s == Some(stream))
+            .fold((0, 0), |(shown, all), (_, &hidden)| {
+                (shown + usize::from(!hidden), all + 1)
+            })
+    }
+
+    /// Shows or hides every channel of a stream, as [`set_shown`](Self::set_shown).
+    pub fn set_stream_shown(&mut self, stream: usize, shown: bool) {
+        for (hidden, &s) in self.hidden.iter_mut().zip(&self.stream_of) {
+            if s == Some(stream) {
+                *hidden = !shown;
+            }
+        }
+        self.rebuild_rows();
+    }
+
     /// Shows or hides every channel of a type, as [`set_shown`](Self::set_shown).
     pub fn set_kind_shown(&mut self, kind: ChannelKind, shown: bool) {
         for (hidden, &k) in self.hidden.iter_mut().zip(&self.kinds) {

@@ -42,6 +42,13 @@ impl Document {
                 .map(|t| t.to_string().replacen('T', " ", 1)),
             duration: rec.duration(),
             channels: rec.channels().len(),
+            streams: (
+                rec.streams().len(),
+                rec.streams()
+                    .iter()
+                    .filter(|s| matches!(s.content, kymo_core::StreamContent::Channels(_)))
+                    .count(),
+            ),
             annotations: self.annotations.len(),
             grids: rec
                 .grids()
@@ -85,6 +92,9 @@ pub struct Summary {
     /// Seconds.
     pub duration: f64,
     pub channels: usize,
+    /// The file's streams (XDF) and how many of them are shown as channels; 0 for formats
+    /// without streams.
+    pub streams: (usize, usize),
     pub annotations: usize,
     pub grids: Vec<GridSummary>,
     pub warnings: Vec<String>,
@@ -138,6 +148,16 @@ impl Summary {
             SidebarRow::new("Duration", format_duration(self.duration)),
             SidebarRow::new("Channels", self.channels.to_string()),
         ];
+        // Only where there are several, as only XDF files have them.
+        let (streams, with_channels) = self.streams;
+        if streams > 1 {
+            let value = if with_channels == streams {
+                streams.to_string()
+            } else {
+                format!("{streams} ({with_channels} shown as channels)")
+            };
+            rows.push(SidebarRow::new("Streams", value));
+        }
         // Grids of the same rate (split by sample type) count as one; irregular ones show
         // their average rate.
         let mut rates: Vec<(f64, bool, usize, u64)> = Vec::new();
@@ -200,6 +220,13 @@ impl fmt::Display for Summary {
         )?;
         writeln!(f, "duration     {}", format_duration(self.duration))?;
         writeln!(f, "channels     {}", self.channels)?;
+        if self.streams.0 > 1 {
+            writeln!(
+                f,
+                "streams      {} ({} shown as channels)",
+                self.streams.0, self.streams.1
+            )?;
+        }
         writeln!(f, "annotations  {}", self.annotations)?;
         for (i, grid) in self.grids.iter().enumerate() {
             writeln!(f, "grid {:<7} {}", i + 1, grid.describe())?;
@@ -475,6 +502,45 @@ mod tests {
         }
     }
 
+    /// A "Streams" row (and `--info` line) only where there are several streams.
+    #[test]
+    fn several_streams_are_counted() {
+        let summary = |streams: (usize, usize)| Summary {
+            format: "XDF",
+            start: None,
+            duration: 2.0,
+            channels: 2,
+            streams,
+            annotations: 0,
+            grids: vec![GridSummary {
+                rate: 100.0,
+                irregular: false,
+                samples: 200,
+                segments: 1,
+                channels: vec!["Fz".into(), "Cz".into()],
+            }],
+            warnings: Vec::new(),
+        };
+        let row = |s: &Summary| {
+            s.sidebar_rows()
+                .into_iter()
+                .find(|r| r.key == "Streams")
+                .map(|r| r.value)
+        };
+        assert_eq!(row(&summary((0, 0))), None);
+        assert_eq!(row(&summary((1, 1))), None);
+        assert!(!summary((1, 1)).to_string().contains("streams"));
+        assert_eq!(row(&summary((2, 2))).as_deref(), Some("2"));
+        let nine = summary((9, 5));
+        assert_eq!(row(&nine).as_deref(), Some("9 (5 shown as channels)"));
+        let keys: Vec<String> = nine.sidebar_rows().into_iter().map(|r| r.key).collect();
+        assert_eq!(keys[3..5], ["Channels", "Streams"]);
+        assert!(
+            nine.to_string()
+                .contains("streams      9 (5 shown as channels)\n")
+        );
+    }
+
     /// The sidebar rounds a rate and shows the exact one on hover, with channels and samples;
     /// `--info` prints it exactly.
     #[test]
@@ -491,6 +557,7 @@ mod tests {
             start: None,
             duration: 2.0,
             channels: 2,
+            streams: (0, 0),
             annotations: 0,
             grids,
             warnings: Vec::new(),
