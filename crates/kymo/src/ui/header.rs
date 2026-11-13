@@ -386,6 +386,13 @@ const LIST_MIN_UNIT_EMS: f32 = 4.0;
 /// Gap between the channel list's columns, in points.
 const LIST_GAP: f32 = 8.0;
 
+/// Width of the grip at a row's left that drags it, and the gap after it, in points.
+const GRIP_WIDTH: f32 = 6.0;
+const GRIP_GAP: f32 = 4.0;
+
+/// Width of a stream row's disclosure chevron, in points.
+const CHEVRON_WIDTH: f32 = 10.0;
+
 /// Widths of the channel list's text columns, fitting every channel's entry, so they stay
 /// put while the list scrolls (only the rows in view are drawn).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -619,18 +626,19 @@ fn channel_list(
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // Grouped, a channel's checkbox lines up with its stream's, past the disclosure arrow.
-    let indent = if grouped {
-        ui.spacing().icon_width + gap
-    } else {
-        0.0
-    };
+    // Grouped, a channel's checkbox lines up with its stream's, past the chevron.
+    let indent = if grouped { CHEVRON_WIDTH + gap } else { 0.0 };
     // The width of a row's checkbox and Bad toggle with the gaps beside them (and the
     // indent), as the last frame laid them out (a guess before).
     let fixed_key = Id::unique("kymo channel list fixed width");
-    let fixed = ui
-        .data(|d| d.get_temp::<f32>(fixed_key))
-        .unwrap_or(indent + ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap);
+    let fixed = ui.data(|d| d.get_temp::<f32>(fixed_key)).unwrap_or(
+        GRIP_WIDTH
+            + GRIP_GAP
+            + indent
+            + ui.spacing().interact_size.x
+            + ui.spacing().icon_width
+            + 3.0 * gap,
+    );
     let mut measured = None;
     let mut moved = None;
     from_top(ui, "channels", recording, ScrollArea::vertical())
@@ -676,19 +684,24 @@ fn channel_list(
                 let id = match items[i] {
                     Item::Stream(s) => {
                         let open = !closed.contains(&s);
+                        let name = stream_name(&streams[s]);
+                        grip(ui, rect, &name, Drag::Stream(s));
                         if stream_row(ui, document, s, open, view, row_response) {
                             toggled = Some(s);
                         }
                         continue;
                     }
                     Item::NotShown(s) => {
+                        // In line with the streams' rows, past where their grips are.
+                        ui.add_space(GRIP_WIDTH + GRIP_GAP);
                         not_shown_row(ui, &streams[s], row_response);
                         continue;
                     }
                     Item::Channel(id, _) => id,
                 };
-                ui.add_space(indent);
                 let channel = rec.channel(id);
+                grip(ui, rect, &channel.name, Drag::Channel(id));
+                ui.add_space(indent);
                 let name = &channel.name;
                 let grid = rec.grid(channel.grid);
                 let (unit, _) = display_unit(channel);
@@ -728,12 +741,10 @@ fn channel_list(
                 };
                 let text = short_name.as_deref().unwrap_or(name);
                 let label = Label::new(RichText::new(text).color(color))
-                    .sense(Sense::click_and_drag())
+                    .sense(Sense::click())
+                    .selectable(false)
                     .extend();
                 let mut response = cell(ui, fit.name, left, label);
-                if response.drag_started() {
-                    DragAndDrop::set_payload(ui.ctx(), Drag::Channel(id));
-                }
                 if short_name.is_some() {
                     accessible_text(ui, &response, name.clone());
                 }
@@ -768,9 +779,14 @@ fn channel_list(
                 // points, so positions rounded to pixels don't change it from frame to frame.
                 measured = Some((ui.cursor().left() - rect.left() - fit.name - gap).ceil());
 
-                let weak = |text: &str| Label::new(RichText::new(text).weak()).extend();
-                // Labels are selectable, so they hide the row from the pointer: each cell
-                // shows the row's whole text too.
+                // Not selectable: a drag from a grip would select the text it passes.
+                let weak = |text: &str| {
+                    Label::new(RichText::new(text).weak())
+                        .selectable(false)
+                        .extend()
+                };
+                // Each cell shows the row's whole text too, as the name hides the row from
+                // the pointer.
                 let mut cells = vec![row_response];
                 if fit.kind {
                     cells.push(cell(ui, columns.kind, left, weak(kind_name(channel.kind))));
@@ -830,7 +846,64 @@ fn channel_list(
     }
 }
 
-/// What is dragged in the channel list: a channel by its name, or a stream by its name.
+/// The grip at the left of the row in `row`, which drags `drag` (`name`'s row): six dots
+/// while the pointer is over the row (and no other row is dragged) or while it is dragged,
+/// a grab cursor and "Drag to Reorder" over the grip.
+fn grip(ui: &mut Ui, row: egui::Rect, name: &str, drag: Drag) {
+    let (rect, response) = ui.allocate_exact_size(vec2(GRIP_WIDTH, row.height()), Sense::drag());
+    ui.add_space(GRIP_GAP - ui.spacing().item_spacing.x);
+    accessible_label(ui, &response, format!("Move {name}"));
+    let dragged = DragAndDrop::payload::<Drag>(ui.ctx()).map(|d| *d);
+    if dragged == Some(drag) || (dragged.is_none() && ui.rect_contains_pointer(row)) {
+        let color = if response.hovered() || dragged.is_some() {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        for (x, y) in [
+            (-1.0, -1.0),
+            (1.0, -1.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            (-1.0, 1.0),
+            (1.0, 1.0),
+        ] {
+            let at = rect.center() + vec2(x * 1.5, y * 3.5);
+            ui.painter().circle_filled(at, GRIP_DOT, color);
+        }
+    }
+    let response = response
+        .on_hover_cursor(CursorIcon::Grab)
+        .on_hover_text("Drag to Reorder");
+    if response.drag_started() {
+        DragAndDrop::set_payload(ui.ctx(), drag);
+    }
+}
+
+/// Radius of a grip's dots, in points.
+const GRIP_DOT: f32 = 1.1;
+
+/// A disclosure chevron centered on `center`, pointing right (closed) or down (open), as
+/// outline views draw them.
+fn chevron(painter: &egui::Painter, center: egui::Pos2, open: bool, color: Color32) {
+    let s = 3.0;
+    let points = if open {
+        vec![
+            center + vec2(-s, -s / 2.0),
+            center + vec2(0.0, s / 2.0),
+            center + vec2(s, -s / 2.0),
+        ]
+    } else {
+        vec![
+            center + vec2(-s / 2.0, -s),
+            center + vec2(s / 2.0, 0.0),
+            center + vec2(-s / 2.0, s),
+        ]
+    };
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
+}
+
+/// What is dragged in the channel list, by its grip: a channel, or a stream.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag {
     Channel(ChannelId),
@@ -957,10 +1030,14 @@ fn stream_row(
     let grid = rec.grid(rec.channel(ids[0]).grid);
     let (shown, all) = view.stream_shown(s);
     let row_height = row.rect.height();
-    let icon = ui.spacing().icon_width;
 
-    let (_, arrow) = ui.allocate_exact_size(vec2(icon, row_height), Sense::click());
-    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &arrow);
+    let (rect, arrow) = ui.allocate_exact_size(vec2(CHEVRON_WIDTH, row_height), Sense::click());
+    let color = if arrow.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    chevron(ui.painter(), rect.center(), open, color);
     let verb = if open { "Collapse" } else { "Expand" };
     accessible_label(ui, &arrow, format!("{verb} {name}"));
     let arrow = arrow.on_hover_cursor(CursorIcon::PointingHand);
@@ -1010,7 +1087,8 @@ fn stream_row(
 
     let (_, rect) = ui.allocate_space(vec2(name_room, row_height));
     let label = Label::new(RichText::new(short.as_deref().unwrap_or(&name)).strong())
-        .sense(Sense::click_and_drag())
+        .sense(Sense::click())
+        .selectable(false)
         .extend();
     let mut response = ui
         .new_child(
@@ -1019,9 +1097,6 @@ fn stream_row(
                 .layout(Layout::left_to_right(Align::Center)),
         )
         .add(label);
-    if response.drag_started() {
-        DragAndDrop::set_payload(ui.ctx(), Drag::Stream(s));
-    }
     if short.is_some() {
         accessible_text(ui, &response, name.clone());
     }
@@ -1040,8 +1115,12 @@ fn stream_row(
     } else {
         response.on_hover_text(&full);
     }
-    let weak = |text: &str| Label::new(RichText::new(text).weak()).extend();
-    // Labels hide the row from the pointer: each shows the row's whole text too.
+    let weak = |text: &str| {
+        Label::new(RichText::new(text).weak())
+            .selectable(false)
+            .extend()
+    };
+    // The name hides the row from the pointer: each label shows the row's whole text too.
     let mut cells = vec![row];
     if show_kind {
         cells.push(ui.add(weak(kind)));
@@ -1067,13 +1146,16 @@ fn not_shown_row(ui: &mut Ui, stream: &Stream, row: Response) {
         return;
     };
     let name = stream_name(stream);
-    let icon = ui.spacing().icon_width;
     let height = row.rect.height();
-    // Where a stream's arrow and checkbox are.
-    ui.allocate_exact_size(vec2(icon, height), Sense::hover());
+    // Where a stream's chevron and checkbox are.
+    ui.allocate_exact_size(vec2(CHEVRON_WIDTH, height), Sense::hover());
     ui.add_visible(false, Checkbox::without_text(&mut false));
     let hover = format!("{name} isn't shown: {reason}");
-    let weak = |text: &str| Label::new(RichText::new(text).weak()).truncate();
+    let weak = |text: &str| {
+        Label::new(RichText::new(text).weak())
+            .selectable(false)
+            .truncate()
+    };
     let mut cells = vec![row, ui.add(weak(&name))];
     let kind = stream.kind.trim();
     if !kind.is_empty() {

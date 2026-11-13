@@ -5156,10 +5156,18 @@ fn name_rect(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Rect {
         .unwrap()
 }
 
-/// Drags the sidebar label `from` to just above (or with `below`, just below) the label
-/// `to`'s middle.
+/// Where the grip of the row of `name` (a channel or stream) is.
+fn grip_at(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Pos2 {
+    harness
+        .get_by_label(&format!("Move {name}"))
+        .rect()
+        .center()
+}
+
+/// Drags the grip of the sidebar row `from` to just above (or with `below`, just below)
+/// the label `to`'s middle.
 fn drag_label(harness: &mut Harness<'_, KymoApp>, from: &str, to: &str, below: bool) {
-    let a = name_rect(harness, from).center();
+    let a = grip_at(harness, from);
     let b = name_rect(harness, to);
     let y = if below {
         b.center().y + 3.0
@@ -5168,10 +5176,20 @@ fn drag_label(harness: &mut Harness<'_, KymoApp>, from: &str, to: &str, below: b
     };
     drag(harness, a, egui::pos2(b.center().x, y));
     harness.run_steps(2);
+    assert!(!has_selection(harness), "text selected dragging {from}");
 }
 
-/// Channels move by dragging their names in the sidebar, in any recording; the traces
-/// follow; View → Channel Order sorts them by type or puts them back in file order.
+/// Whether some label text is selected.
+fn has_selection(harness: &Harness<'_, KymoApp>) -> bool {
+    let selection = harness
+        .ctx
+        .plugin::<egui::text_selection::LabelSelectionState>();
+    selection.lock().has_selection()
+}
+
+/// Channels move by dragging the grip that shows at the left of their row in the sidebar on
+/// hover, in any recording; the traces follow; View → Channel Order sorts them by type or
+/// puts them back in file order.
 #[test]
 fn dragging_names_reorders_the_channels() {
     // A1, A2 (EEG), ECG, EOG L, Status: not in the types' order.
@@ -5188,11 +5206,30 @@ fn dragging_names_reorders_the_channels() {
     // The list follows: ECG's row is above A1's.
     let y = |h: &Harness<'_, KymoApp>, label: &str| name_rect(h, label).top();
     assert!(y(&harness, "ECG") < y(&harness, "A1"));
+    // Dragging a name moves nothing, and selects no text on the way.
+    let (a, b) = (
+        name_rect(&harness, "A2").center(),
+        name_rect(&harness, "Status").center(),
+    );
+    drag(&mut harness, a, b);
+    harness.run_steps(2);
+    assert_eq!(order(&harness), [2, 0, 1, 3, 4]);
+    assert!(!has_selection(&harness));
+    // Nor does a drag from a row's gray text.
+    let unit = harness
+        .query_all_by_role_and_label(egui::accesskit::Role::Label, "\u{b5}V")
+        .next()
+        .unwrap()
+        .rect()
+        .center();
+    drag(&mut harness, unit, b);
+    harness.run_steps(2);
+    assert!(!has_selection(&harness));
     drag_label(&mut harness, "A1", "Status", true);
     assert_eq!(order(&harness), [2, 1, 3, 4, 0]);
 
     // Escape cancels a drag.
-    let a = name_rect(&harness, "A2").center();
+    let a = grip_at(&harness, "A2");
     let b = name_rect(&harness, "ECG").center();
     hover(&mut harness, a);
     harness.drag_at(a);
@@ -5231,6 +5268,57 @@ fn dragging_names_reorders_the_channels() {
     assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
 }
 
+/// How many grip dots are painted.
+fn grip_dots(harness: &Harness<'_, KymoApp>) -> usize {
+    fn count(shape: &egui::Shape) -> usize {
+        match shape {
+            egui::Shape::Circle(c) if (c.radius - 1.1).abs() < 1e-4 => 1,
+            egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+            _ => 0,
+        }
+    }
+    harness
+        .output()
+        .shapes
+        .iter()
+        .map(|c| count(&c.shape))
+        .sum()
+}
+
+/// A row's grip shows while the pointer is over the row, with a grab cursor and what it
+/// does over the grip itself; a stream's chevron is small.
+#[test]
+fn grips_show_on_hover() {
+    let file = streams_xdf();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    hover(&mut harness, egui::pos2(900.0, 400.0));
+    assert_eq!(grip_dots(&harness), 0);
+    let cz = name_rect(&harness, "Cz").center();
+    hover(&mut harness, cz);
+    assert_eq!(grip_dots(&harness), 6);
+    let amp = name_rect(&harness, "Amp").center();
+    hover(&mut harness, amp);
+    assert_eq!(grip_dots(&harness), 6);
+    let grip = grip_at(&harness, "Cz");
+    hover(&mut harness, grip);
+    assert_eq!(grip_dots(&harness), 6);
+    assert_eq!(cursor(&harness), egui::CursorIcon::Grab);
+    assert!(tooltip(&mut harness, "Drag to Reorder"));
+    // The grips are left of the checkboxes, the chevron between a stream's.
+    assert!(grip.x < harness.get_by_label("Show Cz").rect().left());
+    let chevron = harness.get_by_label("Collapse Amp").rect();
+    assert!(chevron.width() <= 10.0, "{chevron:?}");
+    assert!(grip_at(&harness, "Amp").x < chevron.left());
+    // Rows of a recording without streams have them too.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let a1 = grip_at(&harness, "A1");
+    hover(&mut harness, a1);
+    assert_eq!(grip_dots(&harness), 6);
+}
+
 /// Where the drop line is drawn: the y of the horizontal line in the selection color.
 fn drop_line(harness: &Harness<'_, KymoApp>) -> Option<f32> {
     let color = harness.ctx.global_style().visuals.selection.bg_fill;
@@ -5252,10 +5340,10 @@ fn drop_line(harness: &Harness<'_, KymoApp>) -> Option<f32> {
     y
 }
 
-/// Presses on the sidebar label `from` and moves to just above the label `to`'s middle,
+/// Presses on the grip of the sidebar row `from` and moves to just above the label `to`'s middle,
 /// without letting go.
 fn hold_over(harness: &mut Harness<'_, KymoApp>, from: &str, to: &str) -> egui::Pos2 {
-    let a = name_rect(harness, from).center();
+    let a = grip_at(harness, from);
     let b = name_rect(harness, to);
     let to = egui::pos2(b.center().x, b.center().y - 3.0);
     hover(harness, a);
@@ -5327,7 +5415,7 @@ fn a_dragged_name_scrolls_the_list_at_its_edge() {
     let mut harness = window(file.path());
     ready(&mut harness);
     let channels = viewer(&harness).document().recording.channels().len();
-    let a = name_rect(&harness, "A1").center();
+    let a = grip_at(&harness, "A1");
     // The lowest row in view.
     let bottom = harness
         .query_all_by_role(egui::accesskit::Role::Label)
