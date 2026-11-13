@@ -1250,10 +1250,18 @@ fn the_channel_list_fits_its_width() {
     assert!(harness.query_by_label_contains("both eyes\n").is_none());
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
-    // Default: the unit and then the names narrow.
+    // The default width, plus the room the rows under a stream are indented by beyond
+    // the stream's checkbox (a checkbox and a gap): the unit and then the names narrow.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
+    let default = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    let level = harness
+        .get_by_label("Show POR X - (Point of regard), left eye")
+        .rect()
+        .left()
+        - harness.get_by_label("Show Amp").rect().left();
+    sidebar_to(&mut harness, default + level);
     let por = row_of(&harness, "POR X - (Point of regard), left eye");
     assert!(in_row(&harness, por, "Misc"));
     assert!(!in_row(&harness, por, "100 Hz"));
@@ -5107,9 +5115,14 @@ fn several_streams_group_the_channel_list() {
     harness.get_by_label("1 \u{b7} 4 Hz");
     assert!(harness.query_by_label("10 Hz").is_none());
     assert_eq!(toggled(&harness, Role::CheckBox, "Show Amp"), Toggled::True);
-    // The channels' boxes line up with their stream's, past its arrow.
+    // The channels' boxes are a level in, lined up with their stream's name.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    assert_eq!(left(&harness, "Show Fz"), left(&harness, "Show Amp"));
+    let amp = harness
+        .get_by_role_and_label(Role::Label, "Amp")
+        .rect()
+        .left();
+    assert_eq!(left(&harness, "Show Fz"), amp);
+    assert!(left(&harness, "Show Amp") < amp);
     assert!(left(&harness, "Collapse Amp") < left(&harness, "Show Amp"));
 
     // A stream's box hides and shows its channels; mixed while some are shown.
@@ -5560,10 +5573,13 @@ fn several_annotation_streams_group_the_legend() {
     for pair in order.windows(2) {
         assert!(top(&harness, pair[0]) < top(&harness, pair[1]), "{pair:?}");
     }
-    assert_eq!(
-        left(&harness, "Show go in Keyboard"),
-        left(&harness, "Show Keyboard")
-    );
+    // A level in, lined up with the stream's name.
+    let name = harness
+        .get_by_role_and_label(Role::Label, "Keyboard")
+        .rect()
+        .left();
+    assert_eq!(left(&harness, "Show go in Keyboard"), name);
+    assert!(left(&harness, "Show Keyboard") < name);
     assert!(left(&harness, "Collapse Keyboard") < left(&harness, "Show Keyboard"));
     let lines = |h: &Harness<'_, KymoApp>| viewer(h).marks().lines.len();
     assert_eq!(lines(&harness), 5);

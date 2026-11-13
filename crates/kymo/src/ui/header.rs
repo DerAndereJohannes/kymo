@@ -367,8 +367,10 @@ fn legend_list(
     } else {
         rows.extend(legend.entries().map(|e| LegendRow::Entry(e.clone())));
     }
+    // Grouped, a description's checkbox lines up with its stream's name.
+    let gap = ui.spacing().item_spacing.x;
     let indent = if grouped {
-        CHEVRON_WIDTH + ui.spacing().item_spacing.x
+        CHEVRON_WIDTH + gap + checkbox_width(ui) + gap
     } else {
         0.0
     };
@@ -466,6 +468,23 @@ fn legend_list(
     }
 }
 
+/// How wide a checkbox without text is, as a stream's row last laid one out (a guess
+/// before): rows under a stream are indented by it, so their checkboxes line up with the
+/// stream's name, a level in.
+fn checkbox_width(ui: &Ui) -> f32 {
+    ui.data(|d| d.get_temp(checkbox_width_id()))
+        .unwrap_or(ui.spacing().interact_size.y)
+}
+
+/// Keeps `checkbox`'s width for [`checkbox_width`].
+fn note_checkbox_width(ui: &Ui, checkbox: &Response) {
+    ui.data_mut(|d| d.insert_temp(checkbox_width_id(), checkbox.rect.width()));
+}
+
+fn checkbox_width_id() -> Id {
+    Id::unique("kymo stream checkbox width")
+}
+
 /// A row of the annotation legend.
 enum LegendRow {
     /// A stream's row (`None`: annotations without a stream, "Added").
@@ -511,6 +530,7 @@ fn legend_stream_row(row: &mut Ui, legend: &mut Legend, group: LegendGroup<'_>) 
         let mut checked = shown == all;
         let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
         let response = ui.add(checkbox);
+        note_checkbox_width(ui, &response);
         accessible_label(ui, &response, format!("Show {name}"));
         if response.changed() {
             legend.set_stream_shown(stream, checked);
@@ -780,8 +800,12 @@ fn channel_list(
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
-    // Grouped, a channel's checkbox lines up with its stream's, past the chevron.
-    let indent = if grouped { CHEVRON_WIDTH + gap } else { 0.0 };
+    // Grouped, a channel's checkbox lines up with its stream's name, a level in.
+    let indent = if grouped {
+        CHEVRON_WIDTH + gap + checkbox_width(ui) + gap
+    } else {
+        0.0
+    };
     // The width of a row's checkbox and Bad toggle with the gaps beside them (and the
     // indent), as the last frame laid them out (a guess before).
     let fixed_key = Id::unique("kymo channel list fixed width");
@@ -1200,6 +1224,7 @@ fn stream_row(
     let mut checked = shown == all;
     let checkbox = Checkbox::without_text(&mut checked).indeterminate(0 < shown && shown < all);
     let response = ui.add(checkbox);
+    note_checkbox_width(ui, &response);
     accessible_label(ui, &response, format!("Show {name}"));
     if response.changed() {
         view.set_stream_shown(s, checked);
