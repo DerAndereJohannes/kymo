@@ -3,11 +3,11 @@
 use std::ops::Range;
 
 use kymo::action::{Action, Gesture};
-use kymo::view::{Area, DEFAULT_ROWS, KINDS, ViewState};
+use kymo::view::{Area, ChannelOrder, DEFAULT_ROWS, KINDS, ViewState, kind_index};
 use kymo_core::tile::{Direction, prefetch, tiles_for_view};
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
-    Recording, SampleType, SamplesMut, Timebase, Unit,
+    Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
 };
 use proptest::prelude::*;
 
@@ -29,6 +29,12 @@ impl BlockReader for NoReader {
 /// `eeg` EEG channels in µV at 1000 Hz, plus an EOG channel in mV and a stim channel at
 /// 250 Hz, over `seconds`.
 pub fn recording(eeg: u32, seconds: u64) -> Recording {
+    recording_with(eeg, seconds, false)
+}
+
+/// As [`recording`], with streams if `streams`: the first half of the EEG channels (at
+/// least one), an annotation stream, the other half (if any), then EOG and stim.
+fn recording_with(eeg: u32, seconds: u64, streams: bool) -> Recording {
     let mut channels: Vec<Channel> = (0..eeg)
         .map(|c| {
             let mut ch = Channel::new(format!("EEG {c}"), GridId(0));
@@ -74,7 +80,11 @@ pub fn recording(eeg: u32, seconds: u64) -> Recording {
             grids,
             extra: vec![],
             bad_channels: Vec::new(),
-            streams: Vec::new(),
+            streams: if streams {
+                eeg_streams(eeg)
+            } else {
+                Vec::new()
+            },
         },
         annotations: vec![],
         warnings: vec![],
@@ -82,6 +92,26 @@ pub fn recording(eeg: u32, seconds: u64) -> Recording {
         reader: Box::new(NoReader),
     };
     Recording::new(opened).unwrap().0
+}
+
+fn eeg_streams(eeg: u32) -> Vec<Stream> {
+    let stream = |name: &str, content| Stream {
+        id: 0,
+        name: name.to_owned(),
+        kind: String::new(),
+        content,
+    };
+    let channels = |r: Range<u32>| StreamContent::Channels(r.map(ChannelId).collect());
+    let half = eeg.div_ceil(2);
+    let mut streams = vec![
+        stream("EEG 1", channels(0..half)),
+        stream("Markers", StreamContent::Annotations(3)),
+    ];
+    if half < eeg {
+        streams.push(stream("EEG 2", channels(half..eeg)));
+    }
+    streams.push(stream("Body", channels(eeg..eeg + 2)));
+    streams
 }
 
 /// 30 EEG channels (32 rows) over 10 minutes.
@@ -376,6 +406,95 @@ fn hidden_channels_lose_their_rows_and_the_top_channel_stays_first() {
 }
 
 #[test]
+fn channels_move_anywhere_without_streams() {
+    let (_, mut view) = state();
+    // The stim channel to the top, then EOG above it.
+    assert!(view.move_channel(ChannelId(31), Some(ChannelId(0))));
+    assert!(view.move_channel(ChannelId(30), Some(ChannelId(31))));
+    assert_eq!(view.order()[..3], ids(&[30, 31, 0]));
+    assert_eq!(view.row_of(ChannelId(30)), Some(0));
+    assert_eq!(view.row_of(ChannelId(0)), Some(2));
+    assert_eq!(view.visible_channels()[..3], ids(&[30, 31, 0]));
+    // To the end, and before itself (nothing to do).
+    assert!(view.move_channel(ChannelId(30), None));
+    assert!(view.move_channel(ChannelId(0), Some(ChannelId(0))));
+    assert_eq!(view.order()[..2], ids(&[31, 0]));
+    assert_eq!(view.order()[31], ChannelId(30));
+    // Unknown channels move nothing.
+    assert!(!view.move_channel(ChannelId(32), None));
+    assert!(!view.move_channel(ChannelId(1), Some(ChannelId(99))));
+    assert_eq!(view.order()[..2], ids(&[31, 0]));
+
+    // By type: EEG, EOG, stim; then back to file order.
+    view.sort(ChannelOrder::Type);
+    assert_eq!(view.order(), ids(&(0..32).collect::<Vec<_>>()));
+    view.move_channel(ChannelId(5), Some(ChannelId(2)));
+    view.sort(ChannelOrder::File);
+    assert_eq!(view.order(), ids(&(0..32).collect::<Vec<_>>()));
+}
+
+#[test]
+fn channels_stay_within_their_stream_and_streams_move_together() {
+    // Streams: 0 = EEG 0 to 2, 1 = annotations, 2 = EEG 3 to 5, 3 = EOG 6 and stim 7.
+    let rec = recording_with(6, 60, true);
+    let mut view = ViewState::new(&rec);
+    assert!(view.move_channel(ChannelId(2), Some(ChannelId(0))));
+    assert!(view.move_channel(ChannelId(0), None));
+    assert_eq!(view.order(), ids(&[2, 1, 0, 3, 4, 5, 6, 7]));
+    // Not into another stream.
+    assert!(!view.move_channel(ChannelId(0), Some(ChannelId(4))));
+    assert_eq!(view.order(), ids(&[2, 1, 0, 3, 4, 5, 6, 7]));
+
+    assert!(view.move_stream(3, Some(0)));
+    assert_eq!(view.order(), ids(&[6, 7, 2, 1, 0, 3, 4, 5]));
+    assert!(view.move_stream(0, None));
+    assert_eq!(view.order(), ids(&[6, 7, 3, 4, 5, 2, 1, 0]));
+    // Streams without channels don't move, nor do others before them.
+    assert!(!view.move_stream(1, None));
+    assert!(!view.move_stream(0, Some(1)));
+    assert!(!view.move_stream(9, None));
+    assert_eq!(view.order(), ids(&[6, 7, 3, 4, 5, 2, 1, 0]));
+
+    // A hidden channel keeps its place and moves with its stream.
+    view.set_shown(ChannelId(4), false);
+    assert!(view.move_stream(2, None));
+    assert_eq!(view.order(), ids(&[6, 7, 2, 1, 0, 3, 4, 5]));
+    assert_eq!(view.visible_channels(), ids(&[6, 7, 2, 1, 0, 3, 5]));
+    assert_eq!(view.row_of(ChannelId(4)), None);
+    assert_eq!(view.row_of(ChannelId(5)), Some(6));
+
+    // By type within each stream, the streams in their order; then all as in the file.
+    view.move_channel(ChannelId(6), None);
+    view.sort(ChannelOrder::Type);
+    assert_eq!(view.order(), ids(&[6, 7, 0, 1, 2, 3, 4, 5]));
+    view.sort(ChannelOrder::File);
+    assert_eq!(view.order(), ids(&[0, 1, 2, 3, 4, 5, 6, 7]));
+
+    // A stream of one channel: moving it within its stream leaves it where it is.
+    let rec = recording_with(2, 60, true);
+    let mut view = ViewState::new(&rec);
+    assert!(view.move_stream(0, None));
+    assert!(view.move_channel(ChannelId(0), None));
+    assert_eq!(view.order(), ids(&[1, 2, 3, 0]));
+}
+
+#[test]
+fn the_rows_on_screen_stay_while_channels_move() {
+    let (_, mut view) = state();
+    view.set_top(5.0);
+    // The top channel goes to the end: the next one is first.
+    view.move_channel(ChannelId(5), None);
+    assert_eq!(view.top(), 5.0);
+    assert_eq!(view.visible_channels()[..2], ids(&[6, 7]));
+    // One from below goes to the top of the screen.
+    view.move_channel(ChannelId(20), Some(ChannelId(6)));
+    assert_eq!(view.visible_channels()[..2], ids(&[20, 6]));
+    view.sort(ChannelOrder::File);
+    assert_eq!(view.top(), 5.0);
+    assert_eq!(view.visible_channels()[0], ChannelId(5));
+}
+
+#[test]
 fn types_are_shown_and_hidden_together() {
     // 30 EEG channels, then EOG and stim.
     let (_, mut view) = state();
@@ -584,6 +703,9 @@ enum Step {
     Show(u32, bool),
     ShowKind(ChannelKind, bool),
     ScrollTo(u32),
+    MoveChannel(u32, Option<u32>),
+    MoveStream(usize, Option<usize>),
+    Sort(ChannelOrder),
 }
 
 fn steps() -> impl Strategy<Value = Step> {
@@ -614,21 +736,53 @@ fn steps() -> impl Strategy<Value = Step> {
         )
             .prop_map(|(k, on)| Step::ShowKind(k, on)),
         (0u32..45).prop_map(Step::ScrollTo),
+        (0u32..45, proptest::option::of(0u32..45)).prop_map(|(c, b)| Step::MoveChannel(c, b)),
+        (0usize..5, proptest::option::of(0usize..5)).prop_map(|(s, b)| Step::MoveStream(s, b)),
+        proptest::sample::select(vec![ChannelOrder::File, ChannelOrder::Type]).prop_map(Step::Sort),
     ]
+}
+
+/// The stream of each channel of `rec` (all `None` without streams).
+fn streams_of(rec: &Recording) -> Vec<Option<usize>> {
+    let mut of = vec![None; rec.channels().len()];
+    for (s, stream) in rec.streams().iter().enumerate() {
+        if let StreamContent::Channels(channels) = &stream.content {
+            for c in channels {
+                of[c.0 as usize] = Some(s);
+            }
+        }
+    }
+    of
+}
+
+/// `order` without the channels `out` leaves out.
+fn without(order: &[ChannelId], out: impl Fn(ChannelId) -> bool) -> Vec<ChannelId> {
+    order.iter().copied().filter(|&c| !out(c)).collect()
+}
+
+/// The streams of `order`'s runs, top to bottom.
+fn runs(order: &[ChannelId], of: &[Option<usize>]) -> Vec<Option<usize>> {
+    let mut runs: Vec<Option<usize>> = order.iter().map(|c| of[c.0 as usize]).collect();
+    runs.dedup();
+    runs
 }
 
 proptest! {
     #[test]
     fn always_stays_inside_the_recording(
-        shape in (1u32..40, 1u64..700),
+        shape in (1u32..40, 1u64..700, any::<bool>()),
         steps in proptest::collection::vec(steps(), 1..40),
     ) {
-        let rec = recording(shape.0, shape.1);
+        let rec = recording_with(shape.0, shape.1, shape.2);
         let mut view = ViewState::new(&rec);
         let area = Area { width: 1000.0, height: 400.0 };
         let duration = rec.duration();
         let channels = rec.channels().len();
+        let of = streams_of(&rec);
+        let has_channels = |s: usize| of.contains(&Some(s));
         for step in steps {
+            let before = view.order().to_vec();
+            let top = view.top();
             match step {
                 Step::Act(action) => {
                     view.apply(action);
@@ -647,11 +801,79 @@ proptest! {
                         prop_assert!(first == ChannelId(c) || view.visible_rows().end == view.row_count());
                     }
                 }
+                Step::MoveChannel(c, b) => {
+                    let valid = (c as usize) < channels
+                        && b.is_none_or(|b| (b as usize) < channels && of[b as usize] == of[c as usize]);
+                    prop_assert_eq!(view.move_channel(ChannelId(c), b.map(ChannelId)), valid);
+                    let order = view.order();
+                    if valid {
+                        // The others keep their order; the channel is where it was put.
+                        let moved = |x: ChannelId| x == ChannelId(c);
+                        prop_assert_eq!(without(order, moved), without(&before, moved));
+                        let at = order.iter().position(|&x| x == ChannelId(c)).unwrap();
+                        match b {
+                            Some(b) if b != c => prop_assert_eq!(order[at + 1], ChannelId(b)),
+                            Some(_) => prop_assert_eq!(order, &before[..]),
+                            None => prop_assert!(order[at + 1..].iter().all(|x| of[x.0 as usize] != of[c as usize])),
+                        }
+                    } else {
+                        prop_assert_eq!(order, &before[..]);
+                    }
+                    prop_assert_eq!(view.top(), top);
+                }
+                Step::MoveStream(s, b) => {
+                    let valid = has_channels(s) && b.is_none_or(has_channels);
+                    prop_assert_eq!(view.move_stream(s, b), valid);
+                    let order = view.order();
+                    let ours = |x: ChannelId| of[x.0 as usize] == Some(s);
+                    // Each stream keeps its channels' order.
+                    prop_assert_eq!(without(order, |x| !ours(x)), without(&before, |x| !ours(x)));
+                    prop_assert_eq!(without(order, ours), without(&before, ours));
+                    if valid && b != Some(s) {
+                        let runs = runs(order, &of);
+                        let at = runs.iter().position(|&r| r == Some(s)).unwrap();
+                        prop_assert_eq!(runs.get(at + 1).copied().flatten(), b);
+                    } else {
+                        prop_assert_eq!(order, &before[..]);
+                    }
+                    prop_assert_eq!(view.top(), top);
+                }
+                Step::Sort(ChannelOrder::File) => {
+                    view.sort(ChannelOrder::File);
+                    let file: Vec<_> = (0..channels as u32).map(ChannelId).collect();
+                    prop_assert_eq!(view.order(), &file[..]);
+                    prop_assert_eq!(view.top(), top);
+                }
+                Step::Sort(ChannelOrder::Type) => {
+                    view.sort(ChannelOrder::Type);
+                    let order = view.order();
+                    // The streams stay in their order, each by type, then in file order.
+                    prop_assert_eq!(runs(order, &of), runs(&before, &of));
+                    for pair in order.windows(2) {
+                        let key = |c: ChannelId| (kind_index(view.kind_of(c)), c);
+                        if of[pair[0].0 as usize] == of[pair[1].0 as usize] {
+                            prop_assert!(key(pair[0]) < key(pair[1]), "{:?}", order);
+                        }
+                    }
+                    prop_assert_eq!(view.top(), top);
+                }
             }
-            // The rows are the shown channels in file order.
-            let shown: Vec<_> = (0..channels as u32).map(ChannelId).filter(|&c| view.is_shown(c)).collect();
+            // Every channel once, each stream's channels together.
+            let mut sorted = view.order().to_vec();
+            sorted.sort_unstable();
+            prop_assert_eq!(sorted, (0..channels as u32).map(ChannelId).collect::<Vec<_>>());
+            let runs = runs(view.order(), &of);
+            let mut distinct = runs.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            prop_assert_eq!(runs.len(), distinct.len(), "{:?}", view.order());
+            // The rows are the shown channels in that order.
+            let shown: Vec<_> = view.order().iter().copied().filter(|&c| view.is_shown(c)).collect();
             prop_assert_eq!(view.row_count(), shown.len());
             prop_assert_eq!(view.visible_channels(), &shown[view.visible_rows()]);
+            for c in 0..channels as u32 {
+                prop_assert_eq!(view.row_of(ChannelId(c)), shown.iter().position(|&x| x == ChannelId(c)));
+            }
             let rows = shown.len();
             let time = view.time();
             prop_assert!(time.start >= 0.0 && time.end <= duration * (1.0 + 1e-12), "{time:?}");

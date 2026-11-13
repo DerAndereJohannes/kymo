@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use kymo_core::tile::{Direction, SignalVersion, TileKey, View, prefetch, samples_in};
-use kymo_core::{ChannelId, ChannelKind, Recording};
+use kymo_core::{ChannelId, ChannelKind, Recording, StreamContent};
 
 use crate::action::{Action, Gesture};
 
@@ -73,12 +73,43 @@ pub fn kind_index(kind: ChannelKind) -> usize {
         .unwrap_or(KINDS.len() - 1)
 }
 
+/// How [`ViewState::sort`] orders the channels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOrder {
+    /// As in the file, streams too.
+    File,
+    /// By type, in [`KINDS`] order, channels of a type in file order; within each stream,
+    /// the streams staying in their order.
+    Type,
+}
+
+/// Per channel, the index of the recording's stream it belongs to; all `None` without
+/// streams.
+fn stream_of(recording: &Recording) -> Vec<Option<usize>> {
+    let mut of = vec![None; recording.channels().len()];
+    for (s, stream) in recording.streams().iter().enumerate() {
+        if let StreamContent::Channels(channels) = &stream.content {
+            for c in channels {
+                of[c.0 as usize] = Some(s);
+            }
+        }
+    }
+    of
+}
+
 /// The viewer's display state for one recording.
 #[derive(Clone, Debug)]
 pub struct ViewState {
     duration: f64,
     min_span: f64,
-    /// The rows, top to bottom: the shown channels in file order.
+    /// Every channel, top to bottom; a stream's channels stay together.
+    order: Vec<ChannelId>,
+    /// Per channel (by id): its place in `order`.
+    place: Vec<usize>,
+    /// Per channel (by id): the recording's stream it belongs to (its index there), if the
+    /// recording has streams.
+    stream_of: Vec<Option<usize>>,
+    /// The rows, top to bottom: the shown channels in `order`.
     rows_order: Vec<ChannelId>,
     /// Per channel (by id): whether it is hidden.
     hidden: Vec<bool>,
@@ -124,6 +155,9 @@ impl ViewState {
             } else {
                 0.0
             },
+            order: (0..channels.len() as u32).map(ChannelId).collect(),
+            place: (0..channels.len()).collect(),
+            stream_of: stream_of(recording),
             rows_order: (0..channels.len() as u32).map(ChannelId).collect(),
             hidden: vec![false; channels.len()],
             kinds: channels.iter().map(|c| c.kind).collect(),
@@ -189,8 +223,98 @@ impl ViewState {
 
     /// The row a channel is shown in, `None` if it is hidden.
     pub fn row_of(&self, channel: ChannelId) -> Option<usize> {
-        // Rows are in file order.
-        self.rows_order.binary_search(&channel).ok()
+        if !self.is_shown(channel) {
+            return None;
+        }
+        // Rows are in the channels' order.
+        let place = self.place[channel.0 as usize];
+        self.rows_order
+            .binary_search_by_key(&place, |c| self.place[c.0 as usize])
+            .ok()
+    }
+
+    /// Every channel, shown or not, top to bottom.
+    pub fn order(&self) -> &[ChannelId] {
+        &self.order
+    }
+
+    /// Moves a channel to just before `before`, or with `None` to the end of its stream (of
+    /// all channels, if the recording has no streams). A channel stays within its stream:
+    /// returns `false`, changing nothing, for a `before` in another stream, or an unknown
+    /// channel. The rows on screen stay where they are.
+    pub fn move_channel(&mut self, channel: ChannelId, before: Option<ChannelId>) -> bool {
+        let n = self.order.len();
+        let (c, b) = (channel.0 as usize, before.map(|b| b.0 as usize));
+        if c >= n || b.is_some_and(|b| b >= n || self.stream_of[b] != self.stream_of[c]) {
+            return false;
+        }
+        if b == Some(c) {
+            return true;
+        }
+        let stream = self.stream_of[c];
+        self.order.remove(self.place[c]);
+        let at = match b {
+            Some(b) => self.order.iter().position(|&x| x.0 as usize == b),
+            None => self
+                .order
+                .iter()
+                .rposition(|x| self.stream_of[x.0 as usize] == stream)
+                .map(|last| last + 1),
+        };
+        // A stream of one channel has nothing to move past.
+        let at = at.unwrap_or(self.place[c]);
+        self.order.insert(at, channel);
+        self.reordered();
+        true
+    }
+
+    /// Moves a stream's channels (by the stream's index in the recording) to just before
+    /// those of stream `before`, or with `None` to the end. Returns `false`, changing
+    /// nothing, for a stream without channels.
+    pub fn move_stream(&mut self, stream: usize, before: Option<usize>) -> bool {
+        let block = self.block(stream);
+        let target = before.map(|b| self.block(b));
+        if block.is_empty() || target.as_ref().is_some_and(Range::is_empty) {
+            return false;
+        }
+        if before == Some(stream) {
+            return true;
+        }
+        let moved: Vec<ChannelId> = self.order.drain(block).collect();
+        let at = match before {
+            Some(b) => self
+                .order
+                .iter()
+                .position(|x| self.stream_of[x.0 as usize] == Some(b))
+                .unwrap_or(self.order.len()),
+            None => self.order.len(),
+        };
+        self.order.splice(at..at, moved);
+        self.reordered();
+        true
+    }
+
+    /// Puts the channels in file order, or sorts them by type within each stream. The rows
+    /// on screen stay where they are.
+    pub fn sort(&mut self, order: ChannelOrder) {
+        match order {
+            ChannelOrder::File => self.order.sort_unstable(),
+            ChannelOrder::Type => {
+                let mut start = 0;
+                while start < self.order.len() {
+                    let stream = self.stream_of[self.order[start].0 as usize];
+                    let len = self.order[start..]
+                        .iter()
+                        .take_while(|c| self.stream_of[c.0 as usize] == stream)
+                        .count();
+                    let kinds = &self.kinds;
+                    self.order[start..start + len]
+                        .sort_unstable_by_key(|c| (kind_index(kinds[c.0 as usize]), *c));
+                    start += len;
+                }
+            }
+        }
+        self.reordered();
     }
 
     /// The channels on screen, top to bottom.
@@ -564,18 +688,48 @@ impl ViewState {
     fn rebuild_rows(&mut self) {
         let row = self.top.floor();
         let anchor = self.rows_order.get(row as usize).copied();
-        self.rows_order = (0..self.hidden.len() as u32)
-            .map(ChannelId)
-            .filter(|&c| self.is_shown(c))
-            .collect();
+        self.rows_order = self.shown_in_order();
         if let Some(anchor) = anchor {
-            let top = match self.rows_order.binary_search(&anchor) {
+            let place = self.place[anchor.0 as usize];
+            let top = match self
+                .rows_order
+                .binary_search_by_key(&place, |c| self.place[c.0 as usize])
+            {
                 Ok(i) => i as f64 + (self.top - row),
                 Err(i) => i as f64,
             };
             self.top = top;
         }
         self.clamp();
+    }
+
+    /// After the order changed: the places and rows follow it; the rows on screen stay.
+    fn reordered(&mut self) {
+        for (i, c) in self.order.iter().enumerate() {
+            self.place[c.0 as usize] = i;
+        }
+        self.rows_order = self.shown_in_order();
+        self.clamp();
+    }
+
+    fn shown_in_order(&self) -> Vec<ChannelId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|&c| self.is_shown(c))
+            .collect()
+    }
+
+    /// Where a stream's channels are in `order`; empty for a stream without channels.
+    fn block(&self, stream: usize) -> Range<usize> {
+        let ours = |c: &ChannelId| self.stream_of[c.0 as usize] == Some(stream);
+        match (
+            self.order.iter().position(ours),
+            self.order.iter().rposition(ours),
+        ) {
+            (Some(first), Some(last)) => first..last + 1,
+            _ => 0..0,
+        }
     }
 
     fn clamp_span(&mut self) {
