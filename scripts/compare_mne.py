@@ -156,10 +156,10 @@ differs:
   the Muse headband's stray samples in the sub-01 and sub-13 files, 3.4 to 4 s early.
 - Samples before a stream's first time stamp count back from it in Kymo; pyxdf counts
   them on from 0. No file seen has any.
-- Irregular numeric streams with several channels that are not of an event type become
-  channels in Kymo, annotations in mnextend. They are drawn as held values (steps) on
-  their synchronized time stamps, as pyxdf leaves them, which must match within 1 us;
-  a time stamp before the previous one is taken as the previous one. Steps longer than
+- Irregular numeric streams that are not of an event type, with one channel or several,
+  become channels in Kymo, annotations in mnextend. They are drawn as held values
+  (steps) on their synchronized time stamps, as pyxdf leaves them, which must match
+  within 1 us; a time stamp before the previous one is taken as the previous one. Steps longer than
   1 s and 500 median steps (Kymo's median is a histogram's, within 1 %) are gaps, and the
   grid's rate is the average within the segments (pyxdf gives such streams none).
 - Streams that can drop samples are on their synchronized time stamps too, as in pyxdf,
@@ -467,13 +467,12 @@ def xdf_mode(stream):
     if len(stream["time_stamps"]) == 0:
         return "no samples"
     rate = float(xdf_field(info, "nominal_srate"))
-    count = int(xdf_field(info, "channel_count"))
     if xdf_field(info, "channel_format") == "string":
         return "annotations"
     if rate > 0:
         return "channels"
     kind = str(xdf_field(info, "type")).strip().lower()
-    if count > 1 and kind not in XDF_EVENT_TYPES:
+    if kind not in XDF_EVENT_TYPES:
         return "channels"
     return "annotations"
 
@@ -744,7 +743,13 @@ def compare_xdf(path, tmp, header, annotations, windows):
         if bad:
             problems.append(f"{len(bad)} annotations differ, first: {bad[0]}")
     if annotation_ids and shown:
-        modes = {shown[0]: None, **dict.fromkeys(annotation_ids, "annotations")}
+        # mnextend needs a stream as channels: a regular one in its default mode (an
+        # irregular one's default is annotations), else an irregular one resampled.
+        regular = [
+            sid for sid in shown if float(xdf_field(by_id[sid]["info"], "nominal_srate")) > 0
+        ]
+        modes = {regular[0]: None} if regular else {shown[0]: "continuous"}
+        modes.update(dict.fromkeys(annotation_ids, "annotations"))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             raw = mnextend_xdf.read_raw_xdf(str(path), modes, verbose="error")

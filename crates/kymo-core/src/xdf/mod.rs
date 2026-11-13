@@ -7,11 +7,11 @@
 //!
 //! - No resampling: every stream shown as channels keeps its own grid. `t = 0` is the
 //!   earliest first timestamp of these streams.
-//! - Irregular numeric streams with several channels that are not of an event type
-//!   (Marker(s), Event(s), Trigger(s), Stim) are channels on their own synchronized time
-//!   stamps (an irregular time base, drawn as held values), where mnextend makes
-//!   annotations of them. Steps longer than 1 s and 500 median steps are gaps; a time stamp
-//!   before the previous one is taken as the previous one.
+//! - Irregular numeric streams that are not of an event type (Marker(s), Event(s),
+//!   Trigger(s), Stim), with one channel or several, are channels on their own
+//!   synchronized time stamps (an irregular time base, drawn as held values), where
+//!   mnextend makes annotations of them. Steps longer than 1 s and 500 median steps are
+//!   gaps; a time stamp before the previous one is taken as the previous one.
 //! - Streams that can drop samples are on their own synchronized time stamps too, as pyxdf
 //!   leaves them (drawn as lines, gaps at steps longer than 1 s and 2 periods); mnextend
 //!   resamples them.

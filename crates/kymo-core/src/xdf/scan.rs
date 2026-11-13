@@ -99,11 +99,9 @@ pub(crate) struct Info {
 pub(crate) enum Mode {
     /// Numeric at a regular rate: one grid.
     Channels,
-    /// Strings, or numeric at an irregular rate with one channel or of an event type: an
-    /// annotation per sample.
+    /// Strings, or numeric at an irregular rate of an event type: an annotation per sample.
     Annotations,
-    /// Numeric at an irregular rate with several channels, not of an event type: one grid
-    /// on its own timestamps.
+    /// Numeric at an irregular rate, not of an event type: one grid on its own timestamps.
     Irregular,
     /// The header can't be read: why.
     Unreadable(String),
@@ -425,7 +423,7 @@ fn header(stream: &mut Stream, xml_bytes: &[u8], warnings: &mut Vec<String>) {
     stream.mode = match format {
         ValueFormat::String => Mode::Annotations,
         ValueFormat::Numeric(_) if rate > 0.0 => Mode::Channels,
-        ValueFormat::Numeric(_) if count > 1 && !is_event_type(&kind) => Mode::Irregular,
+        ValueFormat::Numeric(_) if !is_event_type(&kind) => Mode::Irregular,
         ValueFormat::Numeric(_) => Mode::Annotations,
     };
     let can_drop = root

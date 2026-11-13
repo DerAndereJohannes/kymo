@@ -250,15 +250,14 @@ fn slots(grid: &kymo_core::Grid) -> Vec<u64> {
 }
 
 /// The annotations kymo should read from `spec`'s marker streams, as (onset, description),
-/// sorted: string texts as they are, numeric ones without NaN values, irregular streams
-/// with several channels left out.
+/// sorted: string texts as they are, numeric ones without NaN values, irregular numeric
+/// streams not of an event type left out.
 fn expected_annotations(spec: &Spec) -> Vec<(f64, String)> {
     // Markers are written at their true times, which synchronization restores.
     let first = timeline(spec).1 - spec.xdf.clock;
     let mut expected = Vec::new();
     for m in &spec.xdf.markers {
-        if let MarkerValues::Numeric(_, n) = m.values
-            && n > 1
+        if let MarkerValues::Numeric(..) = m.values
             && m.rate == 0.0
             && !["markers", "events", "trigger"].contains(&m.kind.to_lowercase().as_str())
         {
@@ -302,14 +301,14 @@ fn same_annotations(spec: &Spec, annotations: &[AnnotationData]) -> bool {
             .all(|(g, e)| (g.0 - e.0).abs() <= tolerance && g.1 == e.1)
 }
 
-/// Marker streams of `spec` that kymo shows as channels: irregular, numeric, with several
-/// channels, not of an event type.
+/// Marker streams of `spec` that kymo shows as channels: irregular, numeric, not of an
+/// event type.
 fn marker_grids(spec: &Spec) -> Vec<&XdfMarkers> {
     spec.xdf
         .markers
         .iter()
         .filter(|m| {
-            matches!(m.values, MarkerValues::Numeric(_, n) if n > 1)
+            matches!(m.values, MarkerValues::Numeric(..))
                 && m.rate == 0.0
                 && ![
                     "marker", "markers", "event", "events", "trigger", "triggers", "stim",
@@ -472,28 +471,13 @@ fn case() -> impl Strategy<Value = Case> {
                 let mut xdf_streams = Vec::new();
                 for (
                     k,
-                    (
-                        format,
-                        spr,
-                        mut triggers,
-                        start,
-                        stamps,
-                        chunk,
-                        varying,
-                        described,
-                        timing,
-                        how,
-                    ),
+                    (format, spr, triggers, start, stamps, chunk, varying, described, timing, how),
                 ) in defs.into_iter().enumerate()
                 {
                     let (rate_error, jitter, gap) = timing;
                     let tdiff = duration / f64::from(spr);
                     let len = length * u64::from(spr);
                     let irregular = how == 1;
-                    // An irregular stream with one channel is annotations.
-                    if irregular && triggers.len() < 2 {
-                        triggers.push(false);
-                    }
                     // A break longer than the threshold: 1 s and 2 samples, or for an
                     // irregular stream 1 s and 500 median steps, which deduced time stamps
                     // (each the previous one) can make up to 5 periods.
@@ -713,8 +697,8 @@ fn presets_open_with_their_channels() {
     let rec = open(TempFile::preset("xdf-events").path());
     let kinds: Vec<ChannelKind> = rec.channels().iter().map(|c| c.kind).collect();
     // A Trigger channel, the channel of a regular Markers stream, and the irregular
-    // "Mouse" pairs, of a type MNE doesn't have.
-    assert_eq!(kinds, [Eeg, Eeg, Eeg, Stim, Stim, Misc, Misc]);
+    // "Ints" and "Mouse" pairs, of types MNE doesn't have.
+    assert_eq!(kinds, [Eeg, Eeg, Eeg, Stim, Stim, Misc, Misc, Misc]);
     assert!(
         rec.channels()
             .iter()
@@ -980,10 +964,11 @@ fn chunks_out_of_place_and_unknown() {
 
 #[test]
 fn streams_kymo_doesnt_show() {
-    // Only a marker stream and an irregular one with one channel: annotations.
+    // Only a string marker stream and an irregular numeric one of an event type:
+    // annotations.
     let mut c = Chunks::new(None);
     c.stream_header(3, &header_xml("Markers", "Markers", 1, 0.0, "string", None));
-    c.stream_header(4, &header_xml("Speed", "Speed", 1, 0.0, "float32", None));
+    c.stream_header(4, &header_xml("Speed", "Events", 1, 0.0, "float32", None));
     c.strings(3, &[(Some(1.0), vec!["x".into()])]);
     c.numeric(4, XdfFormat::F32, &[(Some(1.0), vec![1.0])]);
     match Built::new(&c.bytes).error() {
@@ -1252,8 +1237,8 @@ fn annotations_from_strings_and_numbers() {
                 (Some(6.5), vec![0.1, -2.5e-7]),
             ],
         );
-        // One channel of int64, irregular: any type.
-        c.stream_header(4, &header_xml("Big", "Mocap", 1, 0.0, "int64", None));
+        // One channel of int64, irregular, of an event type.
+        c.stream_header(4, &header_xml("Big", "Trigger", 1, 0.0, "int64", None));
         let mut content = 4u32.to_le_bytes().to_vec();
         content.extend_from_slice(&[1, 1, 8]);
         content.extend_from_slice(&7.0f64.to_le_bytes());
@@ -1434,8 +1419,9 @@ fn marker_streams_of_the_generator() {
     });
     let (rec, annotations) = open_with(TempFile::written(&spec).path());
     assert!(same_annotations(&spec, &annotations));
-    // The EEG, the codes, and the irregular "Mouse" pairs on their own time stamps.
-    assert_eq!(rec.grids().len(), 3);
+    // The EEG, the codes, and the irregular "Ints" and "Mouse" pairs on their own time
+    // stamps.
+    assert_eq!(rec.grids().len(), 4);
     check_grids(&spec, &rec, None);
     check_marker_grids(&spec, &rec);
 }
