@@ -67,6 +67,10 @@ pub enum ModelError {
     },
     #[error("annotation {index}: {reason}")]
     InvalidAnnotation { index: usize, reason: String },
+    #[error("stream {index}: {reason}")]
+    InvalidStream { index: usize, reason: String },
+    #[error("channel {0:?} is in no stream, though the file has streams")]
+    ChannelWithoutStream(ChannelId),
 }
 
 /// A sample read failed.

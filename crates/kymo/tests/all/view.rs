@@ -74,6 +74,7 @@ pub fn recording(eeg: u32, seconds: u64) -> Recording {
             grids,
             extra: vec![],
             bad_channels: Vec::new(),
+            streams: Vec::new(),
         },
         annotations: vec![],
         warnings: vec![],

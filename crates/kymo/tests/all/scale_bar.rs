@@ -58,6 +58,7 @@ fn recording_of(kinds: &[ChannelKind]) -> Recording {
             grids: vec![grid],
             extra: vec![],
             bad_channels: Vec::new(),
+            streams: Vec::new(),
         },
         annotations: vec![],
         warnings: vec![],

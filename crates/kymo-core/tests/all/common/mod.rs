@@ -205,6 +205,7 @@ pub fn shape_recording(grids: &[(f64, f64, u64, usize)]) -> Recording {
             grids: built,
             extra: vec![],
             bad_channels: Vec::new(),
+            streams: Vec::new(),
         },
         annotations: vec![],
         warnings: vec![],

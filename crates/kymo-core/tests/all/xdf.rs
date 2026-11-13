@@ -9,6 +9,7 @@ use crate::common::{TempDir, TempFile};
 use kymo_core::xdf::XdfError;
 use kymo_core::{
     AnnotationData, ChannelId, ChannelKind, GridId, OpenError, Quantity, Recording, SampleType,
+    Stream, StreamContent,
 };
 use kymo_testgen::xdf::{
     Chunks, channel_order, clock_offset_at, header_xml, local_time, offset_times, stream_of,
@@ -255,32 +256,77 @@ fn slots(grid: &kymo_core::Grid) -> Vec<u64> {
 fn expected_annotations(spec: &Spec) -> Vec<(f64, String)> {
     // Markers are written at their true times, which synchronization restores.
     let first = timeline(spec).1 - spec.xdf.clock;
-    let mut expected = Vec::new();
-    for m in &spec.xdf.markers {
-        if let MarkerValues::Numeric(..) = m.values
-            && m.rate == 0.0
-            && !["markers", "events", "trigger"].contains(&m.kind.to_lowercase().as_str())
-        {
-            continue;
-        }
-        for a in &spec.annotations[m.annotations.clone()] {
-            for text in &a.texts {
-                let text = match m.values {
-                    MarkerValues::Strings => text.clone(),
-                    MarkerValues::Numeric(..) => text
-                        .split(',')
-                        .filter(|v| *v != "nan")
-                        .collect::<Vec<_>>()
-                        .join(","),
-                };
-                if !text.is_empty() {
-                    expected.push((a.onset - first, text));
-                }
+    let mut expected: Vec<(f64, String)> = spec
+        .xdf
+        .markers
+        .iter()
+        .filter(|m| !marker_grids(spec).contains(m))
+        .flat_map(|m| marker_annotations(spec, m))
+        .map(|(onset, text)| (onset - first, text))
+        .collect();
+    expected.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    expected
+}
+
+/// The annotations marker stream `m` holds, as kymo reads them if it reads the stream as
+/// annotations: true onset and text, one per non-empty text.
+fn marker_annotations(spec: &Spec, m: &XdfMarkers) -> Vec<(f64, String)> {
+    let mut annotations = Vec::new();
+    for a in &spec.annotations[m.annotations.clone()] {
+        for text in &a.texts {
+            let text = match m.values {
+                MarkerValues::Strings => text.clone(),
+                MarkerValues::Numeric(..) => text
+                    .split(',')
+                    .filter(|v| *v != "nan")
+                    .collect::<Vec<_>>()
+                    .join(","),
+            };
+            if !text.is_empty() {
+                annotations.push((a.onset, text));
             }
         }
     }
-    expected.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-    expected
+    annotations
+}
+
+/// Checks `rec`'s streams against `spec`'s: every stream in id order with its name and
+/// type, the channels of each stream shown as channels (consecutive, in id order), and the
+/// number of annotations of each other marker stream.
+fn check_streams(spec: &Spec, rec: &Recording) {
+    let shown = marker_grids(spec);
+    let mut expected: Vec<(u32, String, String, usize, Option<usize>)> = streams(spec)
+        .iter()
+        .map(|s| (s.id, s.name.clone(), s.kind.clone(), s.channels.len(), None))
+        .chain(spec.xdf.markers.iter().map(|m| {
+            let (channels, annotations) = match m.values {
+                MarkerValues::Numeric(_, n) if shown.contains(&m) => (n, None),
+                _ => (0, Some(marker_annotations(spec, m).len())),
+            };
+            (m.id, m.name.clone(), m.kind.clone(), channels, annotations)
+        }))
+        .collect();
+    expected.sort_by_key(|e| e.0);
+    let mut next = 0;
+    let expected: Vec<Stream> = expected
+        .into_iter()
+        .map(|(id, name, kind, channels, annotations)| {
+            let content = match annotations {
+                Some(n) => StreamContent::Annotations(n),
+                None => {
+                    next += channels as u32;
+                    StreamContent::Channels((next - channels as u32..next).map(ChannelId).collect())
+                }
+            };
+            Stream {
+                id,
+                name,
+                kind,
+                content,
+            }
+        })
+        .collect();
+    assert_eq!(rec.streams(), expected);
 }
 
 fn same_annotations(spec: &Spec, annotations: &[AnnotationData]) -> bool {
@@ -332,6 +378,7 @@ fn check_grids(spec: &Spec, rec: &Recording, reads: Option<&[(usize, Range<u64>)
         .collect();
     ids.sort_unstable();
     assert_eq!(rec.grids().len(), ids.len());
+    check_streams(spec, rec);
     let (expected, _) = timeline(spec);
     let grids = rec
         .grids()
@@ -987,7 +1034,8 @@ fn streams_kymo_doesnt_show() {
         c.stream_header(7, &header_xml("Odd", "EEG", 2, -1.0, "float32", None));
         c.stream_header(8, &header_xml("Empty", "EEG", 2, 10.0, "float32", None));
         c.numeric(8, XdfFormat::F32, &[]);
-        for id in [5, 6, 7, 8] {
+        c.stream_header(9, &header_xml("Quiet", "Markers", 1, 0.0, "string", None));
+        for id in [5, 6, 7, 8, 9] {
             c.footer(id, "<info/>");
         }
     });
@@ -1015,6 +1063,36 @@ fn streams_kymo_doesnt_show() {
     ));
     assert!(extra("stream 8").ends_with("0 samples: no samples"));
     assert_eq!(rec.warnings().len(), 3, "{:?}", rec.warnings());
+    // Every stream is listed, with why it isn't shown.
+    let listed: Vec<(u32, &str, &str, &StreamContent)> = rec
+        .streams()
+        .iter()
+        .map(|s| (s.id, s.name.as_str(), s.kind.as_str(), &s.content))
+        .collect();
+    let not_shown = |reason: &str| StreamContent::NotShown(reason.to_owned());
+    let reason = |id: u32| match &rec.streams()[id as usize - 4].content {
+        StreamContent::NotShown(reason) => reason.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(reason(5).starts_with("its header can't be read"));
+    assert!(reason(6).contains("\"float128\""));
+    assert!(reason(7).contains("rate"));
+    assert_eq!(
+        listed,
+        [
+            (
+                1,
+                "Amp",
+                "EEG",
+                &StreamContent::Channels((0..3).map(ChannelId).collect())
+            ),
+            (5, "", "", &not_shown(&reason(5))),
+            (6, "Wide", "EEG", &not_shown(&reason(6))),
+            (7, "Odd", "EEG", &not_shown(&reason(7))),
+            (8, "Empty", "EEG", &not_shown("it has no samples")),
+            (9, "Quiet", "Markers", &not_shown("it has no samples")),
+        ]
+    );
 
     // Not an XDF file at all, given to the reader.
     let built = Built::new(b"EDF+ or so");

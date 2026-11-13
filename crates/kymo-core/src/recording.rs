@@ -23,6 +23,34 @@ pub struct Header {
     /// Channels the file marks as bad (FIFF); they start out bad in the viewer. The file
     /// stays as it is.
     pub bad_channels: Vec<ChannelId>,
+    /// The file's streams (XDF), in the file's order of stream ids: each a device or program
+    /// with its own channels or annotations. Empty for formats without streams, whose
+    /// channels are in effect one stream. If any, every channel belongs to exactly one, and
+    /// a stream's channels are consecutive.
+    pub streams: Vec<Stream>,
+}
+
+/// A stream of a file that has several (XDF).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stream {
+    /// The file's id for the stream.
+    pub id: u32,
+    /// As the file writes it; may be empty.
+    pub name: String,
+    /// The stream's type as the file writes it ("EEG", "Gaze", "Markers"); may be empty.
+    pub kind: String,
+    pub content: StreamContent,
+}
+
+/// What a stream became.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StreamContent {
+    /// Channels, consecutive and in order.
+    Channels(Vec<ChannelId>),
+    /// This many annotations, as the file had them.
+    Annotations(usize),
+    /// Neither: why, e.g. "it has no samples".
+    NotShown(String),
 }
 
 /// What a reader produces when it opens a file.
@@ -138,6 +166,11 @@ impl Recording {
 
     pub fn extra(&self) -> &[(String, String)] {
         &self.header.extra
+    }
+
+    /// The file's streams; empty for formats without streams.
+    pub fn streams(&self) -> &[Stream] {
+        &self.header.streams
     }
 
     pub fn channels(&self) -> &[Channel] {
@@ -414,7 +447,44 @@ fn validate_header(header: &Header) -> Result<(), ModelError> {
     if let Some(i) = listed.iter().position(|&l| !l) {
         return Err(ModelError::ChannelNotListed(ChannelId(i as u32)));
     }
-    Ok(())
+    validate_streams(&header.streams, channels.len())
+}
+
+/// Every channel in exactly one stream, a stream's channels consecutive, if there are
+/// streams at all.
+fn validate_streams(streams: &[Stream], n_channels: usize) -> Result<(), ModelError> {
+    if streams.is_empty() {
+        return Ok(());
+    }
+    let mut owner: Vec<Option<usize>> = vec![None; n_channels];
+    for (index, stream) in streams.iter().enumerate() {
+        let StreamContent::Channels(channels) = &stream.content else {
+            continue;
+        };
+        let invalid = |reason: String| ModelError::InvalidStream { index, reason };
+        if channels.is_empty() {
+            return Err(invalid("it has no channels".into()));
+        }
+        for (i, &c) in channels.iter().enumerate() {
+            match owner.get(c.0 as usize) {
+                None => return Err(invalid(format!("channel {c:?} does not exist"))),
+                Some(Some(other)) => {
+                    return Err(invalid(format!("channel {c:?} is in stream {other} too")));
+                }
+                Some(None) => {}
+            }
+            if i > 0 && c.0 != channels[i - 1].0 + 1 {
+                return Err(invalid(format!(
+                    "channel {c:?} doesn't follow the one before"
+                )));
+            }
+            owner[c.0 as usize] = Some(index);
+        }
+    }
+    match owner.iter().position(Option::is_none) {
+        Some(i) => Err(ModelError::ChannelWithoutStream(ChannelId(i as u32))),
+        None => Ok(()),
+    }
 }
 
 fn validate_annotations(

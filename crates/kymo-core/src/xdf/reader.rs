@@ -15,7 +15,8 @@ use crate::decode::{ByteOrder, Decoder, frames_into};
 use crate::mapped::{self, map_read_only};
 use crate::{
     AnnotationData, BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, OpenError,
-    Opened, Origin, ReadError, Sample, SampleType, SamplesMut, TimeTable, Timebase, Unit,
+    Opened, Origin, ReadError, Sample, SampleType, SamplesMut, StreamContent, TimeTable, Timebase,
+    Unit,
 };
 
 /// Reads samples straight from the mapped file, chunk by chunk.
@@ -163,6 +164,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let mut grids = Vec::new();
     let mut readers = Vec::new();
     let mut unknown_units: Vec<String> = Vec::new();
+    // Each stream's channels, by its place in `streams`.
+    let mut stream_channels: Vec<Option<Vec<ChannelId>>> = vec![None; streams.len()];
     for (g, &(stream, timing, clock)) in shown.iter().enumerate() {
         let Some(info) = &stream.info else { continue };
         let ValueFormat::Numeric(encoding) = info.format else {
@@ -249,6 +252,9 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 .collect(),
         )
         .map_err(|e| error(e.into()))?;
+        if let Some(place) = streams.iter().position(|s| std::ptr::eq(s, stream)) {
+            stream_channels[place] = Some(grid.channels().to_vec());
+        }
         grids.push(grid);
         readers.push(GridStream {
             decoders,
@@ -265,7 +271,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
 
     // Annotations at their synchronized times (irregular streams aren't dejittered).
     let mut annotations = Vec::new();
-    for (stream, clock) in streams.iter().zip(&clocks) {
+    let mut stream_annotations = vec![0; streams.len()];
+    for ((stream, clock), count) in streams.iter().zip(&clocks).zip(&mut stream_annotations) {
         if stream.mode != Mode::Annotations {
             continue;
         }
@@ -281,7 +288,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 origin: Origin::File,
             })
         }));
-        let lost = stream.events.len() - (annotations.len() - before);
+        *count = annotations.len() - before;
+        let lost = stream.events.len() - *count;
         if lost > 0 {
             warnings.push(format!(
                 "{}: {lost} annotations at times that aren't numbers are left out",
@@ -289,6 +297,30 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             ));
         }
     }
+
+    let stream_list = streams
+        .iter()
+        .zip(stream_channels)
+        .zip(stream_annotations)
+        .map(|((stream, channels), count)| crate::Stream {
+            id: stream.id,
+            name: stream
+                .info
+                .as_ref()
+                .map_or_else(String::new, |i| i.name.clone()),
+            kind: stream
+                .info
+                .as_ref()
+                .map_or_else(String::new, |i| i.kind.clone()),
+            content: match (&stream.mode, channels) {
+                (_, Some(channels)) => StreamContent::Channels(channels),
+                (Mode::Unreadable(reason), None) => StreamContent::NotShown(reason.clone()),
+                (Mode::Annotations, None) if stream.len > 0 => StreamContent::Annotations(count),
+                // Streams of channels are shown whenever they have samples.
+                _ => StreamContent::NotShown("it has no samples".into()),
+            },
+        })
+        .collect();
 
     let start_time = scan
         .datetime
@@ -303,6 +335,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             grids,
             extra,
             bad_channels: Vec::new(),
+            streams: stream_list,
         },
         annotations,
         warnings,

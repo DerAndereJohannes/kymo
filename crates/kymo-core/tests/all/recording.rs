@@ -5,8 +5,9 @@ use std::ops::Range;
 use kymo_core::testing::{self, MemData};
 use kymo_core::{
     AnnotationData, Channel, ChannelId, Grid, GridId, ModelError, Opened, Origin, ReadError,
-    Recording, SampleType, SamplesMut, Timebase,
+    Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase,
 };
+use kymo_testgen::Spec;
 use proptest::prelude::*;
 
 const G0: GridId = GridId(0);
@@ -182,6 +183,80 @@ fn rejects_invalid_annotations() {
             ),
             "{case:?}"
         );
+    }
+}
+
+fn stream(id: u32, content: StreamContent) -> Stream {
+    Stream {
+        id,
+        name: format!("stream {id}"),
+        kind: "EEG".to_owned(),
+        content,
+    }
+}
+
+fn channels(ids: &[u32]) -> StreamContent {
+    StreamContent::Channels(ids.iter().copied().map(ChannelId).collect())
+}
+
+#[test]
+fn streams_hold_every_channel_once_and_in_runs() {
+    let not_shown = || StreamContent::NotShown("it has no samples".into());
+    let valid = vec![
+        stream(4, StreamContent::Annotations(3)),
+        stream(1, channels(&[0, 1])),
+        stream(2, not_shown()),
+        stream(9, channels(&[2])),
+    ];
+    let mut opened = two_grids();
+    opened.header.streams = valid.clone();
+    assert_eq!(recording(opened).streams(), valid);
+
+    let invalid = [
+        (vec![channels(&[0, 1]), channels(&[2, 3])], 1),
+        (vec![channels(&[0, 1]), channels(&[1, 2])], 1),
+        (vec![channels(&[0, 2]), channels(&[1])], 0),
+        (vec![channels(&[1, 0]), channels(&[2])], 0),
+        (vec![channels(&[0, 1, 2]), channels(&[])], 1),
+    ];
+    for (contents, index) in invalid {
+        let mut opened = two_grids();
+        opened.header.streams = contents
+            .iter()
+            .enumerate()
+            .map(|(i, c)| stream(i as u32, c.clone()))
+            .collect();
+        let error = model_error(opened);
+        assert!(
+            matches!(error, ModelError::InvalidStream { index: i, .. } if i == index),
+            "{contents:?}: {error:?}"
+        );
+    }
+    for (contents, missing) in [
+        (vec![channels(&[0, 1]), not_shown()], 2),
+        (vec![StreamContent::Annotations(1)], 0),
+    ] {
+        let mut opened = two_grids();
+        opened.header.streams = contents.into_iter().map(|c| stream(1, c)).collect();
+        assert_eq!(
+            model_error(opened),
+            ModelError::ChannelWithoutStream(ChannelId(missing))
+        );
+    }
+}
+
+#[test]
+fn formats_without_streams_list_none() {
+    for preset in [
+        "edf+c-kinds",
+        "bv-int16-multiplexed",
+        "eeglab-fdt",
+        "gdf2-int32",
+        "fif-float32-meg",
+    ] {
+        let file = common::TempFile::written(&Spec::preset(preset).unwrap());
+        let (rec, _) = Recording::new(kymo_core::open(file.path()).unwrap()).unwrap();
+        assert!(rec.streams().is_empty(), "{preset}");
     }
 }
 

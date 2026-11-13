@@ -141,7 +141,9 @@ FIFF, where Kymo deliberately differs from MNE:
 XDF, which MNE doesn't read: values and timestamps are compared with pyxdf's (load_xdf
 with its defaults: clocks synchronized, resets handled, regular streams dejittered; but
 for the break threshold, see below), stream
-modes with mnextend's stream_modes, annotation texts with mnextend's read_raw_xdf, the
+modes with mnextend's stream_modes, the stream list (every stream in id order with
+pyxdf's name and type, its channels those of its grid, its number of annotations)
+with pyxdf's streams, annotation texts with mnextend's read_raw_xdf, the
 start time with the file header's datetime as mnextend reads it. Where Kymo deliberately
 differs:
 - No resampling: every stream shown as channels is a grid of its own, compared with its
@@ -540,13 +542,28 @@ def compare_xdf(path, tmp, header, annotations, windows):
         str(path), verbose=False, jitter_break_threshold_samples=2
     )
     by_id = {s["info"]["stream_id"]: s for s in streams}
-    kymo_modes = {}
-    for key, value in header["extra"]:
-        if key.startswith("stream "):
-            # "...: channels; effective rate ... Hz, 2 segments, 1 clock reset"
-            tail = value.rsplit(": ", 1)[-1].split("; ")[0].split(", ")[0]
-            mode = "not read" if ", not read: " in value else tail
-            kymo_modes[int(key.split()[1])] = mode
+    # Kymo's streams: what each became, its name and type.
+    kymo_modes, kymo_streams = {}, {}
+    for s in header["streams"]:
+        if "channels" in s:
+            mode = "channels"
+        elif "annotations" in s:
+            mode = "annotations"
+        else:
+            mode = "no samples" if s["not_shown"] == "it has no samples" else "not read"
+        kymo_modes[s["id"]] = mode
+        kymo_streams[s["id"]] = s
+    ids = [s["id"] for s in header["streams"]]
+    if ids != sorted(ids):
+        problems.append(f"streams not in id order: {ids}")
+    for sid, stream in by_id.items():
+        ours = kymo_streams.get(sid)
+        info = stream["info"]
+        theirs = (str(xdf_field(info, "name")), str(xdf_field(info, "type")))
+        if ours is None:
+            problems.append(f"stream {sid} is not listed")
+        elif (ours["name"], ours["kind"]) != theirs:
+            problems.append(f"stream {sid}: {ours['name']!r} ({ours['kind']!r}), pyxdf {theirs}")
 
     # Stream modes, against Kymo's rule and mnextend's defaults.
     for info in mnextend_xdf.resolve_streams(str(path)):
@@ -572,6 +589,8 @@ def compare_xdf(path, tmp, header, annotations, windows):
         stream = by_id[sid]
         info = stream["info"]
         ids = grid["channels"]
+        if kymo_streams[sid]["channels"] != ids:
+            problems.append(f"stream {sid}: channels {kymo_streams[sid]['channels']}, grid {ids}")
         data = np.asarray(stream["time_series"])
         stamps = stream["time_stamps"]
         name = str(xdf_field(info, "name"))
@@ -721,6 +740,7 @@ def compare_xdf(path, tmp, header, annotations, windows):
     for sid in annotation_ids:
         stream = undejittered.get(sid, by_id[sid])
         string = xdf_field(stream["info"], "channel_format") == "string"
+        before = len(expected)
         for t, sample in zip(stream["time_stamps"], stream["time_series"]):
             if string:
                 items = [item for item in sample if item]
@@ -728,6 +748,9 @@ def compare_xdf(path, tmp, header, annotations, windows):
                 values = [str(v) for v in sample if not np.isnan(v)]
                 items = [",".join(values)] if values else []
             expected += [(t - t0, item) for item in items]
+        count = kymo_streams[sid]["annotations"]
+        if count != len(expected) - before:
+            problems.append(f"stream {sid}: {count} annotations, pyxdf {len(expected) - before}")
     # Sorted by onset (to the microsecond, as both are rounded), then text.
     ours = sorted(
         ((a["onset"], a["description"]) for a in annotations),

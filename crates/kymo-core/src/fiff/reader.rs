@@ -261,6 +261,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             grids: vec![grid],
             extra,
             bad_channels,
+            streams: Vec::new(),
         },
         annotations,
         warnings,

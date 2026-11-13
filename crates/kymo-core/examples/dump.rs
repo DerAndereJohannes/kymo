@@ -8,8 +8,9 @@
 //! Writes to OUTDIR:
 //! - `header.json`: format, start time, duration, warnings, source files, channels (with
 //!   their prefilter, trigger mask and whether their changes are events), the ids of the
-//!   channels the file marks as bad, the header's other fields (`extra`, as pairs), and
-//!   grids (rate, start, length, segments, the time base's pieces as [first sample, start,
+//!   channels the file marks as bad, the header's other fields (`extra`, as pairs), the
+//!   streams (id, name, type, and `channels` (ids), `annotations` (how many) or
+//!   `not_shown` (why); none for formats without streams), and grids (rate, start, length, segments, the time base's pieces as [first sample, start,
 //!   rate] (none for an irregular one), whether it is irregular and holds its values,
 //!   sample type, channel ids)
 //! - `annotations.json`: onset, duration, description and channel names of each annotation
@@ -35,7 +36,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use kymo_core::pyramid::Pyramid;
 use kymo_core::stim::{self, EventOptions};
-use kymo_core::{GridId, Recording, SampleType, SamplesMut};
+use kymo_core::{GridId, Recording, SampleType, SamplesMut, StreamContent};
 
 const WINDOWS: u64 = 16;
 
@@ -226,6 +227,27 @@ fn header_json(rec: &Recording) -> String {
         .map(|(k, v)| format!("[{}, {}]", string(k), string(v)))
         .collect();
     let _ = writeln!(j, "  \"extra\": [{}],", extra.join(", "));
+    let streams: Vec<String> = rec
+        .streams()
+        .iter()
+        .map(|s| {
+            let content = match &s.content {
+                StreamContent::Channels(ids) => {
+                    let ids: Vec<String> = ids.iter().map(|c| c.0.to_string()).collect();
+                    format!("\"channels\": [{}]", ids.join(", "))
+                }
+                StreamContent::Annotations(n) => format!("\"annotations\": {n}"),
+                StreamContent::NotShown(reason) => format!("\"not_shown\": {}", string(reason)),
+            };
+            format!(
+                "\n    {{\"id\": {}, \"name\": {}, \"kind\": {}, {content}}}",
+                s.id,
+                string(&s.name),
+                string(&s.kind)
+            )
+        })
+        .collect();
+    let _ = writeln!(j, "  \"streams\": [{}],", streams.join(","));
     j.push_str("  \"channels\": [");
     for (i, c) in rec.channels().iter().enumerate() {
         let sep = if i == 0 { "" } else { "," };

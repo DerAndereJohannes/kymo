@@ -256,6 +256,7 @@ pub fn opened(channels: Vec<Channel>, grids: Vec<Grid>, data: Vec<MemData>) -> O
             grids,
             extra: Vec::new(),
             bad_channels: Vec::new(),
+            streams: Vec::new(),
         },
         annotations: Vec::new(),
         warnings: Vec::new(),
