@@ -121,6 +121,24 @@ pub enum BvrfScaling {
 pub struct BvrfOptions {
     /// Per channel, by index; channels past its end are [`BvrfScaling::Resolution`].
     pub scaling: Vec<BvrfScaling>,
+    /// The `Participants` section's ids; with more than one, the markers have a
+    /// `ParticipantId` column. Empty writes no section.
+    pub participants: Vec<String>,
+    /// Each channel's participant (an index into `participants`), by index; channels past
+    /// its end, and `None`, belong to all participants.
+    pub channel_participants: Vec<Option<usize>>,
+    /// Each annotation's participant and channel, by index; annotations past its end are
+    /// for all participants and channels.
+    pub targets: Vec<BvrfTarget>,
+}
+
+/// Whom a BVRF marker is for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BvrfTarget {
+    /// An index into [`BvrfOptions::participants`]; `None` for all participants.
+    pub participant: Option<usize>,
+    /// A channel's label (of the participant, if any); `None` for all channels.
+    pub channel: Option<String>,
 }
 
 /// The type of FIFF data buffers.
@@ -1140,6 +1158,12 @@ mod presets {
              whose coefficients aren't linear, markers",
         ),
         (
+            "bvrf-participants",
+            "BVRF, float32, 3 participants with 4 channels each (EEG, EOG), interleaved, and \
+             2 channels of all of them at 500 Hz, 1 min, markers for each participant, each \
+             participant's channel and all of them",
+        ),
+        (
             "eeglab-fdt",
             "EEGLAB, samples in a .fdt, 8 channels at 256 Hz (types EEG, EOG, ECG, resp, one \
              MNE lacks, one without), 1 min, string and numeric events, durations, a boundary",
@@ -1251,6 +1275,7 @@ mod presets {
             "bv-float32-multiplexed" => bv_float32_multiplexed(),
             "bvrf-int16" => bvrf_int16(),
             "bvrf-float64" => bvrf_float64(),
+            "bvrf-participants" => bvrf_participants(),
             "eeglab-fdt" => eeglab_fdt(),
             "eeglab-set-single" => eeglab_set_single(),
             "eeglab-set-double" => eeglab_set_double(),
@@ -1611,6 +1636,78 @@ mod presets {
         spec.bvrf.scaling = vec![BvrfScaling::Resolution; 7];
         spec.bvrf.scaling.push(BvrfScaling::Rational);
         spec.seed = 14;
+        spec
+    }
+
+    fn bvrf_participants() -> Spec {
+        let f = Format::Bvrf(BvrfData::Single);
+        let ids = ["P1", "P2", "P3"];
+        // By electrode, as Recorder writes two amplifiers' channels: each participant's
+        // Fp1, then each one's Cz, and so on.
+        let mut channels = Vec::new();
+        let mut owners = Vec::new();
+        for (label, kind) in [("Fp1", "EEG"), ("Cz", "EEG"), ("Pz", "EEG"), ("EOG", "EOG")] {
+            for p in 0..ids.len() {
+                channels.push(ChannelSpec {
+                    kind: kind.into(),
+                    amplitude: if kind == "EOG" { 120.0 } else { EEG_AMPLITUDE },
+                    ..ChannelSpec::eeg(label, 500, f)
+                });
+                owners.push(Some(p));
+            }
+        }
+        // A photo sensor and a GSR sensor of all participants.
+        channels.push(ChannelSpec {
+            kind: "PHOTO".into(),
+            dimension: "mV".into(),
+            prefilter: String::new(),
+            ..ChannelSpec::eeg("Photo_AUX1", 500, f)
+        });
+        channels.push(ChannelSpec {
+            kind: "GSR".into(),
+            dimension: "mV".into(),
+            prefilter: String::new(),
+            ..ChannelSpec::eeg("GSR", 500, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        let mut annotations = bvrf_markers(60, 500);
+        let mut targets = vec![super::BvrfTarget::default(); annotations.len()];
+        for k in 0..36u32 {
+            let p = (k % 3) as usize;
+            let onset = f64::from(k * 800 + 250) / 500.0;
+            let (text, duration, channel) = match k % 4 {
+                0 | 2 => (format!("Response/R{}", 1 + k % 2), None, None),
+                1 => ("Annotation/Eye blink".to_owned(), None, Some("Fp1")),
+                _ => ("Annotation/Movement".to_owned(), Some(0.75), None),
+            };
+            annotations.push(Tal {
+                onset,
+                duration,
+                texts: vec![text],
+            });
+            targets.push(super::BvrfTarget {
+                participant: Some(p),
+                channel: channel.map(str::to_owned),
+            });
+        }
+        // Each participant's Cz at once.
+        annotations.push(Tal {
+            onset: 30.0,
+            duration: None,
+            texts: vec!["Annotation/Artifact".into()],
+        });
+        targets.push(super::BvrfTarget {
+            participant: None,
+            channel: Some("Cz".into()),
+        });
+        spec.annotations = annotations;
+        spec.bvrf.participants = ids.map(str::to_owned).to_vec();
+        spec.bvrf.channel_participants = owners;
+        spec.bvrf.targets = targets;
+        spec.bvrf.scaling = vec![BvrfScaling::Resolution; 12];
+        spec.bvrf.scaling.push(BvrfScaling::Linear(0.001));
+        spec.bvrf.scaling.push(BvrfScaling::Rational);
+        spec.seed = 15;
         spec
     }
 

@@ -706,7 +706,8 @@ fn markers_become_annotations() {
         [
             "1 markers have a StartEndId no other marker has; they are points in time",
             "1 markers without a valid sample are ignored",
-            "1 markers name a channel the header doesn't have; they apply to all channels",
+            "1 markers name a channel the header doesn't have; they apply to all channels (of \
+             their participant, where they have one)",
         ]
     );
     assert_eq!(
@@ -855,4 +856,346 @@ fn data_file_sizes() {
         .unwrap();
         assert_eq!(physical, expected, "{data_type}");
     }
+}
+
+/// Where kymo puts each of `spec`'s channels: its streams (each participant's in their
+/// order, then all participants'), in file order within each; and each channel's stream
+/// (the last for all participants), without streams `None`.
+fn arranged(spec: &Spec) -> (Vec<usize>, Vec<Option<usize>>) {
+    let o = &spec.bvrf;
+    let n = spec.channels.len();
+    if o.participants.len() < 2 {
+        return ((0..n).collect(), vec![None; n]);
+    }
+    let all = o.participants.len();
+    let stream = |c: usize| {
+        o.channel_participants
+            .get(c)
+            .copied()
+            .flatten()
+            .unwrap_or(all)
+    };
+    let order: Vec<usize> = (0..=all)
+        .flat_map(|s| (0..n).filter(move |&c| stream(c) == s))
+        .collect();
+    let streams = order.iter().map(|&c| Some(stream(c))).collect();
+    (order, streams)
+}
+
+fn participants_case() -> impl Strategy<Value = Spec> {
+    (
+        proptest::sample::select(Format::BVRF.to_vec()),
+        0usize..4,
+        proptest::collection::vec(any::<prop::sample::Index>(), 1..9),
+        any::<u64>(),
+    )
+        .prop_map(|(format, participants, owners, seed)| {
+            let n = owners.len();
+            let channel_participants: Vec<Option<usize>> = owners
+                .iter()
+                .map(|o| {
+                    let k = o.index(participants + 1);
+                    (k < participants).then_some(k)
+                })
+                .collect();
+            let channels = (0..n)
+                .map(|i| ChannelSpec::eeg(format!("E{i}"), 10, format))
+                .collect();
+            let mut spec = Spec::new(format, channels, 1.0, 3);
+            spec.seed = seed;
+            spec.spike_every = 7;
+            spec.bvrf.participants = (1..=participants).map(|p| format!("P{p}")).collect();
+            spec.bvrf.channel_participants = channel_participants;
+            spec
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// With several participants, each channel is in its participant's stream (or that of
+    /// all), the streams in order and their channels consecutive, and reads the truth of its
+    /// place in the file.
+    #[test]
+    fn participants_keep_their_channels(spec in participants_case()) {
+        let file = TempFile::written(&spec);
+        let (rec, _) = open(file.path());
+        prop_assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+        let (order, streams) = arranged(&spec);
+        let ids: Vec<ChannelId> = (0..order.len() as u32).map(ChannelId).collect();
+        let got = read_native(&rec, &ids, 0..spec.len(0));
+        let n = spec.len(0) as usize;
+        for (k, &c) in order.iter().enumerate() {
+            let expected = truth(&spec, &[ChannelId(c as u32)], 0..spec.len(0));
+            prop_assert_eq!(&got[k * n..][..n], &expected[..], "channel {}", k);
+            let p = spec.bvrf.channel_participants.get(c).copied().flatten();
+            let label = &spec.channels[c].label;
+            let channel = rec.channel(ChannelId(k as u32));
+            let several = spec.bvrf.participants.len() > 1;
+            match p.filter(|_| several) {
+                Some(p) => {
+                    prop_assert_eq!(&channel.name, &format!("{label} (P{})", p + 1));
+                    prop_assert_eq!(channel.in_stream.as_deref(), Some(label.as_str()));
+                }
+                None => {
+                    prop_assert_eq!(&channel.name, label);
+                    prop_assert_eq!(&channel.in_stream, &None);
+                }
+            }
+            let stream = rec.stream_of(ChannelId(k as u32));
+            let expected = streams[k].map(|s| {
+                rec.streams().iter().position(|st| st.id == s as u32).unwrap()
+            });
+            prop_assert_eq!(stream, expected);
+        }
+    }
+}
+
+/// An annotation's onset, duration, description, channels and stream.
+type Placed = (f64, f64, String, Vec<u32>, Option<usize>);
+
+#[test]
+fn participants_become_streams() {
+    use kymo_core::StreamContent;
+    let spec = Spec::preset("bvrf-participants").unwrap();
+    let file = TempFile::written(&spec);
+    let (rec, annotations) = open(file.path());
+    assert_eq!(
+        rec.warnings(),
+        [
+            "channel \"GSR\": its coefficients aren't linear, so it shows the sensor output in \
+          mV rather than µS"
+        ]
+    );
+    let streams: Vec<(u32, &str, &str, Vec<u32>)> = rec
+        .streams()
+        .iter()
+        .map(|s| {
+            let StreamContent::Channels(ids) = &s.content else {
+                panic!("{s:?}");
+            };
+            (
+                s.id,
+                s.name.as_str(),
+                s.kind.as_str(),
+                ids.iter().map(|c| c.0).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        streams,
+        [
+            (0, "P1", "Participant", vec![0, 1, 2, 3]),
+            (1, "P2", "Participant", vec![4, 5, 6, 7]),
+            (2, "P3", "Participant", vec![8, 9, 10, 11]),
+            (3, "All participants", "", vec![12, 13]),
+        ]
+    );
+    let names: Vec<(&str, Option<&str>)> = rec
+        .channels()
+        .iter()
+        .map(|c| (c.name.as_str(), c.in_stream.as_deref()))
+        .collect();
+    assert_eq!(
+        names[..5],
+        [
+            ("Fp1 (P1)", Some("Fp1")),
+            ("Cz (P1)", Some("Cz")),
+            ("Pz (P1)", Some("Pz")),
+            ("EOG (P1)", Some("EOG")),
+            ("Fp1 (P2)", Some("Fp1")),
+        ]
+    );
+    assert_eq!(names[12..], [("Photo_AUX1", None), ("GSR", None)]);
+    // Interleaved in the file (each participant's Fp1, then each one's Cz, ...), in order here.
+    let (order, _) = arranged(&spec);
+    assert_eq!(order[..5], [0, 3, 6, 9, 1]);
+    let ids: Vec<ChannelId> = (0..14).map(ChannelId).collect();
+    let got = read_native(&rec, &ids, 0..spec.len(0));
+    let expected: Vec<i64> = order
+        .iter()
+        .flat_map(|&c| truth(&spec, &[ChannelId(c as u32)], 0..spec.len(0)))
+        .collect();
+    assert_eq!(got, expected);
+
+    // Each marker in its participant's stream, on its channels; the others in the stream
+    // of all participants.
+    let id_of = |p: usize, label: &str| {
+        let name = format!("{label} (P{})", p + 1);
+        rec.channels().iter().position(|c| c.name == name).unwrap() as u32
+    };
+    let expected: Vec<Placed> = spec
+        .annotations
+        .iter()
+        .enumerate()
+        .map(|(k, a)| {
+            let target = spec.bvrf.targets.get(k).cloned().unwrap_or_default();
+            let (channels, stream) = match (target.participant, target.channel.as_deref()) {
+                (Some(p), Some(label)) => (vec![id_of(p, label)], Some(p)),
+                (Some(p), None) => ((4 * p as u32..4 * p as u32 + 4).collect(), Some(p)),
+                (None, Some(label)) => ((0..3).map(|p| id_of(p, label)).collect(), Some(3)),
+                (None, None) => (vec![], Some(3)),
+            };
+            let duration = a.duration.unwrap_or(0.0);
+            (a.onset, duration, a.texts[0].clone(), channels, stream)
+        })
+        .collect();
+    let mut got: Vec<Placed> = annotations
+        .iter()
+        .map(|a| {
+            (
+                a.onset,
+                a.duration,
+                a.description.clone(),
+                a.channels.iter().map(|c| c.0).collect(),
+                a.stream,
+            )
+        })
+        .collect();
+    let mut expected = expected;
+    let key = |a: &(f64, f64, String, Vec<u32>, Option<usize>)| (a.0.to_bits(), a.2.clone(), a.4);
+    got.sort_by_key(key);
+    expected.sort_by_key(key);
+    assert_eq!(got.len(), expected.len());
+    for (g, e) in got.iter().zip(&expected) {
+        assert!(
+            (g.0 - e.0).abs() < 1e-9 && (g.1 - e.1).abs() < 1e-9,
+            "{g:?} {e:?}"
+        );
+        assert_eq!((&g.2, &g.3, g.4), (&e.2, &e.3, e.4));
+    }
+}
+
+/// A header of single-precision data with these participants and channels.
+fn participants_header(participants: &[&str], channels: &str) -> String {
+    let list: Vec<String> = participants
+        .iter()
+        .map(|p| format!("{{\"Id\": \"{p}\"}}"))
+        .collect();
+    header_with(
+        &format!("\"Participants\": [{}],\r\n", list.join(", ")),
+        &format!("\"Channels\": [{channels}]"),
+        "Single",
+    )
+}
+
+fn of(name: &str, participant: Option<&str>) -> String {
+    match participant {
+        Some(p) => {
+            format!(r#"{{"Name": "{name}", "Type": "EEG", "Unit": "µV", "ParticipantId": "{p}"}}"#)
+        }
+        None => format!(r#"{{"Name": "{name}", "Type": "EEG", "Unit": "µV"}}"#),
+    }
+}
+
+/// Each stream's id, name and what it holds.
+fn streams(rec: &Recording) -> Vec<(u32, String, String)> {
+    rec.streams()
+        .iter()
+        .map(|s| (s.id, s.name.clone(), format!("{:?}", s.content)))
+        .collect()
+}
+
+#[test]
+fn participants_and_their_markers_by_hand() {
+    let data = floats(&[0.0; 3]);
+    // One participant listed: no streams, names as written, a ParticipantId column ignored.
+    let channels = [of("Fz", Some("P1")), of("Cz", Some("P1")), of("Ref", None)].join(",");
+    let text = "Sample\tType\tParticipantId\tChannel\n1\tA\tP1\tCz\n2\tB\tP9\t\n";
+    let w = Written::new(&participants_header(&["P1"], &channels), &data, Some(text));
+    let (rec, annotations) = w.ok();
+    assert!(rec.streams().is_empty());
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+    let names: Vec<&str> = rec.channels().iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Fz", "Cz", "Ref"]);
+    assert_eq!(
+        summary(&annotations),
+        [(0.001, 0.0, "A", vec![1]), (0.002, 0.0, "B", vec![])]
+    );
+
+    // A participant the section doesn't list is one of its own; one without channels holds
+    // its markers alone; one with neither is listed, not shown.
+    let channels = [
+        of("Fz", Some("P1")),
+        of("Fz", Some("X")),
+        of("Fz", Some("P1")),
+    ]
+    .join(",");
+    let text = "Sample\tType\tParticipantId\tChannel\n\
+                1\tOwn\tP1\t\n\
+                2\tTheirs\tP2\t\n\
+                3\tSomeone\tP9\t\n\
+                4\tFz of all\t\tFz\n\
+                5\tMissing channel\tX\tCz\n";
+    let listed = participants_header(&["P1", "P2", "P3"], &channels);
+    let w = Written::new(&listed, &data, Some(text));
+    let (rec, annotations) = w.ok();
+    assert_eq!(
+        streams(&rec),
+        [
+            (
+                0,
+                "P1".into(),
+                "Channels([ChannelId(0), ChannelId(1)])".into()
+            ),
+            (1, "P2".into(), "Annotations(1)".into()),
+            (
+                2,
+                "P3".into(),
+                "NotShown(\"it has no channels or markers\")".into()
+            ),
+            (3, "X".into(), "Channels([ChannelId(2)])".into()),
+            (4, "All participants".into(), "Annotations(2)".into()),
+        ]
+    );
+    let names: Vec<&str> = rec.channels().iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Fz (P1)", "Fz (P1)", "Fz (X)"]);
+    let placed: Vec<(&str, Vec<u32>, Option<usize>)> = annotations
+        .iter()
+        .map(|a| {
+            (
+                a.description.as_str(),
+                a.channels.iter().map(|c| c.0).collect(),
+                a.stream,
+            )
+        })
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            ("Own", vec![0, 1], Some(0)),
+            ("Theirs", vec![], Some(1)),
+            ("Someone", vec![], Some(4)),
+            ("Fz of all", vec![0, 1, 2], Some(4)),
+            ("Missing channel", vec![2], Some(3)),
+        ]
+    );
+    assert_eq!(
+        rec.warnings(),
+        [
+            "channels belong to participants the Participants section doesn't list (X); each \
+             is a participant of its own",
+            "1 markers name a participant the header doesn't have; they apply to all \
+             participants",
+            "1 markers name a channel the header doesn't have; they apply to all channels (of \
+             their participant, where they have one)",
+        ]
+    );
+
+    // Without channels or markers of all participants, there is no stream for them.
+    let channels = [of("Fz", Some("A")), of("Fz", Some("B"))].join(",");
+    let text = "Sample\tType\tParticipantId\n1\tGo\tA\n";
+    let w = Written::new(
+        &participants_header(&["A", "B"], &channels),
+        &data,
+        Some(text),
+    );
+    let (rec, _) = w.ok();
+    let names: Vec<String> = streams(&rec).into_iter().map(|s| s.1).collect();
+    assert_eq!(names, ["A", "B"]);
+    // Participants only on the channels, without a section: streams all the same.
+    let w = Written::new(&header(&channels), &data, Some(text));
+    let (rec, _) = w.ok();
+    let names: Vec<String> = streams(&rec).into_iter().map(|s| s.1).collect();
+    assert_eq!(names, ["A", "B"]);
 }

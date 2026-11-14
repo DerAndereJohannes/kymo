@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use kymo_core::{
     Annotation, AnnotationData, AnnotationId, AnnotationStore, ChannelId, ChannelKind, Origin,
-    Recording, Stream, StreamContent,
+    Recording, StreamContent,
 };
 
 use crate::view::ViewState;
@@ -67,19 +67,31 @@ pub struct Legend {
 }
 
 /// Whether the legend of `recording` groups its descriptions by stream: where more than
-/// one stream holds annotations (an XDF stream of annotations, or one with a stim channel
-/// whose changes are events). This depends on the file only, so adding annotations never
-/// regroups the legend.
-pub fn groups_streams(recording: &Recording) -> bool {
-    let holds = |s: &Stream| match &s.content {
-        StreamContent::Annotations(_) => true,
-        StreamContent::Channels(ids) => ids.iter().any(|&c| {
-            let channel = recording.channel(c);
-            channel.kind == ChannelKind::Stim && channel.events
-        }),
-        StreamContent::NotShown(_) => false,
-    };
-    recording.streams().iter().filter(|s| holds(s)).count() > 1
+/// one stream holds annotations (an XDF stream of annotations, one with a stim channel
+/// whose changes are events, or one the file's annotations in `store` belong to, as a BVRF
+/// participant's markers do). This depends on the file only (annotations added in the
+/// viewer have no stream), so adding annotations never regroups the legend.
+pub fn groups_streams(recording: &Recording, store: &AnnotationStore) -> bool {
+    let mut holds: Vec<bool> = recording
+        .streams()
+        .iter()
+        .map(|s| match &s.content {
+            StreamContent::Annotations(_) => true,
+            StreamContent::Channels(ids) => ids.iter().any(|&c| {
+                let channel = recording.channel(c);
+                channel.kind == ChannelKind::Stim && channel.events
+            }),
+            StreamContent::NotShown(_) => false,
+        })
+        .collect();
+    for a in store.iter() {
+        if a.data.origin == Origin::File
+            && let Some(held) = a.data.stream.and_then(|s| holds.get_mut(s))
+        {
+            *held = true;
+        }
+    }
+    holds.into_iter().filter(|&h| h).count() > 1
 }
 
 impl Legend {

@@ -34,7 +34,8 @@ pub struct AnnotationData {
     pub channels: Vec<ChannelId>,
     pub origin: Origin,
     /// The stream it came from, an index into [`Recording::streams`](crate::Recording::streams):
-    /// an XDF stream of annotations, or the stream of the stim channel it is an event of.
+    /// an XDF stream of annotations, the stream of the stim channel it is an event of, or a
+    /// BVRF participant's (or all participants') stream of a marker.
     /// `None` for annotations added in the viewer (unless loaded with their stream) and
     /// in formats without streams.
     pub stream: Option<usize>,

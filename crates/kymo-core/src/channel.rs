@@ -342,10 +342,12 @@ pub struct Channel {
     /// pyramid build records changes only for those. Off for stim channels a combined one
     /// covers (FIFF's STI001 to STI016 beside STI101), which are still drawn as codes.
     pub events: bool,
-    /// Its name within its stream (XDF), where that is shorter than [`name`](Self::name):
+    /// Its name within its stream, where that is shorter than [`name`](Self::name): in XDF,
     /// the file's label where `name` has its stream's qualifier in front (a label two
     /// streams share), or its number where the file has no label (`name` is then
-    /// `"{stream name}_{n}"`). `None` elsewhere and in formats without streams.
+    /// `"{stream name}_{n}"`); in BVRF, a participant's channel's name without its
+    /// participant (`name` is `"{name} ({participant})"`). `None` elsewhere and in formats
+    /// without streams.
     pub in_stream: Option<String>,
 }
 

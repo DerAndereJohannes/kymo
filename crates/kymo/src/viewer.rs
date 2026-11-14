@@ -248,7 +248,7 @@ impl Viewer {
             summary: document.summary(),
             legend: Legend::new(
                 &document.annotations,
-                annotations::groups_streams(&document.recording),
+                annotations::groups_streams(&document.recording, &document.annotations),
             ),
             view: ViewState::with_default_span(&document.recording, default_span),
             document,

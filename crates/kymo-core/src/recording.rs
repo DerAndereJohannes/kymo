@@ -23,21 +23,23 @@ pub struct Header {
     /// Channels the file marks as bad (FIFF); they start out bad in the viewer. The file
     /// stays as it is.
     pub bad_channels: Vec<ChannelId>,
-    /// The file's streams (XDF), in the file's order of stream ids: each a device or program
-    /// with its own channels or annotations. Empty for formats without streams, whose
+    /// The file's streams, in the file's order of stream ids: each a device or program with
+    /// its own channels or annotations (XDF), or a participant with its channels and markers
+    /// (BVRF, then a stream of those of all participants). Empty for formats without streams, whose
     /// channels are in effect one stream. If any, every channel belongs to exactly one, and
     /// a stream's channels are consecutive.
     pub streams: Vec<Stream>,
 }
 
-/// A stream of a file that has several (XDF).
+/// A stream of a file that has several (XDF; BVRF's participants).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stream {
     /// The file's id for the stream.
     pub id: u32,
     /// As the file writes it; may be empty.
     pub name: String,
-    /// The stream's type as the file writes it ("EEG", "Gaze", "Markers"); may be empty.
+    /// The stream's type as the file writes it ("EEG", "Gaze", "Markers"; "Participant" for
+    /// BVRF's); may be empty.
     pub kind: String,
     pub content: StreamContent,
 }

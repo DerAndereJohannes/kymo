@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
 
+use super::participants::Participants;
 use super::{BvrfError, header, markers};
 use crate::decode::{ByteOrder, Decoder, frames};
 use crate::mapped::{self, map_read_only};
@@ -87,7 +88,14 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         });
     }
     let parsed = header::parse(&json, &mut warnings).map_err(error)?;
-    let mut channels = parsed.channels;
+    let names = parsed.channels.iter().map(|c| c.name.clone()).collect();
+    let participants = Participants::new(
+        &parsed.participants,
+        &parsed.participant,
+        names,
+        &mut warnings,
+    );
+    let mut channels = participants.arrange(parsed.channels);
     let n = channels.len();
 
     let data_path = sibling(path, "bvrd")
@@ -104,15 +112,16 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         ));
     }
 
+    let columns: Vec<usize> = participants.order.iter().map(|&c| c * size).collect();
     let decoders = channels
         .iter_mut()
-        .enumerate()
-        .map(|(c, channel)| {
+        .zip(&columns)
+        .map(|(channel, &column)| {
             let decoder = Decoder::new(parsed.encoding, ByteOrder::Little);
             if !decoder.uses_reference() || channel.kind == ChannelKind::Stim || samples == 0 {
                 return decoder;
             }
-            let first = map.get(c * size..).unwrap_or_default();
+            let first = map.get(column..).unwrap_or_default();
             let decoder = decoder.with_reference(decoder.reference_from(first));
             channel.offset += decoder.reference() * channel.gain;
             decoder
@@ -124,7 +133,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         Some(marker_path) => {
             let bytes = std::fs::read(&marker_path).map_err(io(&marker_path))?;
             let text = utf8(&bytes, "marker file", &mut warnings);
-            markers::parse(&text, parsed.rate, &channels, &mut warnings)
+            markers::parse(&text, parsed.rate, &participants, &mut warnings)
         }
         None => {
             warnings.push(format!(
@@ -135,6 +144,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         }
     };
     extra.extend(markers.utc_offset.map(|o| ("UTC offset".to_owned(), o)));
+    let streams = participants.streams(&markers.annotations);
 
     let grid = Grid::continuous(
         Timebase::Regular {
@@ -154,7 +164,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             grids: vec![grid],
             extra,
             bad_channels: Vec::new(),
-            streams: Vec::new(),
+            streams,
         },
         annotations: markers.annotations,
         warnings,
@@ -163,7 +173,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             map,
             file,
             decoders,
-            columns: (0..n).map(|c| c * size).collect(),
+            columns,
             frame,
             samples,
         }),

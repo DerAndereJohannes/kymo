@@ -198,7 +198,15 @@ deliberately differs:
   compared with the 0 put back.
 - A type without a code or value is the type alone in Kymo ("Reconnection"); pybvrf adds a
   "/". pybvrf's are compared without the lone "/".
+- With several participants, Kymo puts each participant's channels together (a stream's
+  channels are consecutive), in file order within each, then the channels of all of them;
+  pybvrf keeps the file's order, which may interleave them. pybvrf's channels are compared
+  in Kymo's order. A single participant's channels are named as written in Kymo; pybvrf
+  adds " (P1)" where they have a ParticipantId. Its names are compared without it. Which
+  participant and channels a marker is for isn't compared: pybvrf has neither.
 - The start time (Kymo's from the earliest dated marker) isn't compared: pybvrf has none.
+  It is given Kymo's, so that MNE's CSV of the annotations (with --annotations), whose
+  onsets are times of day, means the same in Kymo.
   Channel kinds and filters are not compared either.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
@@ -890,7 +898,7 @@ def compare(path, max_values=None, annotation_files=False):
             elif brainvision:
                 raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
             elif bvrf:
-                raw, coefficients = read_bvrf(path)
+                raw, coefficients = read_bvrf(path, header["start_time"])
             elif eeglab:
                 raw = mne.io.read_raw_eeglab(
                     path, preload=False, verbose="error", uint16_codec="utf-16-le"
@@ -907,6 +915,8 @@ def compare(path, max_values=None, annotation_files=False):
 
         channels = header["channels"]
         names = [c["name"] for c in channels]
+        if bvrf:
+            coefficients = align_bvrf(raw, coefficients, names, notes)
         mne_names = names
         if len(set(names)) < len(names):
             with warnings.catch_warnings():
@@ -933,7 +943,12 @@ def compare(path, max_values=None, annotation_files=False):
                 f"sampling rate: Kymo {fmax} Hz, MNE {raw.info['sfreq']} Hz"
             )
 
-        if header["start_time"] is not None and raw.info["meas_date"] is not None:
+        # BVRF: pybvrf has no start time; its meas_date is Kymo's (see read_bvrf).
+        if (
+            not bvrf
+            and header["start_time"] is not None
+            and raw.info["meas_date"] is not None
+        ):
             date = raw.info["meas_date"].replace(tzinfo=None)
             if gdf:
                 # GDF 2 stores the time in steps of 2**-32 days (about 20 us), which Kymo
@@ -1473,10 +1488,10 @@ def bvrf_coefficients(channel):
     return (1.0, 0.0)
 
 
-def read_bvrf(path):
+def read_bvrf(path, start_time):
     """pybvrf's reading of a BVRF recording, as MNE's Raw (RawBVRF), its values in the
-    resolution's units, with its annotations adjusted to Kymo's rules (see the docstring),
-    and each channel's linear coefficients (factor, offset)."""
+    resolution's units, with its annotations adjusted to Kymo's rules (see the docstring)
+    and Kymo's `start_time`, and each channel's linear coefficients (factor, offset)."""
     from pybvrf.mne_io import RawBVRF
     from pybvrf.pybvrf import _read_bvrd, _read_bvrm, read_bvrf_header
 
@@ -1489,15 +1504,29 @@ def read_bvrf(path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         raw = RawBVRF.from_data(header, data, markers, verbose="error")
+    if start_time is not None:
+        # pybvrf has no start time; Kymo's, so that MNE's CSV of the annotations (with
+        # times of day) means the same to both (see the docstring).
+        start = datetime.datetime.fromisoformat(start_time)
+        raw.set_meas_date(start.replace(tzinfo=datetime.timezone.utc))
+    # MNE sorts the annotations by onset, so the markers are taken in the file's order, each
+    # described by pybvrf's expression (mne_io.RawBVRF), which must give its annotations.
+    fs = header["fs"]
+    rows = [
+        (sample / fs, f"{t}/{c}{v if v > 0 else ''}")
+        for sample, t, c, v in zip(
+            markers["Sample"], markers["Type"], markers["Code"], markers["Value"]
+        )
+    ]
+    theirs = zip(raw.annotations.onset, raw.annotations.description)
+    if sorted(rows) != sorted((float(o), str(d)) for o, d in theirs):
+        raise ValueError("pybvrf's annotations aren't its markers as expected")
     columns = markers.dtype.names or ()
     pairs = {}
     onsets, durations, descriptions = [], [], []
-    for k, (onset, description) in enumerate(
-        zip(raw.annotations.onset, raw.annotations.description)
-    ):
+    for k, (onset, description) in enumerate(rows):
         row = markers[k]
-        value = row["Value"] if "Value" in columns else None
-        if value is not None and markers.dtype["Value"].kind in "iu" and value == 0:
+        if markers.dtype["Value"].kind in "iu" and row["Value"] == 0:
             description += "0"
         description = description.removesuffix("/")
         pair = str(row["StartEndId"]).strip() if "StartEndId" in columns else ""
@@ -1517,10 +1546,36 @@ def read_bvrf(path):
         durations.append(0.0)
         descriptions.append(description)
     raw.set_annotations(mne.Annotations(onsets, durations, descriptions))
+    raw._bvrf_header = header["yaml_header"]
     coefficients = [
         bvrf_coefficients(c) for c in header["yaml_header"]["EEGModality"]["Channels"]
     ]
     return raw, coefficients
+
+
+def align_bvrf(raw, coefficients, names, notes):
+    """pybvrf's channels in Kymo's order (each participant's together, where the file may
+    interleave them) and named as Kymo names them: pybvrf qualifies the channels of a
+    single participant too, Kymo only with several (see the docstring). Returns the
+    coefficients in that order."""
+    eeg = raw._bvrf_header["EEGModality"]
+    listed = [p.get("Id") for p in raw._bvrf_header.get("Participants") or []]
+    ids = set(listed) | {c["ParticipantId"] for c in eeg["Channels"] if c.get("ParticipantId")}
+    if len(ids) < 2:
+        renamed = {
+            name: c["Name"]
+            for name, c in zip(raw.ch_names, eeg["Channels"])
+            if c.get("ParticipantId") and name != c["Name"]
+        }
+        if renamed:
+            raw.rename_channels(renamed)
+            notes.append("pybvrf's names of a single participant compared without it")
+    if sorted(raw.ch_names) != sorted(names) or raw.ch_names == names:
+        return coefficients
+    order = [raw.ch_names.index(n) for n in names]
+    raw.reorder_channels(names)
+    notes.append("pybvrf's channels compared in Kymo's order, each participant's together")
+    return [coefficients[k] for k in order]
 
 
 def is_mat_v73(path):
@@ -1554,6 +1609,7 @@ def testgen_files(directory):
         ("bv-float32-multiplexed", "vhdr", []),
         ("bvrf-int16", "bvrh", []),
         ("bvrf-float64", "bvrh", []),
+        ("bvrf-participants", "bvrh", []),
         ("eeglab-fdt", "set", []),
         ("eeglab-set-single", "set", []),
         ("eeglab-set-double", "set", []),

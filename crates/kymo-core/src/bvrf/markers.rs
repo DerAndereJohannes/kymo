@@ -3,7 +3,8 @@
 
 use std::collections::HashMap;
 
-use crate::{AnnotationData, Channel, ChannelId, Origin};
+use super::participants::Participants;
+use crate::{AnnotationData, Origin};
 
 /// What a marker file holds.
 #[derive(Debug, Default)]
@@ -21,7 +22,7 @@ pub(super) struct Markers {
 const RECORDING_INFO: &str = "Recording Info";
 
 /// Parses a marker file's text (UTF-8, byte-order mark removed) for a recording at `rate`
-/// Hz with `channels`.
+/// Hz with `participants`.
 ///
 /// A line's columns go by the names in the first line, in any order (`ParticipantId`, for
 /// one, is left out where there is one participant). Each marker becomes an annotation:
@@ -31,12 +32,17 @@ const RECORDING_INFO: &str = "Recording Info";
 /// - the channel `Channel` names, or all channels where it is empty;
 /// - two markers sharing a `StartEndId` are one annotation from the first to the second.
 ///
+/// With several participants, a marker with a `ParticipantId` is in that participant's
+/// stream and applies to its channels (its channel of that name, with a `Channel`); one
+/// without is in the stream of all participants and applies to all channels (each
+/// participant's channel of that name, with a `Channel`).
+///
 /// "Recording Info" markers aren't annotations. The start time is the date and time of the
 /// earliest marker with a `DateTime`, moved back by its sample, in local time.
 pub(super) fn parse(
     text: &str,
     rate: f64,
-    channels: &[Channel],
+    participants: &Participants,
     warnings: &mut Vec<String>,
 ) -> Markers {
     let mut markers = Markers::default();
@@ -53,24 +59,19 @@ pub(super) fn parse(
         );
         return markers;
     };
-    let (code, value, channel, date, pair) = (
+    let (code, value, participant, channel, date, pair) = (
         column("Code"),
         column("Value"),
+        column("ParticipantId"),
         column("Channel"),
         column("DateTime"),
         column("StartEndId"),
     );
-    let by_name: HashMap<&str, ChannelId> = channels
-        .iter()
-        .enumerate()
-        .rev()
-        .map(|(c, ch)| (ch.name.as_str(), ChannelId(c as u32)))
-        .collect();
 
     // Markers whose pair hasn't ended yet, by `StartEndId`: the annotation's index, `None`
     // for one that isn't an annotation.
     let mut open: HashMap<&str, (u64, Option<usize>)> = HashMap::new();
-    let (mut skipped, mut unknown_channels, mut bad_dates) = (0usize, 0usize, 0usize);
+    let (mut skipped, mut unknown_channels, mut unknown_participants) = (0usize, 0, 0);
     let mut earliest: Option<(u64, &str)> = None;
     for line in lines {
         if line.trim().is_empty() {
@@ -111,14 +112,23 @@ pub(super) fn parse(
             (false, true) => kind.to_owned(),
             (true, _) => name,
         };
-        let channels = match field(channel) {
-            "" => Vec::new(),
-            name => match by_name.get(name) {
-                Some(&c) => vec![c],
-                None => {
+        let id = field(participant);
+        let own = if participants.several() && !id.is_empty() {
+            let own = participants.of(id);
+            unknown_participants += usize::from(own.is_none());
+            own
+        } else {
+            None
+        };
+        let channels = match (own, field(channel)) {
+            (Some(s), "") => participants.channels_of(s),
+            (None, "") => Vec::new(),
+            (own, name) => match participants.named(name, own) {
+                c if c.is_empty() => {
                     unknown_channels += 1;
-                    Vec::new()
+                    own.map(|s| participants.channels_of(s)).unwrap_or_default()
                 }
+                c => c,
             },
         };
         markers.annotations.push(AnnotationData {
@@ -127,7 +137,7 @@ pub(super) fn parse(
             description,
             channels,
             origin: Origin::File,
-            stream: None,
+            stream: own.or(participants.all()),
         });
     }
     let unpaired = open.values().filter(|(_, index)| index.is_some()).count();
@@ -141,10 +151,16 @@ pub(super) fn parse(
             "{skipped} markers without a valid sample are ignored"
         ));
     }
+    if unknown_participants > 0 {
+        warnings.push(format!(
+            "{unknown_participants} markers name a participant the header doesn't have; they \
+             apply to all participants"
+        ));
+    }
     if unknown_channels > 0 {
         warnings.push(format!(
             "{unknown_channels} markers name a channel the header doesn't have; they apply to \
-             all channels"
+             all channels (of their participant, where they have one)"
         ));
     }
     if let Some((at, dated)) = earliest {
@@ -153,14 +169,10 @@ pub(super) fn parse(
                 markers.start = Some(start);
                 markers.utc_offset = offset;
             }
-            None => bad_dates += 1,
+            None => warnings.push(format!(
+                "the earliest marker's DateTime {dated:?} is invalid; the start time is unknown"
+            )),
         }
-    }
-    if bad_dates > 0 {
-        warnings.push(format!(
-            "the earliest marker's DateTime {:?} is invalid; the start time is unknown",
-            earliest.map_or("", |(_, d)| d)
-        ));
     }
     markers
 }

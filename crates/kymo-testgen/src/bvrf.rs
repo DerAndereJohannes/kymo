@@ -110,6 +110,50 @@ pub(crate) fn validate(spec: &Spec) -> Result<(), Error> {
         }
         check_amplitude(i, c)?;
     }
+    let o = &spec.bvrf;
+    let participants = o.participants.len();
+    if o.participants
+        .iter()
+        .any(|p| p.is_empty() || p.contains(['\t', '\n', '\r']))
+    {
+        return Err(invalid(
+            "participant ids must be non-empty, without tabs or line breaks",
+        ));
+    }
+    if o.channel_participants.len() > spec.channels.len()
+        || o.targets.len() > spec.annotations.len()
+    {
+        return Err(invalid(
+            "more channel participants or targets than channels or annotations",
+        ));
+    }
+    let owner = |c: usize| o.channel_participants.get(c).copied().flatten();
+    let mut names = std::collections::HashSet::new();
+    for (i, c) in spec.channels.iter().enumerate() {
+        if owner(i).is_some_and(|p| p >= participants) {
+            return Err(invalid(format!("channel {i}: no such participant")));
+        }
+        if !names.insert((owner(i), c.label.as_str())) {
+            return Err(invalid(format!(
+                "channel {i}: {:?} twice for one participant",
+                c.label
+            )));
+        }
+    }
+    for (i, t) in o.targets.iter().enumerate() {
+        if t.participant.is_some_and(|p| p >= participants) {
+            return Err(invalid(format!("annotation {i}: no such participant")));
+        }
+        if let Some(name) = &t.channel
+            && !spec.channels.iter().enumerate().any(|(c, ch)| {
+                ch.label == *name && t.participant.is_none_or(|p| owner(c) == Some(p))
+            })
+        {
+            return Err(invalid(format!(
+                "annotation {i}: no channel {name:?} for its participant"
+            )));
+        }
+    }
     let rate = spec.rate(0);
     let whole = |x: f64| (x - x.round()).abs() < 1e-6;
     for (i, a) in spec.annotations.iter().enumerate() {
@@ -252,6 +296,9 @@ pub(crate) fn write(spec: &Spec, path: &Path) -> Result<(), Error> {
                 "Unit": c.dimension,
             });
             let fields = channel.as_object_mut().unwrap_or_else(|| unreachable!());
+            if let Some(p) = spec.bvrf.channel_participants.get(i).copied().flatten() {
+                fields.insert("ParticipantId".into(), json!(spec.bvrf.participants[p]));
+            }
             let offset = offset(spec, i);
             let (resolution, coefficients) = match scaling(spec, i) {
                 BvrfScaling::Resolution if offset == 0.0 => (c.gain(), None),
@@ -292,41 +339,57 @@ pub(crate) fn write(spec: &Spec, path: &Path) -> Result<(), Error> {
     {
         eeg.insert("Filters".into(), Value::Array(filter_list));
     }
-    let header = json!({
+    let mut header = json!({
         "$schema": "https://www.brainproducts.com/schemas/json/BVRF/BVRFHeader-1.0.0.json",
         "BVRF": {"Version": "1.0.0"},
         "BVRFHeaderFile": {"Version": "1.0.0"},
         "RecordingSoftware": {"Name": "kymo-testgen", "Version": env!("CARGO_PKG_VERSION")},
         "EEGModality": eeg,
     });
+    if !spec.bvrf.participants.is_empty()
+        && let Some(header) = header.as_object_mut()
+    {
+        let list: Vec<Value> = spec
+            .bvrf
+            .participants
+            .iter()
+            .map(|id| json!({"Id": id}))
+            .collect();
+        header.insert("Participants".into(), Value::Array(list));
+    }
     let text = serde_json::to_string_pretty(&header)
         .map_err(|e| invalid(format!("the header can't be written: {e}")))?;
     std::fs::write(path, format!("{BOM}{}\r\n", text.replace('\n', "\r\n")))?;
 
     write_data(spec, &data_path, data, len)?;
 
-    let mut m = String::from(BOM);
-    let mut line = |fields: [&str; 8]| {
+    // The ParticipantId column only with several participants, as Recorder writes it.
+    let several = spec.bvrf.participants.len() > 1;
+    let mut m = format!(
+        "{BOM}Sample\tType\tCode\tValue\t{}Channel\tDateTime\tStartEndId\tComment\r\n",
+        if several { "ParticipantId\t" } else { "" }
+    );
+    let mut line = |[sample, kind, code, value, participant, channel, at, id]: [&str; 8]| {
+        let mut fields = vec![sample, kind, code, value];
+        if several {
+            fields.push(participant);
+        }
+        fields.extend([channel, at, id, ""]);
         m.push_str(&fields.join("\t"));
         m.push_str("\r\n");
     };
-    line([
-        "Sample",
-        "Type",
-        "Code",
-        "Value",
-        "Channel",
-        "DateTime",
-        "StartEndId",
-        "Comment",
-    ]);
     let saving = guid(spec, 0);
     let start = date_time(spec, 0.0);
-    line(["0", "Recording Info", "Saving", "", "", &start, &saving, ""]);
+    line(["0", "Recording Info", "Saving", "", "", "", &start, &saving]);
     let mut pairs = 0;
-    for a in &spec.annotations {
+    for (k, a) in spec.annotations.iter().enumerate() {
         let sample = (a.onset * rate).round() as u64;
         let at = date_time(spec, a.onset);
+        let target = spec.bvrf.targets.get(k);
+        let participant = target
+            .and_then(|t| t.participant)
+            .map_or("", |p| spec.bvrf.participants[p].as_str());
+        let channel = target.and_then(|t| t.channel.as_deref()).unwrap_or("");
         for text in &a.texts {
             let (kind, code, value) = marker(text);
             let id = match a.duration {
@@ -337,25 +400,27 @@ pub(crate) fn write(spec: &Spec, path: &Path) -> Result<(), Error> {
                 _ => String::new(),
             };
             let sample_text = sample.to_string();
-            line([&sample_text, kind, code, value, "", &at, &id, ""]);
+            line([
+                &sample_text,
+                kind,
+                code,
+                value,
+                participant,
+                channel,
+                &at,
+                &id,
+            ]);
             if let Some(end) = end_of(a, rate).filter(|_| !id.is_empty()) {
                 let end_at = date_time(spec, end as f64 / rate);
-                line([&end.to_string(), kind, "", "", "", &end_at, &id, ""]);
+                let end = end.to_string();
+                line([&end, kind, "", "", participant, channel, &end_at, &id]);
             }
         }
     }
     let last = len.saturating_sub(1);
     let end = date_time(spec, last as f64 / rate);
-    line([
-        &last.to_string(),
-        "Recording Info",
-        "",
-        "",
-        "",
-        &end,
-        &saving,
-        "",
-    ]);
+    let last = last.to_string();
+    line([&last, "Recording Info", "", "", "", "", &end, &saving]);
     std::fs::write(markers_path, m)?;
     Ok(())
 }

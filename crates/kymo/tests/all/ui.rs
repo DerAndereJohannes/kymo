@@ -6054,18 +6054,26 @@ fn one_annotation_stream_keeps_the_legend_flat() {
 }
 
 /// The legend groups by stream where more than one stream holds annotations: streams of
-/// annotations, and streams with a stim channel.
+/// annotations, streams with a stim channel, and streams the file's annotations are in.
 #[test]
 fn legends_group_where_several_streams_hold_annotations() {
     use kymo_testgen::XdfFormat;
     use kymo_testgen::xdf::{Chunks, header_xml};
     let groups = |path: &Path| {
-        let (rec, _) = kymo_core::Recording::new(kymo_core::open(path).unwrap()).unwrap();
-        kymo::annotations::groups_streams(&rec)
+        let (rec, annotations) = kymo_core::Recording::new(kymo_core::open(path).unwrap()).unwrap();
+        let store = kymo_core::AnnotationStore::from_data(annotations);
+        kymo::annotations::groups_streams(&rec, &store)
     };
     assert!(groups(marker_streams_xdf().path()));
     assert!(!groups(streams_xdf().path()));
     assert!(!groups(TempFile::preset("bdf+c-small").path()));
+    // BVRF participants whose markers are their own, beside those of all of them; markers
+    // of all participants alone don't group, nor does a file of one participant.
+    assert!(groups(TempFile::preset("bvrf-participants").path()));
+    assert!(!groups(TempFile::preset("bvrf-int16").path()));
+    let mut spec = kymo_testgen::Spec::preset("bvrf-participants").unwrap();
+    spec.bvrf.targets.clear();
+    assert!(!groups(TempFile::written(&spec).path()));
     // A marker stream and a stream of trigger channels, with or without the markers.
     let file = |markers: bool| {
         let mut c = Chunks::new(None);

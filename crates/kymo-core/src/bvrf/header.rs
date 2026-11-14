@@ -15,6 +15,10 @@ pub(super) struct ParsedHeader {
     pub(super) encoding: Encoding,
     pub(super) rate: f64,
     pub(super) channels: Vec<Channel>,
+    /// Each channel's participant (`ParticipantId`), `None` for all participants.
+    pub(super) participant: Vec<Option<String>>,
+    /// The `Participants` section's ids, in its order.
+    pub(super) participants: Vec<String>,
     pub(super) extra: Vec<(String, String)>,
 }
 
@@ -101,7 +105,9 @@ pub(super) fn parse(json: &Value, warnings: &mut Vec<String>) -> Result<ParsedHe
     let mut unnamed = 0;
     let mut unknown_filters = 0;
     let mut channels = Vec::with_capacity(list.len());
+    let mut participant = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
+        participant.push(text(item, &["ParticipantId"]).map(str::to_owned));
         let name = match text(item, &["Name"]) {
             Some(name) => name.to_owned(),
             None => {
@@ -190,10 +196,18 @@ pub(super) fn parse(json: &Value, warnings: &mut Vec<String>) -> Result<ParsedHe
         data_type.as_str().unwrap_or_default().to_owned(),
     ));
     info(json, eeg, &mut extra);
+    let participants = at(json, &["Participants"])
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| text(p, &["Id"]).map(str::to_owned))
+        .collect();
     Ok(ParsedHeader {
         encoding,
         rate,
         channels,
+        participant,
+        participants,
         extra,
     })
 }
