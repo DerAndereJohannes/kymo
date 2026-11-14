@@ -1571,31 +1571,46 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     harness.get_by_label_contains(&exact);
 }
 
-/// The shortcut overview's rows end where its scroll bar starts, and the scroll bar sits at
-/// the window's right border, not inside it.
+/// The shortcut overview's scroll bar is painted at the window's right border, a gap after
+/// the rows, not inside them (as it was while a scroll area of ours sat inside the window's
+/// content, which egui clips a margin short of the border).
 #[test]
 fn the_shortcut_overview_scroll_bar_sits_at_the_border() {
-    let file = TempFile::new("bdf");
-    let mut harness = window(file.path());
-    step_until(&mut harness, "the error", |app| app.error().is_some());
-    harness.key_press_modifiers(command(), Key::Slash);
-    harness.step();
-    harness.step();
+    let mut builder = Harness::builder()
+        .with_size(egui::vec2(800.0, 500.0))
+        .with_context_setup(system_fonts);
+    if let Some(gpu) = shared_gpu() {
+        builder = builder.wgpu_setup(egui_wgpu::WgpuSetup::Existing(gpu.clone()));
+    }
+    let mut harness = builder
+        .build_ui(|ui| kymo::ui::menus::shortcuts_window(ui.ctx(), &mut true, Platform::Mac));
+    harness.run_steps(3);
     let window = harness
         .ctx
         .memory(|m| m.area_rect(kymo::ui::Overlay::Shortcuts.id()))
         .unwrap();
-    // The keys are right-aligned in their rows, inset by the rows' padding of 6 points.
-    let keys = harness.get_by_label("Scroll up or down").rect();
-    let scroll = harness.ctx.global_style().spacing.scroll;
-    let room = scroll.bar_width + scroll.bar_inner_margin;
-    let stroke = harness.ctx.global_style().visuals.window_stroke.width;
-    let right = window.right() - stroke;
-    assert!(
-        (keys.right() + 6.0 + room - right).abs() <= 1.0,
-        "keys end at {}, the window at {right}, room {room}",
-        keys.right()
+    // The pointer on the bar widens it to its full width.
+    let title = harness.get_by_label("Trackpad and Mouse").rect();
+    harness.hover_at(egui::pos2(window.right() - 4.0, title.center().y));
+    harness.run_steps(10);
+    let style = harness.ctx.global_style();
+    let fill = style.visuals.window_fill.to_array();
+    let stroke = style.visuals.window_stroke.width;
+    let scroll = style.spacing.scroll;
+    let image = harness.render().unwrap();
+    let pixel = |x: f32| image.get_pixel(x as u32, title.center().y as u32).0;
+    // The bar's middle, a half bar in from the border, is painted; between the rows' end
+    // (the keys' plus their padding of 6 points) and the bar is the window's fill.
+    let bar = window.right() - stroke - scroll.bar_width / 2.0;
+    assert_ne!(
+        pixel(bar),
+        fill,
+        "no bar at {bar}, the window ends at {}",
+        window.right()
     );
+    let keys = harness.get_by_label("Scroll up or down").rect();
+    let gap = keys.right() + 6.0 + scroll.bar_inner_margin / 2.0;
+    assert_eq!(pixel(gap), fill, "something painted at {gap}");
 }
 
 /// Each channel type on screen but stim has a scale bar at the traces' right edge,
@@ -6315,6 +6330,17 @@ fn legends_group_where_several_streams_hold_annotations() {
 #[test]
 fn the_shortcut_overview_shrinks_back_to_its_rows() {
     use kymo::keymap::Platform;
+    // How far About's close button is from its window's right edge.
+    let about_close = {
+        let harness = Harness::builder()
+            .with_size(SIZE)
+            .build_ui(|ui| kymo::ui::menus::about_window(ui.ctx(), &mut true));
+        let window = harness
+            .ctx
+            .memory(|m| m.area_rect(kymo::ui::Overlay::About.id()))
+            .unwrap();
+        window.right() - harness.get_by_label("Close window").rect().right()
+    };
     for platform in Platform::ALL {
         let mut builder = Harness::builder()
             .with_size(SIZE)
@@ -6358,13 +6384,12 @@ fn the_shortcut_overview_shrinks_back_to_its_rows() {
             "{platform:?}: keys end at {}, the window at {right}, room {room}",
             keys.right()
         );
-        // The title bar reaches the right corner too: its close button is nearer the edge
-        // than the window's margin (the rows reached past the title bar by a margin).
+        // The title bar is as other windows' (About's): its close button as far from the
+        // corner, not moved in by the scroll bar's room.
         let close = harness.get_by_label("Close window").rect();
-        let margin = f32::from(harness.ctx.global_style().spacing.window_margin.left);
         assert!(
-            window.right() - close.right() < margin,
-            "{platform:?}: close button ends at {}, the window at {}",
+            (window.right() - close.right() - about_close).abs() <= 0.5,
+            "{platform:?}: close button ends at {}, the window at {}, About's {about_close} in",
             close.right(),
             window.right()
         );

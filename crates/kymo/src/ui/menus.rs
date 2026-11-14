@@ -3,8 +3,8 @@
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{
-    self, Align, Atom, Button, IdSalt, Label, Layout, Response, RichText, ScrollArea, Sense, Shape,
-    StrokeKind, TextStyle, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+    self, Align, Atom, Button, IdSalt, Label, Layout, Response, RichText, Sense, Shape, StrokeKind,
+    TextStyle, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 
 use crate::action::Action;
@@ -188,10 +188,7 @@ fn check_item(
 /// any section, so all sections line up.
 pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform) {
     let sections = overview(platform);
-    // No margin at the right, so the scroll bar sits at the window's border, not inside it.
     let style = ctx.global_style();
-    let margin = style.spacing.window_margin;
-    let frame = egui::Frame::window(&style).inner_margin(egui::Margin { right: 0, ..margin });
     let font = TextStyle::Body.resolve(&style);
     let color = style.visuals.text_color();
     let widest = |text: &dyn Fn(&crate::shortcuts::Row) -> &str| {
@@ -207,54 +204,62 @@ pub fn shortcuts_window(ctx: &egui::Context, open: &mut bool, platform: Platform
     };
     let padding = 6.0;
     let width = widest(&|r| r.action) + COLUMN_GAP + widest(&|r| &r.keys) + 2.0 * padding;
-    // Room for the scroll bar, which floats over the content's right edge.
+    // The window's own scroll area, which egui puts at the window's border, inside its
+    // stroke, the frame's margins inside it; a scroll area of ours in the window would end
+    // at the window's content, a margin in, and egui keeps a bar inside its parent's clip.
+    // The right margin is the scroll bar's room, so the rows end where the bar starts.
     let scroll = &style.spacing.scroll;
-    let room = scroll.bar_width + scroll.bar_inner_margin;
-    let content_width = width + room;
+    let room = (scroll.bar_width + scroll.bar_inner_margin).ceil();
+    let margin = style.spacing.window_margin;
+    // The title bar keeps the usual margins, so its close button stays in the corner.
+    let title_frame = egui::Frame::window(&style);
+    let frame = title_frame.inner_margin(egui::Margin {
+        right: room as i8,
+        ..margin
+    });
+    // The window's outer width: the rows, the margins and the stroke.
+    let stroke = 2.0 * style.visuals.window_stroke.width;
+    let outer = width + f32::from(margin.left) + room + stroke;
     egui::Window::new(Action::Shortcuts.label())
         .id(Overlay::Shortcuts.id())
         .frame(frame)
+        .title_frame(title_frame)
         .open(open)
         .collapsible(false)
         .resizable([false, true])
-        // Exactly as wide as the rows and the scroll bar's room. A window never shrinks by
-        // itself (egui keeps the widest size it had, across runs too), so one that was ever
-        // wider (fonts or scale settling, an older layout) would keep a strip right of the
-        // scroll bar. These widths count the frame's left margin: without it, the rows
-        // would reach past the title bar.
-        .min_width(content_width + f32::from(margin.left))
-        .max_width(content_width + f32::from(margin.left))
+        .vscroll(true)
+        // Exactly as wide as the rows and margins. A window never shrinks by itself (egui
+        // keeps the widest size it had, across runs too), so one that was ever wider (fonts
+        // or scale settling, an older layout) would keep a strip right of the scroll bar.
+        .min_width(outer)
+        .max_width(outer)
         .default_height(480.0)
         .show(ctx, |ui| {
             let row_height = ui.spacing().interact_size.y;
-            ScrollArea::vertical().show(ui, |ui| {
-                // The rows end where the scroll bar's room starts, in whatever width the
-                // window gives them (within a point or two of `width`).
-                let width = ui.available_width() - room;
-                for (i, section) in sections.iter().enumerate() {
-                    if i > 0 {
-                        ui.add_space(10.0);
-                    }
-                    ui.label(RichText::new(section.title).strong());
-                    for (j, row) in section.rows.iter().enumerate() {
-                        let (rect, _) =
-                            ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
-                        if j % 2 == 1 {
-                            ui.painter()
-                                .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
-                        }
-                        let mut cells = ui.new_child(
-                            UiBuilder::new()
-                                .max_rect(rect.shrink2(vec2(padding, 0.0)))
-                                .layout(Layout::left_to_right(Align::Center)),
-                        );
-                        cells.add(Label::new(row.action).extend());
-                        cells.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add(Label::new(RichText::new(&row.keys).weak()).extend());
-                        });
-                    }
+            // Whatever width the window gives them (within a point or two of `width`).
+            let width = ui.available_width();
+            for (i, section) in sections.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(10.0);
                 }
-            });
+                ui.label(RichText::new(section.title).strong());
+                for (j, row) in section.rows.iter().enumerate() {
+                    let (rect, _) = ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
+                    if j % 2 == 1 {
+                        ui.painter()
+                            .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+                    }
+                    let mut cells = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(rect.shrink2(vec2(padding, 0.0)))
+                            .layout(Layout::left_to_right(Align::Center)),
+                    );
+                    cells.add(Label::new(row.action).extend());
+                    cells.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add(Label::new(RichText::new(&row.keys).weak()).extend());
+                    });
+                }
+            }
         });
 }
 
