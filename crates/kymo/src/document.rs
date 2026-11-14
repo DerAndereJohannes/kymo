@@ -36,10 +36,7 @@ impl Document {
         let rec = &self.recording;
         Summary {
             format: rec.format(),
-            // ISO's order, which reads the same everywhere, with a space for its "T".
-            start: rec
-                .start_time()
-                .map(|t| t.to_string().replacen('T', " ", 1)),
+            start: rec.start_time(),
             duration: rec.duration(),
             channels: rec.channels().len(),
             streams: (
@@ -88,7 +85,7 @@ pub fn file_name(path: &Path) -> String {
 pub struct Summary {
     pub format: &'static str,
     /// Wall-clock start, if the file has one.
-    pub start: Option<String>,
+    pub start: Option<jiff::civil::DateTime>,
     /// Seconds.
     pub duration: f64,
     pub channels: usize,
@@ -115,14 +112,10 @@ pub struct GridSummary {
 
 impl GridSummary {
     /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels", with
-    /// the exact rate ("irregular, 299.98 Hz on average, ..." for an irregular time base).
+    /// the exact rate ("≈299.98 Hz, ..." for the average rate of an irregular time base).
     pub fn describe(&self) -> String {
         let n = self.channels.len();
-        let rate = if self.irregular {
-            format!("irregular, {} on average", exact_rate(self.rate))
-        } else {
-            exact_rate(self.rate)
-        };
+        let rate = exact_rate_text(self.rate, self.irregular);
         let mut s = format!("{rate}, {} samples, {n} channel{}", self.samples, plural(n));
         if self.segments != 1 {
             s += &format!(", {} segments", self.segments);
@@ -139,12 +132,21 @@ impl Summary {
     /// is the type in memory (BDF's int24 is widened to int32), not the file's. No
     /// annotation count: the legend has it, with the stim channels' annotations.
     pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        // The start to the millisecond, every digit the file has on hover.
+        let start = match self.start {
+            Some(t) => {
+                let shown = format_start(t, true);
+                let full = format_start(t, false);
+                SidebarRow {
+                    hover: (full != shown).then_some(full),
+                    ..SidebarRow::new("Start", shown)
+                }
+            }
+            None => SidebarRow::new("Start", "unknown".into()),
+        };
         let mut rows = vec![
             SidebarRow::new("Format", self.format.to_owned()),
-            SidebarRow::new(
-                "Start",
-                self.start.clone().unwrap_or_else(|| "unknown".into()),
-            ),
+            start,
             SidebarRow::new("Duration", format_duration(self.duration)),
             SidebarRow::new("Channels", self.channels.to_string()),
         ];
@@ -185,11 +187,7 @@ impl Summary {
         let hover = rates
             .iter()
             .map(|&(rate, irregular, n, samples)| {
-                let rate = if irregular {
-                    format!("{} on average (irregular)", exact_rate(rate))
-                } else {
-                    exact_rate(rate)
-                };
+                let rate = exact_rate_text(rate, irregular);
                 format!("{rate}: {n} channel{}, {samples} samples", plural(n))
             })
             .collect::<Vec<_>>()
@@ -213,11 +211,8 @@ impl Summary {
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "format       {}", self.format)?;
-        writeln!(
-            f,
-            "start        {}",
-            self.start.as_deref().unwrap_or("unknown")
-        )?;
+        let start = self.start.map(|t| format_start(t, false));
+        writeln!(f, "start        {}", start.as_deref().unwrap_or("unknown"))?;
         writeln!(f, "duration     {}", format_duration(self.duration))?;
         writeln!(f, "channels     {}", self.channels)?;
         if self.streams.0 > 1 {
@@ -243,12 +238,26 @@ pub fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// A start time in ISO's order, which reads the same everywhere, with a space for its "T":
+/// "2024-05-01 13:45:07.25". Its fraction has every digit it has, trailing zeros dropped, or
+/// with `rounded` at most three (to the millisecond).
+pub fn format_start(time: jiff::civil::DateTime, rounded: bool) -> String {
+    let time = if rounded {
+        // Only a time within a millisecond of the latest one there is fails to round.
+        time.round(jiff::Unit::Millisecond).unwrap_or(time)
+    } else {
+        time
+    };
+    time.to_string().replacen('T', " ", 1)
+}
+
 /// One row of the sidebar's summary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SidebarRow {
     pub key: String,
     pub value: String,
-    /// What hovering the value shows: the exact rates, channels and samples for Sampling.
+    /// What hovering the value shows: the exact rates, channels and samples for Sampling,
+    /// the start with every digit where it has more than three decimals.
     pub hover: Option<String>,
 }
 
@@ -273,13 +282,23 @@ pub fn format_rate(rate: f64) -> String {
     format!("{} Hz", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// A grid's rate as [`format_rate`] rounds it, "irregular, 300 Hz" for the average rate of
-/// an irregular time base.
+/// A grid's rate as [`format_rate`] rounds it, "≈300 Hz" for the average rate of an
+/// irregular time base.
 pub fn rate_text(rate: f64, irregular: bool) -> String {
     if irregular {
-        format!("irregular, {}", format_rate(rate))
+        format!("\u{2248}{}", format_rate(rate))
     } else {
         format_rate(rate)
+    }
+}
+
+/// A grid's rate with every digit it has, "≈299.98374 Hz" for the average rate of an
+/// irregular time base.
+fn exact_rate_text(rate: f64, irregular: bool) -> String {
+    if irregular {
+        format!("\u{2248}{}", exact_rate(rate))
+    } else {
+        exact_rate(rate)
     }
 }
 
@@ -502,6 +521,63 @@ mod tests {
         }
     }
 
+    /// The sidebar shows the start to the millisecond at most, trailing zeros dropped, and
+    /// every digit on hover where there are more; `--info` has every digit.
+    #[test]
+    fn the_start_shows_at_most_three_decimals() {
+        let at = |s: &str| s.parse::<jiff::civil::DateTime>().unwrap();
+        let cases = [
+            ("2024-01-02T03:04:05", "2024-01-02 03:04:05", None),
+            ("2024-01-02T03:04:05.25", "2024-01-02 03:04:05.25", None),
+            ("2024-01-02T03:04:05.123", "2024-01-02 03:04:05.123", None),
+            (
+                "2024-01-02T03:04:05.123456789",
+                "2024-01-02 03:04:05.123",
+                Some("2024-01-02 03:04:05.123456789"),
+            ),
+            // Rounded, to the next second (and day) too.
+            (
+                "2024-01-02T03:04:05.9876",
+                "2024-01-02 03:04:05.988",
+                Some("2024-01-02 03:04:05.9876"),
+            ),
+            (
+                "2024-12-31T23:59:59.9996",
+                "2025-01-01 00:00:00",
+                Some("2024-12-31 23:59:59.9996"),
+            ),
+        ];
+        for (time, shown, hover) in cases {
+            let summary = Summary {
+                format: "EDF+C",
+                start: Some(at(time)),
+                duration: 2.0,
+                channels: 1,
+                streams: (0, 0),
+                annotations: 0,
+                grids: vec![GridSummary {
+                    rate: 100.0,
+                    irregular: false,
+                    samples: 200,
+                    segments: 1,
+                    channels: vec!["Fz".into()],
+                }],
+                warnings: Vec::new(),
+            };
+            let rows = summary.sidebar_rows();
+            let row = rows.iter().find(|r| r.key == "Start").unwrap();
+            assert_eq!(row.value, shown, "{time}");
+            assert_eq!(row.hover.as_deref(), hover, "{time}");
+            let full = hover.unwrap_or(shown);
+            assert!(
+                summary
+                    .to_string()
+                    .contains(&format!("start        {full}\n")),
+                "{time}"
+            );
+        }
+    }
+
     /// A "Streams" row (and `--info` line) only where there are several streams.
     #[test]
     fn several_streams_are_counted() {
@@ -618,19 +694,19 @@ mod tests {
         let sampling = rows.iter().find(|r| r.key == "Sampling").unwrap();
         assert_eq!(
             sampling.value,
-            "250 Hz (2 channels)\nirregular, 250 Hz (2 channels)"
+            "250 Hz (2 channels)\n\u{2248}250 Hz (2 channels)"
         );
         assert!(
             sampling
                 .hover
                 .as_deref()
                 .unwrap()
-                .ends_with("250 Hz on average (irregular): 2 channels, 1000 samples")
+                .ends_with("\u{2248}250 Hz: 2 channels, 1000 samples")
         );
         assert!(
             irregular
                 .describe()
-                .starts_with("irregular, 250 Hz on average, 1000 samples")
+                .starts_with("\u{2248}250 Hz, 1000 samples")
         );
     }
 

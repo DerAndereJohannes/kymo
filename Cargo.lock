@@ -2060,6 +2060,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "egui_system_font_provider",
+ "jiff",
  "kymo-core",
  "kymo-testgen",
  "libc",

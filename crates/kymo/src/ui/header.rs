@@ -788,24 +788,6 @@ struct RowColumns {
     unit: Option<f32>,
 }
 
-/// A grid's rate in the channel list: an irregular grid's average rate as "≈ 300 Hz".
-fn list_rate(grid: &kymo_core::Grid) -> String {
-    if grid.times().is_some() {
-        format!("\u{2248} {}", format_rate(grid.rate()))
-    } else {
-        format_rate(grid.rate())
-    }
-}
-
-/// A grid's rate in full: an irregular grid's as "irregular, 300 Hz on average".
-fn full_rate(grid: &kymo_core::Grid) -> String {
-    if grid.times().is_some() {
-        format!("{} on average", grid_rate(grid))
-    } else {
-        grid_rate(grid)
-    }
-}
-
 /// The rate of a group's channels, as its row shows it: their rate if they share one, else
 /// the range ("128–512 Hz", in full "128 to 512 Hz").
 struct GroupRate {
@@ -829,10 +811,10 @@ fn group_rate(document: &Document, view: &ViewState, group: Group) -> GroupRate 
             mixed: false,
         };
     };
-    if grids.iter().all(|g| list_rate(g) == list_rate(first)) {
+    if grids.iter().all(|g| grid_rate(g) == grid_rate(first)) {
         return GroupRate {
-            list: list_rate(first),
-            full: full_rate(first),
+            list: grid_rate(first),
+            full: grid_rate(first),
             mixed: false,
         };
     }
@@ -1121,7 +1103,7 @@ fn channel_list(
                         format!(
                             "{name}\n{}{unit} \u{b7} {}",
                             kind_name(channel.kind),
-                            full_rate(grid)
+                            grid_rate(grid)
                         )
                     });
 
@@ -1483,7 +1465,7 @@ fn stream_row(
         })
     };
     let kind = stream.kind.trim();
-    let count = format!("{all} \u{b7} {}", list_rate(grid));
+    let count = format!("{all} \u{b7} {}", grid_rate(grid));
     let gap = ui.spacing().item_spacing.x;
     let room = ui.available_width();
     let (name_width, kind_width, count_width) = (width(&name), width(kind), width(&count));
@@ -1500,7 +1482,7 @@ fn stream_row(
     let short = elide_middle(ui.ctx(), &name, &body, name_room);
 
     let channels = format!("{all} channel{}", plural(all));
-    let full = [kind, &channels, &full_rate(grid)]
+    let full = [kind, &channels, &grid_rate(grid)]
         .iter()
         .filter(|t| !t.is_empty())
         .copied()

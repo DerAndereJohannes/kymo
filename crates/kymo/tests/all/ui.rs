@@ -1282,7 +1282,7 @@ fn tooltip(harness: &mut Harness<'_, KymoApp>, text: &str) -> bool {
 }
 
 /// The channel list shows units as symbols ("microvolts" as µV, for Misc channels too) and
-/// an irregular grid's rate as "≈ 50 Hz" (in its stream's row, as the file has two streams),
+/// an irregular grid's rate as "≈50 Hz" (in its stream's row, as the file has two streams),
 /// everything in full where the sidebar is wide enough; in a narrower one it shortens units
 /// and then names in the middle (screen readers get them whole), then leaves out the unit
 /// and type, which hovering the row shows.
@@ -1326,11 +1326,11 @@ fn the_channel_list_fits_its_width() {
     assert!(full(&harness, "IPD - Interpupillary distance, both eyes"));
     assert!(full(&harness, "POR X - (Point of regard), left eye"));
     let rate = harness
-        .get_by_role_and_label(Role::Label, "1 \u{b7} \u{2248} 50 Hz")
+        .get_by_role_and_label(Role::Label, "1 \u{b7} \u{2248}50 Hz")
         .rect();
     // An irregular rate in full on hover; nothing else is shortened.
     hover(&mut harness, rate.center());
-    assert!(tooltip(&mut harness, "irregular, 50 Hz on average"));
+    assert!(tooltip(&mut harness, "channel \u{b7} \u{2248}50 Hz"));
     assert!(harness.query_by_label_contains("both eyes\n").is_none());
     hover(&mut harness, egui::pos2(900.0, 650.0));
 

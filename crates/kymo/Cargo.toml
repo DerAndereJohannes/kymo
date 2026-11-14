@@ -18,6 +18,7 @@ test = false
 anyhow = "1"
 bytemuck.workspace = true
 eframe.workspace = true
+jiff.workspace = true
 kymo-core.workspace = true
 rfd.workspace = true
 thiserror.workspace = true
