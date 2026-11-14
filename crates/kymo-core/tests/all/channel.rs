@@ -63,7 +63,7 @@ fn mne_type_names_map_to_kinds_and_back() {
 #[test]
 fn unit_labels_give_factors_and_quantities() {
     use Quantity::*;
-    let cases: [(&str, Option<(f64, Quantity)>); 36] = [
+    let cases: [(&str, Option<(f64, Quantity)>); 41] = [
         ("V", Some((1.0, Voltage))),
         ("mV", Some((1e-3, Voltage))),
         ("\u{b5}V", Some((1e-6, Voltage))),
@@ -92,7 +92,12 @@ fn unit_labels_give_factors_and_quantities() {
         ("picoteslas", Some((1e-12, MagneticField))),
         ("siemens", Some((1.0, Conductance))),
         ("microsiemens", Some((1e-6, Conductance))),
+        ("femtotesla per centimeter", Some((1e-13, FieldGradient))),
+        ("Picoteslas per Meter", Some((1e-12, FieldGradient))),
         // Not units kymo scales.
+        ("nanoseconds", None),
+        ("meters per second", None),
+        ("volts per meter", None),
         ("kilovolts", None),
         ("fV", None),
         ("pS", None),
@@ -140,10 +145,33 @@ fn units_show_as_symbols() {
         ("uT/cm", "\u{b5}T/cm"),
         (" mV ", "mV"),
         ("fT/cm", "fT/cm"),
+        // Units kymo doesn't scale, as words and with "u".
+        ("nanoseconds", "ns"),
+        ("Milliseconds", "ms"),
+        ("second", "s"),
+        ("kilovolts", "kV"),
+        ("kilohertz", "kHz"),
+        ("hertz", "Hz"),
+        ("millimeters", "mm"),
+        ("centimetres", "cm"),
+        ("microamperes", "\u{b5}A"),
+        ("kiloohms", "k\u{3a9}"),
+        ("decibels", "dB"),
+        ("degrees", "\u{b0}"),
+        ("Degrees Celsius", "\u{b0}C"),
+        ("percent", "%"),
+        ("meters per second", "m/s"),
+        ("femtotesla per centimeter", "fT/cm"),
+        ("uA", "\u{b5}A"),
+        ("us", "\u{b5}s"),
+        ("\u{3bc}m", "\u{b5}m"),
         // Unknown labels stay as they are, "u" and all.
         ("normalized_signed", "normalized_signed"),
         ("units", "units"),
-        ("uA", "uA"),
+        ("ux", "ux"),
+        ("microns", "microns"),
+        ("meters per", "meters per"),
+        ("per second", "per second"),
         (" AU", "AU"),
         ("", ""),
     ];

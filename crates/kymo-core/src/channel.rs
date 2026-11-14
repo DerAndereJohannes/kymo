@@ -150,16 +150,22 @@ impl Quantity {
     }
 }
 
-/// The factor to SI and the quantity of a unit label, if it is a known unit.
+/// The factor to SI and the quantity of a unit label, if it is a unit kymo scales; a unit
+/// written as words as its symbol.
 fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     let label = label.trim();
     // Seen in EDF files.
     if matches!(label, "UV" | "uv") {
         return Some((1e-6, Quantity::Voltage));
     }
-    if let Some((factor, quantity, _)) = unit_word(label) {
-        return Some((factor, quantity));
+    match word_symbol(label) {
+        Some(symbol) => parse_symbol(&symbol),
+        None => parse_symbol(label),
     }
+}
+
+/// [`parse_unit`] for a unit written as a symbol.
+fn parse_symbol(label: &str) -> Option<(f64, Quantity)> {
     let (numerator, per) = match label.split_once('/') {
         Some((n, "m")) => (n, 1.0),
         Some((n, "cm")) => (n, 1e-2),
@@ -187,63 +193,126 @@ fn parse_unit(label: &str) -> Option<(f64, Quantity)> {
     }
 }
 
-/// A unit written as a word, ignoring case ("microvolts", as XDF streams write them): its
-/// factor to SI, quantity and symbol.
-fn unit_word(label: &str) -> Option<(f64, Quantity, &'static str)> {
-    let word = label.to_ascii_lowercase();
-    let word = word.strip_suffix('s').unwrap_or(&word);
-    Some(match word {
-        "volt" => (1.0, Quantity::Voltage, "V"),
-        "millivolt" => (1e-3, Quantity::Voltage, "mV"),
-        "microvolt" => (1e-6, Quantity::Voltage, "\u{b5}V"),
-        "nanovolt" => (1e-9, Quantity::Voltage, "nV"),
-        "tesla" => (1.0, Quantity::MagneticField, "T"),
-        "picotesla" => (1e-12, Quantity::MagneticField, "pT"),
-        "femtotesla" => (1e-15, Quantity::MagneticField, "fT"),
-        // "siemens" without its "s".
-        "siemen" => (1.0, Quantity::Conductance, "S"),
-        "microsiemen" => (1e-6, Quantity::Conductance, "\u{b5}S"),
-        _ => return None,
-    })
+/// SI prefixes written as words, and their symbols.
+const PREFIX_WORDS: [(&str, &str); 10] = [
+    ("femto", "f"),
+    ("pico", "p"),
+    ("nano", "n"),
+    ("micro", "\u{b5}"),
+    ("milli", "m"),
+    ("centi", "c"),
+    ("deci", "d"),
+    ("kilo", "k"),
+    ("mega", "M"),
+    ("giga", "G"),
+];
+
+/// Units written as words, singular and plural, that take a prefix, and their symbols.
+const UNIT_WORDS: [(&[&str], &str); 18] = [
+    (&["volt", "volts"], "V"),
+    (&["tesla", "teslas"], "T"),
+    (&["siemens"], "S"),
+    (&["ampere", "amperes", "amp", "amps"], "A"),
+    (&["ohm", "ohms"], "\u{3a9}"),
+    (&["second", "seconds"], "s"),
+    (&["meter", "meters", "metre", "metres"], "m"),
+    (&["gram", "grams"], "g"),
+    (&["hertz"], "Hz"),
+    (&["watt", "watts"], "W"),
+    (&["joule", "joules"], "J"),
+    (&["newton", "newtons"], "N"),
+    (&["pascal", "pascals"], "Pa"),
+    (&["liter", "liters", "litre", "litres"], "L"),
+    (&["mole", "moles"], "mol"),
+    (&["kelvin", "kelvins"], "K"),
+    (&["radian", "radians"], "rad"),
+    // For decibels.
+    (&["bel", "bels"], "B"),
+];
+
+/// Units written as words that take no prefix, and their symbols.
+const PLAIN_WORDS: [(&[&str], &str); 5] = [
+    (&["degree celsius", "degrees celsius", "celsius"], "\u{b0}C"),
+    (&["degree", "degrees"], "\u{b0}"),
+    (&["percent"], "%"),
+    (&["minute", "minutes"], "min"),
+    (&["hour", "hours"], "h"),
+];
+
+/// The symbol of a unit written as words, ignoring case ("microvolts" as µV, as XDF streams
+/// write them, "nanoseconds" as ns, "meters per second" as m/s); `None` for other labels.
+fn word_symbol(label: &str) -> Option<String> {
+    let label = label.trim().to_lowercase();
+    match label.split_once(" per ") {
+        Some((numerator, denominator)) => Some(format!(
+            "{}/{}",
+            one_word_symbol(numerator.trim())?,
+            one_word_symbol(denominator.trim())?
+        )),
+        None => one_word_symbol(&label),
+    }
+}
+
+/// [`word_symbol`] for a unit without "per", in lowercase.
+fn one_word_symbol(word: &str) -> Option<String> {
+    if let Some((_, symbol)) = PLAIN_WORDS.iter().find(|(forms, _)| forms.contains(&word)) {
+        return Some((*symbol).to_owned());
+    }
+    let (prefix, rest) = PREFIX_WORDS
+        .iter()
+        .find_map(|(name, symbol)| Some((*symbol, word.strip_prefix(name)?)))
+        .unwrap_or(("", word));
+    let (_, symbol) = UNIT_WORDS.iter().find(|(forms, _)| forms.contains(&rest))?;
+    Some(format!("{prefix}{symbol}"))
 }
 
 impl Unit {
-    /// The unit of `label`, with its SI factor if it is a known unit: volts and siemens
+    /// The unit of `label`, with its SI factor if it is a unit kymo scales: volts and siemens
     /// (plain or with the prefix m, µ or n), teslas (also p and f) and teslas per meter,
     /// centimeter or millimeter ("fT/cm"). The micro prefix may be the micro sign (U+00B5),
     /// the Greek mu (U+03BC, which looks the same) or "u". Surrounding whitespace is ignored.
-    /// Volts (with milli, micro, nano), teslas (pico, femto) and siemens (micro) may also be
-    /// written as words, in any case and singular or plural ("microvolts").
+    /// Units may also be written as words (see [`symbol`](Self::symbol)): "microvolts",
+    /// "femtotesla per centimeter".
     pub fn from_label(label: impl Into<String>) -> Unit {
         let label = label.into();
         let to_si = parse_unit(&label).map(|(factor, _)| factor);
         Unit { label, to_si }
     }
 
-    /// What the unit measures, if its label is a known unit.
+    /// What the unit measures, if its label is a unit kymo scales.
     pub fn quantity(&self) -> Option<Quantity> {
         parse_unit(&self.label).map(|(_, quantity)| quantity)
     }
 
-    /// The label as a symbol: a known unit written as a word as its symbol ("microvolts" as
-    /// µV), and a known unit's micro prefix as the micro sign (U+00B5: "uV", EDF's "UV" and
-    /// the Greek mu as µV). Other labels stay as they are. Surrounding whitespace is dropped.
+    /// The label as a symbol. A unit written as words, in any case, singular or plural,
+    /// becomes its symbol: an SI unit (volt, tesla, siemens, ampere, ohm, second, meter,
+    /// gram, hertz, watt, joule, newton, pascal, liter, mole, kelvin, radian, bel) with or
+    /// without an SI prefix from femto to giga ("microvolts" as µV, "nanoseconds" as ns,
+    /// "decibels" as dB), degrees (Celsius), percent, minutes and hours, and two of them
+    /// joined by "per" ("meters per second" as m/s). A unit's micro prefix written as "u"
+    /// or the Greek mu becomes the micro sign (U+00B5: "uV" and EDF's "UV" as µV, "us" as
+    /// µs).
+    /// Other labels stay as they are. Surrounding whitespace is dropped.
     pub fn symbol(&self) -> String {
         let label = self.label.trim();
-        if parse_unit(label).is_none() {
-            return label.to_owned();
-        }
         if matches!(label, "UV" | "uv") {
             return "\u{b5}V".to_owned();
         }
-        if let Some((_, _, symbol)) = unit_word(label) {
-            return symbol.to_owned();
+        if let Some(symbol) = word_symbol(label) {
+            return symbol;
         }
         match label.strip_prefix(['u', '\u{3bc}']) {
-            Some(rest) => format!("\u{b5}{rest}"),
-            None => label.to_owned(),
+            Some(rest) if parse_symbol(label).is_some() || is_unit_symbol(rest) => {
+                format!("\u{b5}{rest}")
+            }
+            _ => label.to_owned(),
         }
     }
+}
+
+/// Whether `symbol` is the symbol of a unit that takes a prefix ("A", "s").
+fn is_unit_symbol(symbol: &str) -> bool {
+    UNIT_WORDS.iter().any(|(_, s)| *s == symbol)
 }
 
 /// File metadata of one channel. Display state (visible, color, scale, bad) lives elsewhere.
