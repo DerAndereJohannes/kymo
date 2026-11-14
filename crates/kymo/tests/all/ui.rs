@@ -2197,10 +2197,77 @@ fn settings_apply_at_once() {
     assert_eq!(viewer(&harness).view().time(), 5.0..25.0);
 }
 
+/// Settings → Font puts the system's font in front of egui's for text, where the platform
+/// has one (macOS, Windows), and takes it out again; off by default. Elsewhere there is no
+/// such setting. Widths measured once (the names column's, the channel list's columns) are
+/// measured again in the new font, as a recording opened in it has them.
+#[test]
+fn the_system_font_setting_switches_the_fonts() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    // The first font of text.
+    let first = |h: &Harness<'_, KymoApp>| {
+        h.ctx
+            .fonts(|f| f.definitions().families[&egui::FontFamily::Proportional][0].clone())
+    };
+    // The names column's width, and where the channel list's unit column starts.
+    let widths = |h: &Harness<'_, KymoApp>| {
+        let names = viewer(h).layout().unwrap().names.width();
+        let unit = h
+            .query_all_by_role_and_label(egui::accesskit::Role::Label, "\u{b5}V")
+            .next()
+            .unwrap()
+            .rect()
+            .left();
+        (names, unit)
+    };
+    let builtin = first(&harness);
+    assert_ne!(builtin, "System");
+    let builtin_widths = widths(&harness);
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.step();
+    let Some(_) = kymo::ui::fonts::SYSTEM_FONT_NAME else {
+        assert!(harness.query_by_label("System Font").is_none());
+        return;
+    };
+    harness.get_by_label("System Font").click();
+    harness.run_steps(3);
+    assert!(harness.state().settings().system_font);
+    // Where the system's fonts are where Kymo looks for them, as on every Mac.
+    if cfg!(target_os = "macos") {
+        assert_eq!(first(&harness), "System");
+    }
+    if first(&harness) == "System" {
+        let mut fresh = window_with(
+            file.path(),
+            Settings {
+                system_font: true,
+                ..Settings::default()
+            },
+        );
+        ready(&mut fresh);
+        let system_widths = widths(&fresh);
+        assert_ne!(system_widths, builtin_widths);
+        assert_eq!(widths(&harness), system_widths);
+    }
+    harness.get_by_label("System Font").click();
+    harness.run_steps(3);
+    assert!(!harness.state().settings().system_font);
+    assert_eq!(first(&harness), builtin);
+    assert_eq!(widths(&harness), builtin_widths);
+}
+
 #[test]
 fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(file.path());
+    // As tall as the app's window opens: with the Font row (macOS and Windows), Settings
+    // would cover the egui menu bar in a 700-point one. The app draws that menu bar only on
+    // Linux, which has no Font row.
+    let mut harness = window_from(
+        Harness::builder().with_size(egui::vec2(SIZE.x, 800.0)),
+        file.path(),
+    );
     ready(&mut harness);
     // Off by default.
     assert!(!harness.state().settings().antialias);
@@ -6046,7 +6113,7 @@ fn the_shortcut_overview_shrinks_back_to_its_rows() {
             .with_size(SIZE)
             .with_context_setup(|ctx| {
                 system_fonts(ctx);
-                kymo::ui::menus::add_symbol_font(ctx);
+                kymo::ui::fonts::apply_fonts(ctx, false);
             });
         // The app draws only its own platform's shortcuts; another's symbols (⌫ for the
         // Mac) may be in no font here, as on Windows, and a box is as good for the widths.

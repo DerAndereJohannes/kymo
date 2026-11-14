@@ -21,9 +21,11 @@ use crate::native_menu::NativeMenu;
 use crate::recent::Recent;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::Overlay;
+use crate::ui::fonts::apply_fonts;
 use crate::ui::go_to::{GoToField, go_to_window};
 use crate::ui::gpu::Gpu;
-use crate::ui::menus::{MenuState, about_window, add_symbol_font, egui_menu_bar, shortcuts_window};
+use crate::ui::header;
+use crate::ui::menus::{MenuState, about_window, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
 use crate::viewer::Viewer;
 
@@ -105,6 +107,10 @@ pub struct KymoApp {
     app_mode: AppMode,
     /// The theme setting, the system's theme and the app mode it was last applied for.
     theme_applied: Option<(Theme, Option<egui::Theme>, Option<bool>)>,
+    /// The font setting the fonts were last set for, and whether that was during the last
+    /// frame.
+    fonts_applied: bool,
+    fonts_set: bool,
 }
 
 /// What the unsaved changes question holds up.
@@ -148,7 +154,8 @@ impl KymoApp {
             o.zoom_with_keyboard = false;
             o.sync_window_theme = false;
         });
-        add_symbol_font(ctx);
+        let system_font = options.settings.system_font;
+        apply_fonts(ctx, system_font);
         gpu.set_budget(options.settings.gpu_memory_bytes());
         let mut app = KymoApp {
             state: State::Empty,
@@ -173,6 +180,8 @@ impl KymoApp {
             closing: false,
             app_mode: AppMode::new(),
             theme_applied: None,
+            fonts_applied: system_font,
+            fonts_set: false,
         };
         if let Some(path) = path {
             app.open(ctx, path);
@@ -398,6 +407,16 @@ impl KymoApp {
     /// One frame: picks up a finished open, handles keys, and draws the window.
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        // Fonts set during the last frame are in use now: widths measured once in the old
+        // ones are measured again. Not in that frame, which had laid out text in them, so
+        // egui kept them until this one began.
+        if self.fonts_set {
+            self.fonts_set = false;
+            header::forget_text_widths(&ctx);
+            if let State::Ready(viewer) = &mut self.state {
+                viewer.forget_text_widths();
+            }
+        }
         self.apply_theme(&ctx);
         self.poll_loading();
         // The window's close button, or Quit's own request: unsaved changes are asked about.
@@ -452,6 +471,12 @@ impl KymoApp {
         if settings_window(&ctx, &mut self.settings_open, &mut settings) {
             self.set_settings(settings);
             self.apply_theme(&ctx);
+        }
+        let system_font = self.options.settings.system_font;
+        if system_font != self.fonts_applied {
+            self.fonts_applied = system_font;
+            self.fonts_set = true;
+            apply_fonts(&ctx, system_font);
         }
         if self.native_menu.is_some() {
             let state = self.menu_state(&ctx);

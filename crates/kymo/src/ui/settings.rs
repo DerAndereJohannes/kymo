@@ -5,6 +5,7 @@ use eframe::egui::{self, DragValue, Ui};
 use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use crate::ui::Overlay;
 use crate::ui::color::{Choice, swatch};
+use crate::ui::fonts::SYSTEM_FONT_NAME;
 use crate::ui::header::kind_name;
 use crate::ui::palette::type_color;
 use crate::view::KINDS;
@@ -40,6 +41,12 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                     });
                     ui.end_row();
                     hint(ui, "System follows the system's light or dark mode.");
+                    if let Some(name) = SYSTEM_FONT_NAME {
+                        ui.label("Font");
+                        ui.checkbox(&mut settings.system_font, "System Font");
+                        ui.end_row();
+                        hint(ui, &format!("Show all text in {name}, the system's font."));
+                    }
                     // At the first row of swatches, as the other labels sit at their
                     // control, rather than centered on all of them.
                     // In a row like the swatches' own, centered as they are.
@@ -113,8 +120,9 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
 const GAP: f32 = 12.0;
 
 /// The settings' row labels, in the first column.
-const LABELS: [&str; 7] = [
+const LABELS: [&str; 8] = [
     "Theme",
+    "Font",
     "Colors",
     "Traces",
     "Default Window",

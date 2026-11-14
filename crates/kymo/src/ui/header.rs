@@ -694,6 +694,11 @@ struct Columns {
     unit: f32,
 }
 
+/// Has the channel list's column widths measured again, as the fonts changed.
+pub fn forget_text_widths(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_by_type::<Measured>());
+}
+
 /// Column widths with the font and scale they were measured for.
 #[derive(Clone, Debug, PartialEq)]
 struct Measured {
@@ -704,7 +709,8 @@ struct Measured {
 
 impl Columns {
     /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
-    /// font and scale; `grouped`, the names within their streams (see [`list_name`]).
+    /// font and scale (and again after [`forget_text_widths`]); `grouped`, the names within
+    /// their streams (see [`list_name`]).
     fn of(ui: &Ui, document: &Document, grouped: bool) -> Columns {
         let font = TextStyle::Body.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();

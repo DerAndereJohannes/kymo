@@ -27,6 +27,7 @@ const SCALE_BARS_KEY: &str = "kymo.scale_bars";
 const REMOVE_DC_KEY: &str = "kymo.remove_dc";
 const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
 const THEME_KEY: &str = "kymo.theme";
+const SYSTEM_FONT_KEY: &str = "kymo.system_font";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
 
 /// The key of a channel type's color, by MNE's name of the type, e.g. `kymo.color.eeg` or
@@ -108,6 +109,9 @@ pub struct Settings {
     /// Colors picked per channel type; the others keep their defaults.
     pub type_colors: TypeColors,
     pub theme: Theme,
+    /// Whether text is in the system's interface font rather than egui's (see
+    /// [`crate::ui::fonts`]).
+    pub system_font: bool,
 }
 
 impl Default for Settings {
@@ -122,6 +126,7 @@ impl Default for Settings {
             auto_scale_on_open: true,
             type_colors: [None; KINDS.len()],
             theme: Theme::System,
+            system_font: false,
         }
     }
 }
@@ -162,6 +167,9 @@ impl Settings {
             theme: get(THEME_KEY)
                 .and_then(|v| Theme::parse(&v))
                 .unwrap_or(defaults.theme),
+            system_font: get(SYSTEM_FONT_KEY)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(defaults.system_font),
         }
         .clamped()
     }
@@ -176,6 +184,7 @@ impl Settings {
         storage.set_string(REMOVE_DC_KEY, self.remove_dc.to_string());
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
         storage.set_string(THEME_KEY, self.theme.key().to_owned());
+        storage.set_string(SYSTEM_FONT_KEY, self.system_font.to_string());
         for (kind, color) in KINDS.into_iter().zip(self.type_colors) {
             let key = type_color_key(kind);
             match color {
@@ -203,6 +212,7 @@ impl Settings {
             auto_scale_on_open: self.auto_scale_on_open,
             type_colors: self.type_colors,
             theme: self.theme,
+            system_font: self.system_font,
         }
     }
 

@@ -285,30 +285,6 @@ pub fn about_window(ctx: &egui::Context, open: &mut bool) {
         });
 }
 
-/// Adds macOS's font for its shortcut symbols (⌘ ⌥ ⇧ and arrows) as egui's last fallback.
-/// egui's own fonts lack them, and the system font fallback eframe installs only searches
-/// generic families, which lack them too; Lucida Grande is what macOS itself falls back to.
-/// Elsewhere shortcuts are written as words ("Ctrl+O"), so nothing is needed.
-pub fn add_symbol_font(ctx: &egui::Context) {
-    #[cfg(target_os = "macos")]
-    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/LucidaGrande.ttc") {
-        use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-        let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
-            .map(|family| InsertFontFamily {
-                family,
-                priority: FontPriority::Lowest,
-            })
-            .to_vec();
-        ctx.add_font(FontInsert {
-            name: "Lucida Grande".into(),
-            data: egui::FontData::from_owned(bytes),
-            families,
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = ctx;
-}
-
 /// The title of File → Open Recent.
 pub const RECENT_TITLE: &str = "Open Recent";
 

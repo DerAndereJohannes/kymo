@@ -41,6 +41,7 @@ fn defaults_without_storage_or_values() {
     assert!(!defaults.antialias);
     assert!(defaults.auto_scale_on_open);
     assert_eq!(defaults.theme, Theme::System);
+    assert!(!defaults.system_font);
     assert_eq!(Settings::load(None), defaults);
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
 }
@@ -70,6 +71,7 @@ fn saved_settings_read_back() {
             (ChannelKind::RefMeg, Color32::from_rgb(1, 2, 3)),
         ]),
         theme: Theme::Dark,
+        system_font: true,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
@@ -98,6 +100,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         auto_scale_on_open: true,
         type_colors: colors(&[(ChannelKind::Grad, Color32::from_rgb(255, 0, 128))]),
         theme: Theme::Light,
+        system_font: true,
     };
     let defaults = Settings::default();
     let cases = [
@@ -164,6 +167,13 @@ fn unreadable_values_are_defaults_and_others_kept() {
                 ..saved
             },
         ),
+        (
+            "kymo.system_font",
+            Settings {
+                system_font: defaults.system_font,
+                ..saved
+            },
+        ),
     ];
     for (key, want) in cases {
         let colors = ["#12345", "#12345g", "ff0080", "#+1+2+3", "#aé€"];
@@ -190,6 +200,7 @@ fn values_out_of_range_are_clamped() {
         auto_scale_on_open: false,
         type_colors: [None; KINDS.len()],
         theme: Theme::System,
+        system_font: false,
     }
     .save(&mut storage);
     let loaded = Settings::load(Some(&storage));

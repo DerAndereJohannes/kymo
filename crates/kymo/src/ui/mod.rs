@@ -4,6 +4,7 @@
 
 pub mod axis;
 pub mod color;
+pub mod fonts;
 pub mod go_to;
 pub mod gpu;
 pub mod header;

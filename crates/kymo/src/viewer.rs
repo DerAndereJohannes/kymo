@@ -178,7 +178,8 @@ pub struct Viewer {
     status: StatusLine,
     /// Width of the trace area in physical pixels at the last frame.
     width_px: u32,
-    /// Widest channel name, measured once per font size.
+    /// Widest channel name, measured once per font size (and again after
+    /// [`Viewer::forget_text_widths`]).
     names_width: Option<(f32, f32)>,
     /// The names column's width as dragged, in points, while the recording is open; `None`
     /// fits the names (up to [`NAMES_MAX_EMS`]).
@@ -1510,6 +1511,11 @@ impl Viewer {
         } else if response.dragged() {
             self.names_dragged = Some(width + response.drag_delta().x);
         }
+    }
+
+    /// Has the widest channel name measured again, as the fonts changed.
+    pub fn forget_text_widths(&mut self) {
+        self.names_width = None;
     }
 
     /// Width of the widest channel name in `font`.
