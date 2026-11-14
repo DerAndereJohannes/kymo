@@ -198,7 +198,6 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::MoreChannels),
             a(Action::FewerChannels),
-            a(Action::ResetOrder),
             Item::Separator,
             a(Action::ScaleUp),
             a(Action::ScaleDown),

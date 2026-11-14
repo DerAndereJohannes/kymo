@@ -139,6 +139,18 @@ impl ViewState {
     pub fn with_default_span(recording: &Recording, seconds: f64) -> Self {
         let channels = recording.channels();
         let rate = recording.sfreq();
+        // The streams in file order, each by type (in KINDS order), a type's channels
+        // in file order.
+        let stream_of = stream_of(recording);
+        let mut order: Vec<ChannelId> = (0..channels.len() as u32).map(ChannelId).collect();
+        order.sort_unstable_by_key(|c| {
+            let c = c.0 as usize;
+            (stream_of[c], kind_index(channels[c].kind), c)
+        });
+        let mut place = vec![0; channels.len()];
+        for (i, c) in order.iter().enumerate() {
+            place[c.0 as usize] = i;
+        }
         let mut state = ViewState {
             duration: recording.duration().max(0.0),
             min_span: if rate > 0.0 {
@@ -146,10 +158,10 @@ impl ViewState {
             } else {
                 0.0
             },
-            order: (0..channels.len() as u32).map(ChannelId).collect(),
-            place: vec![0; channels.len()],
-            stream_of: stream_of(recording),
-            rows_order: (0..channels.len() as u32).map(ChannelId).collect(),
+            rows_order: order.clone(),
+            order,
+            place,
+            stream_of,
             hidden: vec![false; channels.len()],
             kinds: channels.iter().map(|c| c.kind).collect(),
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
@@ -166,7 +178,6 @@ impl ViewState {
             requested: None,
             dc_requested: None,
         };
-        state.reset_order();
         state.set_default_span(seconds);
         state.span = state.default_span;
         state.clamp();
@@ -228,113 +239,6 @@ impl ViewState {
     /// Every channel, shown or not, top to bottom.
     pub fn order(&self) -> &[ChannelId] {
         &self.order
-    }
-
-    /// Moves a channel to just before `before`, or with `None` to the end of its group (its
-    /// type's channels in its stream; see [`group_of`](Self::group_of)). A channel stays
-    /// within its group: returns `false`, changing nothing, for a `before` in another group,
-    /// or an unknown channel. The rows on screen stay where they are.
-    pub fn move_channel(&mut self, channel: ChannelId, before: Option<ChannelId>) -> bool {
-        let n = self.order.len();
-        let (c, b) = (channel.0 as usize, before.map(|b| b.0 as usize));
-        if c >= n || b.is_some_and(|b| b >= n || self.group(b) != self.group(c)) {
-            return false;
-        }
-        if b == Some(c) {
-            return true;
-        }
-        let group = self.group(c);
-        self.order.remove(self.place[c]);
-        let at = match b {
-            Some(b) => self.order.iter().position(|&x| x.0 as usize == b),
-            None => self
-                .order
-                .iter()
-                .rposition(|x| self.group(x.0 as usize) == group)
-                .map(|last| last + 1),
-        };
-        // A group of one channel has nothing to move past.
-        let at = at.unwrap_or(self.place[c]);
-        self.order.insert(at, channel);
-        self.reordered();
-        true
-    }
-
-    /// Moves a type's channels in `stream` (as [`group_of`](Self::group_of) gives it) to
-    /// just before those of type `before` in the same stream, or with `None` to the end of
-    /// the stream (of all channels, without streams). Returns `false`, changing nothing,
-    /// where the stream has no channels of either type.
-    pub fn move_kind(
-        &mut self,
-        stream: Option<usize>,
-        kind: ChannelKind,
-        before: Option<ChannelKind>,
-    ) -> bool {
-        let block = self.range(|c| self.group(c) == (stream, kind));
-        if block.is_empty()
-            || before.is_some_and(|b| self.range(|c| self.group(c) == (stream, b)).is_empty())
-        {
-            return false;
-        }
-        if before == Some(kind) {
-            return true;
-        }
-        let start = block.start;
-        let moved: Vec<ChannelId> = self.order.drain(block).collect();
-        let at = match before {
-            Some(b) => self
-                .order
-                .iter()
-                .position(|x| self.group(x.0 as usize) == (stream, b)),
-            None => self
-                .order
-                .iter()
-                .rposition(|x| self.stream_of[x.0 as usize] == stream)
-                .map(|last| last + 1),
-        };
-        // The stream's only type stays where it is.
-        let at = at.unwrap_or(start);
-        self.order.splice(at..at, moved);
-        self.reordered();
-        true
-    }
-
-    /// Moves a stream's channels (by the stream's index in the recording) to just before
-    /// those of stream `before`, or with `None` to the end. Returns `false`, changing
-    /// nothing, for a stream without channels.
-    pub fn move_stream(&mut self, stream: usize, before: Option<usize>) -> bool {
-        let block = self.block(stream);
-        let target = before.map(|b| self.block(b));
-        if block.is_empty() || target.as_ref().is_some_and(Range::is_empty) {
-            return false;
-        }
-        if before == Some(stream) {
-            return true;
-        }
-        let moved: Vec<ChannelId> = self.order.drain(block).collect();
-        let at = match before {
-            Some(b) => self
-                .order
-                .iter()
-                .position(|x| self.stream_of[x.0 as usize] == Some(b))
-                .unwrap_or(self.order.len()),
-            None => self.order.len(),
-        };
-        self.order.splice(at..at, moved);
-        self.reordered();
-        true
-    }
-
-    /// The order a recording opens in: the streams in file order, each by type (in
-    /// [`KINDS`] order), a type's channels in file order. The rows on screen stay where
-    /// they are.
-    pub fn reset_order(&mut self) {
-        let (streams, kinds) = (&self.stream_of, &self.kinds);
-        self.order.sort_unstable_by_key(|c| {
-            let c = c.0 as usize;
-            (streams[c], kind_index(kinds[c]), c)
-        });
-        self.reordered();
     }
 
     /// The channels on screen, top to bottom.
@@ -459,7 +363,6 @@ impl ViewState {
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
             Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
-            Action::ResetOrder => self.reset_order(),
             Action::ToggleDc
             | Action::Open
             | Action::GoToTime
@@ -754,38 +657,12 @@ impl ViewState {
     }
 
     /// After the order changed: the places and rows follow it; the rows on screen stay.
-    fn reordered(&mut self) {
-        for (i, c) in self.order.iter().enumerate() {
-            self.place[c.0 as usize] = i;
-        }
-        self.rows_order = self.shown_in_order();
-        self.clamp();
-    }
-
     fn shown_in_order(&self) -> Vec<ChannelId> {
         self.order
             .iter()
             .copied()
             .filter(|&c| self.is_shown(c))
             .collect()
-    }
-
-    /// Where a stream's channels are in `order`; empty for a stream without channels.
-    fn block(&self, stream: usize) -> Range<usize> {
-        self.range(|c| self.stream_of[c] == Some(stream))
-    }
-
-    /// From the first to the last place in `order` of the channels (by index) that are
-    /// `ours`; empty for none.
-    fn range(&self, ours: impl Fn(usize) -> bool) -> Range<usize> {
-        let ours = |c: &ChannelId| ours(c.0 as usize);
-        match (
-            self.order.iter().position(ours),
-            self.order.iter().rposition(ours),
-        ) {
-            (Some(first), Some(last)) => first..last + 1,
-            _ => 0..0,
-        }
     }
 
     /// A channel's (by index) group, as [`group_of`](Self::group_of).

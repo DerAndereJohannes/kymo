@@ -1,8 +1,8 @@
 //! The sidebar: the file's header and its channels.
 
 use eframe::egui::{
-    self, Align, Checkbox, Color32, CursorIcon, DragAndDrop, FontId, Frame, Id, Label, Layout,
-    Margin, Response, RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
+    self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
+    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
 };
 use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
@@ -347,7 +347,7 @@ fn description_row(ui: &mut Ui, field: DescriptionField<'_>, legend: &Legend) ->
 /// open), a checkbox (mixed while some descriptions are shown), and how many there are; then,
 /// a level in, a row per description: a checkbox, its color (a click picks another, kept in
 /// `picked`), the description and how many annotations have it. Counts are right-aligned,
-/// and rows start where the channel list's start past their grips. Grouped by stream (see
+/// and rows start where the channel list's start. Grouped by stream (see
 /// [`Legend::by_stream`]), each stream of `streams` with annotations gets a row a level in
 /// (see [`legend_stream_row`]) and its descriptions' rows below it, a level further;
 /// annotations without a stream come last, under "Added". Scrolls beyond [`LEGEND_ROWS`]
@@ -369,7 +369,6 @@ fn legend_list(
     row.add(Label::new(RichText::new(legend.total().to_string()).weak()).extend());
     let toggle_root = row
         .with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.add_space(GRIP_WIDTH + GRIP_GAP);
             let name = "Annotations";
             let arrow = disclosure(ui, !folded, name, row_height);
             let mut checked = shown == all;
@@ -424,10 +423,10 @@ fn legend_list(
         rows.extend(legend.entries().map(|e| LegendRow::Entry(e.clone())));
     }
     // A description is a level in from "Annotations", and grouped, from its stream, which
-    // is a level in itself; in line with the channel list's rows, past where their grips are.
+    // is a level in itself; in line with the channel list's rows.
     let gap = LIST_GAP;
     let depth = if grouped { 2.0 } else { 1.0 };
-    let indent = GRIP_WIDTH + GRIP_GAP + CHEVRON_WIDTH + gap + depth * LEVEL;
+    let indent = CHEVRON_WIDTH + gap + depth * LEVEL;
     let mut toggled = None;
     // As tall as dragged (see `legend_edge`), else as its rows up to LEGEND_ROWS; from one
     // row to all of them, and within `room`, less what the panel has above them and its
@@ -581,7 +580,7 @@ fn fold_all_legend(ui: &mut Ui, recording: u64, legend: &Legend, panel: egui::Re
 fn fold_all(ui: &mut Ui, what: &str, area: egui::Rect, y: f32, any_open: bool) -> bool {
     let size = vec2(FOLD_ALL_WIDTH, 12.0);
     let rect = egui::Rect::from_center_size(egui::pos2(area.right() - size.x / 2.0, y), size);
-    if !ui.rect_contains_pointer(area.union(rect)) || DragAndDrop::has_any_payload(ui.ctx()) {
+    if !ui.rect_contains_pointer(area.union(rect)) {
         return false;
     }
     let verb = if any_open { "Collapse" } else { "Expand" };
@@ -649,7 +648,7 @@ fn legend_stream_row(row: &mut Ui, legend: &mut Legend, group: LegendGroup<'_>) 
     row.add(Label::new(RichText::new(legend.stream_total(stream).to_string()).weak()).extend());
     row.with_layout(Layout::left_to_right(Align::Center), |ui| {
         // A level in from "Annotations".
-        ui.add_space(GRIP_WIDTH + GRIP_GAP + LEVEL);
+        ui.add_space(LEVEL);
         let arrow = disclosure(ui, open, &name, row_height);
 
         let mut checked = shown == all;
@@ -683,10 +682,6 @@ const LIST_MIN_UNIT_EMS: f32 = 4.0;
 
 /// Gap between the channel list's columns, in points.
 const LIST_GAP: f32 = 8.0;
-
-/// Width of the grip at a row's left that drags it, and the gap after it, in points.
-const GRIP_WIDTH: f32 = 6.0;
-const GRIP_GAP: f32 = 4.0;
 
 /// Width of a stream row's disclosure chevron, in points.
 const CHEVRON_WIDTH: f32 = 10.0;
@@ -980,9 +975,9 @@ fn channel_list(
     // The width of a row's checkbox and Bad toggle with the gaps beside them (not the
     // indent), as the last frame laid them out (a guess before).
     let fixed_key = Id::unique("kymo channel list fixed width");
-    let fixed = ui.data(|d| d.get_temp::<f32>(fixed_key)).unwrap_or(
-        GRIP_WIDTH + GRIP_GAP + ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap,
-    );
+    let fixed = ui
+        .data(|d| d.get_temp::<f32>(fixed_key))
+        .unwrap_or(ui.spacing().interact_size.x + ui.spacing().icon_width + 3.0 * gap);
     // Ungrouped, the types whose channels differ in rate: their rows give a range.
     let mixed_rates: Vec<Group> = items
         .iter()
@@ -994,7 +989,6 @@ fn channel_list(
         })
         .collect();
     let mut measured = None;
-    let mut moved = None;
     let area = from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, items.len(), |ui, rows| {
@@ -1005,12 +999,9 @@ fn channel_list(
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
             );
-            // The rows laid out, by their index in `items`, for dropping a dragged one.
-            let mut placed = Vec::new();
             for i in rows {
                 let (rect, row_response) =
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
-                placed.push((i, rect));
                 if i % 2 == 1 {
                     stripe(ui, rect);
                 }
@@ -1035,8 +1026,6 @@ fn channel_list(
                 let (id, group, depth) = match items[i] {
                     Item::Stream(s) => {
                         let open = !closed.contains(&Fold::Stream(s));
-                        let name = stream_name(&streams[s]);
-                        grip(ui, rect, &name, Drag::Stream(s));
                         if stream_row(ui, document, s, open, view, row_response) {
                             toggled = Some(Fold::Stream(s));
                         }
@@ -1049,7 +1038,6 @@ fn channel_list(
                             .filter(|_| grouped)
                             .map(|s| stream_name(&streams[s]));
                         let name = kind_label(group.1, in_stream.as_deref());
-                        grip(ui, rect, &name, Drag::Kind(group));
                         ui.add_space(depth as f32 * level);
                         let kind = KindRow {
                             group,
@@ -1066,15 +1054,12 @@ fn channel_list(
                         continue;
                     }
                     Item::NotShown(s) => {
-                        // In line with the streams' rows, past where their grips are.
-                        ui.add_space(GRIP_WIDTH + GRIP_GAP);
                         not_shown_row(ui, &streams[s], row_response);
                         continue;
                     }
                     Item::Channel(id, group, depth) => (id, group, depth),
                 };
                 let channel = rec.channel(id);
-                grip(ui, rect, &channel.name, Drag::Channel(id));
                 ui.add_space(indent(depth));
                 let name_width = fit.name + (deepest - depth) as f32 * level;
                 let name = &channel.name;
@@ -1164,7 +1149,7 @@ fn channel_list(
                 let others = ui.cursor().left() - rect.left() - indent(depth) - name_width - gap;
                 measured = Some(others.ceil());
 
-                // Not selectable: a drag from a grip would select the text it passes.
+                // Not selectable, as the list's other labels.
                 let weak = |text: &str| {
                     Label::new(RichText::new(text).weak())
                         .selectable(false)
@@ -1191,21 +1176,8 @@ fn channel_list(
                     }
                 }
             }
-            moved = dragging(ui, &items, &placed);
         })
         .inner_rect;
-    match moved {
-        Some(Move::Channel(c, before)) => {
-            view.move_channel(c, before);
-        }
-        Some(Move::Kind((stream, kind), before)) => {
-            view.move_kind(stream, kind, before);
-        }
-        Some(Move::Stream(s, before)) => {
-            view.move_stream(s, before);
-        }
-        None => {}
-    }
     if let Some(width) = measured
         && width != fixed
     {
@@ -1244,43 +1216,6 @@ fn channel_list(
     }
 }
 
-/// The grip at the left of the row in `row`, which drags `drag` (`name`'s row): six dots
-/// while the pointer is over the row (and no other row is dragged) or while it is dragged,
-/// a grab cursor and "Drag to Reorder" over the grip.
-fn grip(ui: &mut Ui, row: egui::Rect, name: &str, drag: Drag) {
-    let (rect, response) = ui.allocate_exact_size(vec2(GRIP_WIDTH, row.height()), Sense::drag());
-    ui.add_space(GRIP_GAP - ui.spacing().item_spacing.x);
-    accessible_label(ui, &response, format!("Move {name}"));
-    let dragged = DragAndDrop::payload::<Drag>(ui.ctx()).map(|d| *d);
-    if dragged == Some(drag) || (dragged.is_none() && ui.rect_contains_pointer(row)) {
-        let color = if response.hovered() || dragged.is_some() {
-            ui.visuals().strong_text_color()
-        } else {
-            ui.visuals().weak_text_color()
-        };
-        for (x, y) in [
-            (-1.0, -1.0),
-            (1.0, -1.0),
-            (-1.0, 0.0),
-            (1.0, 0.0),
-            (-1.0, 1.0),
-            (1.0, 1.0),
-        ] {
-            let at = rect.center() + vec2(x * 1.5, y * 3.5);
-            ui.painter().circle_filled(at, GRIP_DOT, color);
-        }
-    }
-    let response = response
-        .on_hover_cursor(CursorIcon::Grab)
-        .on_hover_text("Drag to Reorder");
-    if response.drag_started() {
-        DragAndDrop::set_payload(ui.ctx(), drag);
-    }
-}
-
-/// Radius of a grip's dots, in points.
-const GRIP_DOT: f32 = 1.1;
-
 /// A disclosure chevron centered on `center`, pointing right (closed) or down (open), as
 /// outline views draw them.
 fn chevron(painter: &egui::Painter, center: egui::Pos2, open: bool, color: Color32) {
@@ -1299,127 +1234,6 @@ fn chevron(painter: &egui::Painter, center: egui::Pos2, open: bool, color: Color
         ]
     };
     painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
-}
-
-/// What is dragged in the channel list, by its grip: a channel, a type's channels, or a
-/// stream.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Drag {
-    Channel(ChannelId),
-    Kind(Group),
-    Stream(usize),
-}
-
-/// A drop: the channel, type or stream, and what it goes before (`None`: the end of its
-/// group, of its stream, or of all streams).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Move {
-    Channel(ChannelId, Option<ChannelId>),
-    Kind(Group, Option<ChannelKind>),
-    Stream(usize, Option<usize>),
-}
-
-/// While a row is dragged: where it would go, as a line between the rows (a channel only
-/// among its group's channels, a type among its stream's types, a stream between streams);
-/// the list scrolling while the
-/// pointer is near its top or bottom edge. Returns the move when it is dropped (Escape
-/// cancels it). `placed` are the rows laid out, by their index in `items`.
-fn dragging(ui: &mut Ui, items: &[Item], placed: &[(usize, egui::Rect)]) -> Option<Move> {
-    // egui ends the drag on Escape.
-    let drag = *DragAndDrop::payload::<Drag>(ui.ctx())?;
-    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-    let pointer = ui.ctx().pointer_latest_pos()?;
-    let clip = ui.clip_rect();
-    // Near an edge, the list scrolls a row a second per point closer, up to ten.
-    let row = placed.first().map_or(20.0, |(_, r)| r.height());
-    let speed = if pointer.y < clip.top() + row {
-        clip.top() + row - pointer.y
-    } else if pointer.y > clip.bottom() - row {
-        clip.bottom() - row - pointer.y
-    } else {
-        0.0
-    };
-    if speed != 0.0 {
-        let dt = ui.input(|i| i.stable_dt).min(0.1);
-        ui.scroll_with_delta(vec2(0.0, speed.clamp(-10.0, 10.0) * row * dt));
-        ui.ctx().request_repaint();
-    }
-
-    // The rows it may go before (its group's channels, its stream's types, or the streams),
-    // and what follows such a row as part of it (a type's channels, a stream's types and
-    // channels).
-    let group = match drag {
-        Drag::Channel(c) => Some(items.iter().find_map(|item| match *item {
-            Item::Channel(x, g, _) if x == c => Some(g),
-            _ => None,
-        })?),
-        _ => None,
-    };
-    let target = |item: &Item| match (drag, *item) {
-        (Drag::Channel(_), Item::Channel(_, g, _)) => Some(g) == group,
-        (Drag::Kind((stream, _)), Item::Kind((s, _), _)) => s == stream,
-        (Drag::Stream(_), Item::Stream(_)) => true,
-        _ => false,
-    };
-    let belongs = |item: &Item| match (drag, *item) {
-        (Drag::Kind((stream, _)), Item::Channel(_, (s, _), _)) => s == stream,
-        (Drag::Stream(_), Item::Channel(..) | Item::Kind(..)) => true,
-        _ => false,
-    };
-    let rows: Vec<(usize, egui::Rect)> = placed
-        .iter()
-        .copied()
-        .filter(|(i, _)| target(&items[*i]))
-        .collect();
-    let &(last, _) = rows.last()?;
-    let half_gap = ui.spacing().item_spacing.y / 2.0;
-    // Before the first of them below the pointer, else after the last laid out and what
-    // belongs to it.
-    let (at, y) = match rows.iter().find(|(_, r)| r.center().y > pointer.y) {
-        Some(&(i, r)) => (i, r.top() - half_gap),
-        None => {
-            let at = items[last + 1..]
-                .iter()
-                .position(|item| target(item) || !belongs(item))
-                .map_or(items.len(), |n| last + 1 + n);
-            let bottom = placed
-                .iter()
-                .filter(|(i, _)| (last..at).contains(i))
-                .map(|(_, r)| r.bottom())
-                .fold(f32::MIN, f32::max);
-            (at, bottom + half_gap)
-        }
-    };
-    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.bg_fill);
-    ui.painter().hline(ui.max_rect().x_range(), y, stroke);
-
-    if !ui.input(|i| i.pointer.any_released()) {
-        return None;
-    }
-    DragAndDrop::clear_payload(ui.ctx());
-    Some(match drag {
-        Drag::Channel(c) => Move::Channel(
-            c,
-            match items.get(at) {
-                Some(&Item::Channel(x, g, _)) if Some(g) == group => Some(x),
-                _ => None,
-            },
-        ),
-        Drag::Kind(g) => Move::Kind(
-            g,
-            match items.get(at) {
-                Some(&Item::Kind((s, kind), _)) if s == g.0 => Some(kind),
-                _ => None,
-            },
-        ),
-        Drag::Stream(s) => Move::Stream(
-            s,
-            match items.get(at) {
-                Some(&Item::Stream(t)) => Some(t),
-                _ => None,
-            },
-        ),
-    })
 }
 
 /// A stream's row in the channel list: a disclosure arrow that shows or hides its channels'

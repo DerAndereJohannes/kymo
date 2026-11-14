@@ -5286,8 +5286,8 @@ fn several_streams_group_the_channel_list() {
 }
 
 /// Grouped by stream, a stream's channels are under their types where it has several: each
-/// type a row in it, half a level in, that shows and hides, folds and moves its channels
-/// within the stream; a stream of one type has none. The columns after the names line up
+/// type a row in it, a level in, that shows and hides and folds its channels; a stream of
+/// one type has none. The columns after the names line up
 /// whatever the rows' levels.
 #[test]
 fn streams_of_several_types_group_their_channels_by_type() {
@@ -5351,76 +5351,8 @@ fn streams_of_several_types_group_their_channels_by_type() {
     harness.get_by_label("Show Fz");
     harness.get_by_label("Expand Misc channels in Amp").click();
     harness.run_steps(2);
-
-    // It moves within its stream: above EEG, then dropped below Tracker, to Amp's end.
-    let row = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect();
-    let eeg = row(&harness, "Show EEG channels in Amp");
-    let from = grip_at(&harness, "Misc channels in Amp");
-    drag(
-        &mut harness,
-        from,
-        egui::pos2(eeg.center().x, eeg.center().y - 3.0),
-    );
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [1, 2, 0, 3]);
-    let tracker = row(&harness, "Show Tracker");
-    let from = grip_at(&harness, "Misc channels in Amp");
-    drag(
-        &mut harness,
-        from,
-        egui::pos2(tracker.center().x, tracker.center().y + 3.0),
-    );
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [0, 1, 2, 3]);
+    harness.get_by_label("Show AUX1");
 }
-
-/// Two streams of two types each: Amp (Fz EEG, AUX1 misc), Body (HEOG EOG, Temp misc).
-fn two_mixed_streams_xdf() -> TempFile {
-    use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStream};
-    let channel =
-        |label: &str, kind: &str| ChannelSpec::xdf(label, kind, "microvolts", 100, XdfFormat::F32);
-    let channels = vec![
-        channel("Fz", "EEG"),
-        channel("AUX1", "AUX"),
-        channel("HEOG", "EOG"),
-        channel("Temp", "AUX"),
-    ];
-    let mut spec = Spec::new(kymo_testgen::Format::Xdf, channels, 1.0, 30);
-    spec.xdf.streams = vec![
-        XdfStream::new(1, "Amp", "EEG", vec![0, 1]),
-        XdfStream::new(2, "Body", "Physio", vec![2, 3]),
-    ];
-    TempFile::written(&spec)
-}
-
-/// A dragged type's line stays within its stream: held over another stream's type, it is
-/// at its own stream's end, where it then goes.
-#[test]
-fn a_dragged_type_stays_in_its_stream() {
-    let file = two_mixed_streams_xdf();
-    let mut harness = window(file.path());
-    ready(&mut harness);
-    assert_eq!(order(&harness), [0, 1, 2, 3]);
-    let eog = harness.get_by_label("Show EOG channels in Body").rect();
-    let from = grip_at(&harness, "EEG channels in Amp");
-    let to = egui::pos2(eog.center().x, eog.center().y - 3.0);
-    hover(&mut harness, from);
-    harness.drag_at(from);
-    harness.step();
-    hover(&mut harness, (from + to.to_vec2()) / 2.0);
-    hover(&mut harness, to);
-    let line = drop_line(&harness).unwrap();
-    let aux = name_rect(&harness, "AUX1");
-    let body = harness.get_by_label("Show Body").rect();
-    assert!(
-        aux.bottom() <= line && line <= body.top(),
-        "{line} {aux:?} {body:?}"
-    );
-    harness.drop_at(to);
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [1, 0, 2, 3]);
-}
-
 /// While the pointer is over the channel list, a button at the right end of the rule above
 /// it folds all of its rows and then unfolds them; Alt-click on a chevron folds or unfolds
 /// all of its level.
@@ -5746,29 +5678,6 @@ fn name_rect(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Rect {
         .unwrap()
 }
 
-/// Where the grip of the row of `name` (a channel or stream) is.
-fn grip_at(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Pos2 {
-    harness
-        .get_by_label(&format!("Move {name}"))
-        .rect()
-        .center()
-}
-
-/// Drags the grip of the sidebar row `from` to just above (or with `below`, just below)
-/// the label `to`'s middle.
-fn drag_label(harness: &mut Harness<'_, KymoApp>, from: &str, to: &str, below: bool) {
-    let a = grip_at(harness, from);
-    let b = name_rect(harness, to);
-    let y = if below {
-        b.center().y + 3.0
-    } else {
-        b.center().y - 3.0
-    };
-    drag(harness, a, egui::pos2(b.center().x, y));
-    harness.run_steps(2);
-    assert!(!has_selection(harness), "text selected dragging {from}");
-}
-
 /// Whether some label text is selected.
 fn has_selection(harness: &Harness<'_, KymoApp>) -> bool {
     let selection = harness
@@ -5777,11 +5686,11 @@ fn has_selection(harness: &Harness<'_, KymoApp>) -> bool {
     selection.lock().has_selection()
 }
 
-/// Channels move by dragging the grip that shows at the left of their row in the sidebar on
-/// hover, in any recording, within their type, and types with their channels; the traces
-/// follow; View → Reset Channel Order puts them back as the recording opened.
+/// Channels don't move: a drag on a name or a row's gray text moves nothing and selects no
+/// text, and a click on a name shows it in the traces. A stream's row starts with a small
+/// chevron, left of its checkbox.
 #[test]
-fn dragging_names_reorders_the_channels() {
+fn names_click_and_drag_nothing() {
     // A1, A2 (EEG), ECG, EOG L, Status: not in the types' order, so they open as EEG, EOG,
     // ECG, stim.
     let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
@@ -5792,22 +5701,14 @@ fn dragging_names_reorders_the_channels() {
     let mut harness = window(file.path());
     ready(&mut harness);
     assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-    drag_label(&mut harness, "A2", "A1", false);
-    assert_eq!(order(&harness), [1, 0, 3, 2, 4]);
-    assert_eq!(shown(&harness), [1, 0, 3, 2, 4]);
-    // The list follows: A2's row is above A1's.
-    let y = |h: &Harness<'_, KymoApp>, label: &str| name_rect(h, label).top();
-    assert!(y(&harness, "A2") < y(&harness, "A1"));
-    // Dragging a name moves nothing, and selects no text on the way.
     let (a, b) = (
         name_rect(&harness, "A2").center(),
         name_rect(&harness, "Status").center(),
     );
     drag(&mut harness, a, b);
     harness.run_steps(2);
-    assert_eq!(order(&harness), [1, 0, 3, 2, 4]);
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
     assert!(!has_selection(&harness));
-    // Nor does a drag from a row's gray text.
     let unit = harness
         .query_all_by_role_and_label(egui::accesskit::Role::Label, "\u{b5}V")
         .next()
@@ -5816,223 +5717,22 @@ fn dragging_names_reorders_the_channels() {
         .center();
     drag(&mut harness, unit, b);
     harness.run_steps(2);
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
     assert!(!has_selection(&harness));
-    // A channel stays among its type's: dropped below Status, A2 goes to the end of EEG,
-    // and ECG dropped above A1 stays where it is.
-    drag_label(&mut harness, "A2", "Status", true);
-    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-    drag_label(&mut harness, "ECG", "A1", false);
-    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-    // A type moves with its channels.
-    drag_label(&mut harness, "ECG channels", "EEG", false);
-    assert_eq!(order(&harness), [2, 0, 1, 3, 4]);
-    assert!(y(&harness, "ECG") < y(&harness, "A1"));
-    drag_label(&mut harness, "EEG channels", "Stim", true);
-    assert_eq!(order(&harness), [2, 3, 4, 0, 1]);
 
-    // Escape cancels a drag.
-    let a = grip_at(&harness, "A2");
-    let b = name_rect(&harness, "A1").center();
-    hover(&mut harness, a);
-    harness.drag_at(a);
-    harness.step();
-    hover(&mut harness, (a + b.to_vec2()) / 2.0);
-    hover(&mut harness, b);
-    harness.key_press(Key::Escape);
-    harness.step();
-    harness.drop_at(b);
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [2, 3, 4, 0, 1]);
-
-    // Back to how it opened.
-    harness.get_by_label("View").click();
-    harness.run_steps(2);
-    harness.get_by_label("Reset Channel Order").click();
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-
-    // A click on a name still shows it in the traces.
     for _ in 0..2 {
         harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::Minus);
         harness.step();
     }
     click_in_list(&mut harness, egui::accesskit::Role::Label, "EOG L");
     assert_eq!(viewer(&harness).view().top(), 2.0);
-    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
-}
 
-/// How many grip dots are painted.
-fn grip_dots(harness: &Harness<'_, KymoApp>) -> usize {
-    fn count(shape: &egui::Shape) -> usize {
-        match shape {
-            egui::Shape::Circle(c) if (c.radius - 1.1).abs() < 1e-4 => 1,
-            egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
-            _ => 0,
-        }
-    }
-    harness
-        .output()
-        .shapes
-        .iter()
-        .map(|c| count(&c.shape))
-        .sum()
-}
-
-/// A row's grip shows while the pointer is over the row, with a grab cursor and what it
-/// does over the grip itself; a stream's chevron is small.
-#[test]
-fn grips_show_on_hover() {
     let file = streams_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
-    hover(&mut harness, egui::pos2(900.0, 400.0));
-    assert_eq!(grip_dots(&harness), 0);
-    let cz = name_rect(&harness, "Cz").center();
-    hover(&mut harness, cz);
-    assert_eq!(grip_dots(&harness), 6);
-    let amp = name_rect(&harness, "Amp").center();
-    hover(&mut harness, amp);
-    assert_eq!(grip_dots(&harness), 6);
-    let grip = grip_at(&harness, "Cz");
-    hover(&mut harness, grip);
-    assert_eq!(grip_dots(&harness), 6);
-    assert_eq!(cursor(&harness), egui::CursorIcon::Grab);
-    assert!(tooltip(&mut harness, "Drag to Reorder"));
-    // The grips are left of the checkboxes, the chevron between a stream's.
-    assert!(grip.x < harness.get_by_label("Show Cz").rect().left());
     let chevron = harness.get_by_label("Collapse Amp").rect();
     assert!(chevron.width() <= 10.0, "{chevron:?}");
-    assert!(grip_at(&harness, "Amp").x < chevron.left());
-    // Rows of a recording without streams have them too.
-    let file = TempFile::preset("bdf+c-small");
-    let mut harness = window(file.path());
-    ready(&mut harness);
-    let a1 = grip_at(&harness, "A1");
-    hover(&mut harness, a1);
-    assert_eq!(grip_dots(&harness), 6);
-}
-
-/// Where the drop line is drawn: the y of the horizontal line in the selection color.
-fn drop_line(harness: &Harness<'_, KymoApp>) -> Option<f32> {
-    let color = harness.ctx.global_style().visuals.selection.bg_fill;
-    fn find(shape: &egui::Shape, color: egui::Color32, out: &mut Option<f32>) {
-        match shape {
-            egui::Shape::LineSegment { points, stroke }
-                if points[0].y == points[1].y && stroke.color == color && stroke.width == 2.0 =>
-            {
-                *out = Some(points[0].y);
-            }
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, color, out)),
-            _ => {}
-        }
-    }
-    let mut y = None;
-    for clipped in &harness.output().shapes {
-        find(&clipped.shape, color, &mut y);
-    }
-    y
-}
-
-/// Presses on the grip of the sidebar row `from` and moves to just above the label `to`'s middle,
-/// without letting go.
-fn hold_over(harness: &mut Harness<'_, KymoApp>, from: &str, to: &str) -> egui::Pos2 {
-    let a = grip_at(harness, from);
-    let b = name_rect(harness, to);
-    let to = egui::pos2(b.center().x, b.center().y - 3.0);
-    hover(harness, a);
-    harness.drag_at(a);
-    harness.step();
-    hover(harness, (a + to.to_vec2()) / 2.0);
-    hover(harness, to);
-    to
-}
-
-/// Grouped by stream, a channel moves only among its stream's channels, and a stream moves
-/// by its name, with its channels.
-#[test]
-fn dragging_in_streams_keeps_channels_in_their_stream() {
-    // Amp: Fz, Cz, Pz; Tracker: Pupil.
-    let file = streams_xdf();
-    let mut harness = window(file.path());
-    ready(&mut harness);
-    drag_label(&mut harness, "Tracker", "Amp", false);
-    assert_eq!(order(&harness), [3, 0, 1, 2]);
-    assert_eq!(shown(&harness), [3, 0, 1, 2]);
-    drag_label(&mut harness, "Pz", "Fz", false);
-    assert_eq!(order(&harness), [3, 2, 0, 1]);
-    // Dropped on another stream's channel, it goes to its own stream's edge nearest to it.
-    drag_label(&mut harness, "Cz", "Pupil", false);
-    assert_eq!(order(&harness), [3, 1, 2, 0]);
-    drag_label(&mut harness, "Amp", "Tracker", false);
-    assert_eq!(order(&harness), [1, 2, 0, 3]);
-    // Past the last stream: to the end, the line below the last stream's channels.
-    assert!(drop_line(&harness).is_none());
-    let at = hold_over(&mut harness, "Amp", "Empty");
-    let line = drop_line(&harness).unwrap();
-    let (pupil, empty) = (name_rect(&harness, "Pupil"), name_rect(&harness, "Empty"));
-    assert!(
-        pupil.bottom() <= line && line <= empty.top(),
-        "{line} {pupil:?} {empty:?}"
-    );
-    harness.drop_at(at);
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [3, 1, 2, 0]);
-    assert!(drop_line(&harness).is_none());
-    // A channel's line is between its stream's rows (Cz, Pz, Fz): above Fz.
-    let at = hold_over(&mut harness, "Cz", "Fz");
-    let line = drop_line(&harness).unwrap();
-    let (pz, fz) = (name_rect(&harness, "Pz"), name_rect(&harness, "Fz"));
-    assert!(
-        pz.bottom() <= line && line <= fz.top(),
-        "{line} {pz:?} {fz:?}"
-    );
-    harness.drop_at(at);
-    harness.run_steps(2);
-    assert_eq!(order(&harness), [3, 2, 1, 0]);
-}
-
-/// Held at the list's bottom edge, a dragged name scrolls the list, so it can go anywhere
-/// in a long one.
-#[test]
-fn a_dragged_name_scrolls_the_list_at_its_edge() {
-    let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
-    for k in 0..55 {
-        spec.channels.push(kymo_testgen::ChannelSpec::eeg(
-            format!("E{k}"),
-            512,
-            spec.format,
-        ));
-    }
-    let file = TempFile::new(spec.format.extension());
-    kymo_testgen::write(&spec, file.path()).unwrap();
-    let mut harness = window(file.path());
-    ready(&mut harness);
-    let channels = viewer(&harness).document().recording.channels().len();
-    let a = grip_at(&harness, "A1");
-    // The lowest row in view.
-    let bottom = harness
-        .query_all_by_role(egui::accesskit::Role::Label)
-        .filter(|n| {
-            n.accesskit_node()
-                .label()
-                .or(n.accesskit_node().value())
-                .is_some_and(|l| l.starts_with('E') && l[1..].parse::<u32>().is_ok())
-        })
-        .map(|n| n.rect().bottom())
-        .fold(f32::MIN, f32::max);
-    // Just past the bottom, where it scrolls fastest.
-    let edge = egui::pos2(a.x, bottom + 12.0);
-    hover(&mut harness, a);
-    harness.drag_at(a);
-    harness.step();
-    hover(&mut harness, egui::pos2(a.x, (a.y + edge.y) / 2.0));
-    hover(&mut harness, edge);
-    // A row a frame at most, as test frames are long.
-    harness.run_steps(80);
-    harness.drop_at(edge);
-    harness.run_steps(2);
-    let place = order(&harness).iter().position(|&c| c == 0).unwrap();
-    assert!(place >= channels - 3, "A1 at {place} of {channels}");
+    assert!(chevron.right() <= harness.get_by_label("Show Amp").rect().left());
 }
 
 /// An XDF file of an EEG stream ("Amp": Fz, Cz, Pz at 10 Hz for 30 s) and two marker
