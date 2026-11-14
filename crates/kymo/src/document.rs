@@ -89,8 +89,8 @@ pub struct Summary {
     /// Seconds.
     pub duration: f64,
     pub channels: usize,
-    /// The file's streams (XDF) and how many of them are shown as channels; 0 for formats
-    /// without streams.
+    /// The file's streams (XDF's, BVRF's participants) and how many of them are shown as
+    /// channels; 0 for formats without streams.
     pub streams: (usize, usize),
     pub annotations: usize,
     pub grids: Vec<GridSummary>,
@@ -150,7 +150,7 @@ impl Summary {
             SidebarRow::new("Duration", format_duration(self.duration)),
             SidebarRow::new("Channels", self.channels.to_string()),
         ];
-        // Only where there are several, as only XDF files have them.
+        // Only where there are several, as only XDF and BVRF files have them.
         let (streams, with_channels) = self.streams;
         if streams > 1 {
             let value = if with_channels == streams {

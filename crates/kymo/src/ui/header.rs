@@ -938,7 +938,8 @@ fn stream_name(stream: &Stream) -> String {
 /// as does a channel whose type's channels differ in rate. Rows under a type or stream are
 /// a level in.
 ///
-/// A recording with several streams of channels (XDF) groups them by stream: a row per
+/// A recording with several streams of channels (XDF, BVRF's participants) groups them by
+/// stream: a row per
 /// stream (see [`stream_row`]) above its channels, which are under their types only in a
 /// stream of several types. Streams the file has but doesn't show are listed at the end,
 /// grayed, with the reason on hover. Nothing of streams shows for other recordings.

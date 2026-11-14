@@ -41,11 +41,13 @@ These Kymo numbers are for files opened before. The first time you open a file, 
 | GDF 1.x and 2.x | `.gdf` |
 | FIFF (MNE-Python, Neuromag/MEGIN), including split files | `.fif` |
 | XDF ([Lab Streaming Layer](https://labstreaminglayer.org)) | `.xdf` |
+| BVRF (BrainVision Recording Format), including several participants in one recording | `.bvrh` with `.bvrd` and `.bvrm` |
 
-- Kymo recognizes the format from the file's contents, so the extension doesn't matter. You can open any file of a set (such as a BrainVision `.eeg`) to get the whole recording.
+- Kymo recognizes the format from the file's contents, so the extension doesn't matter. You can open any file of a set (such as a BrainVision `.eeg` or a BVRF `.bvrd`) to get the whole recording.
 - Channels can have different sampling rates, and recordings with gaps show the gaps as empty space.
 - XDF streams are synchronized and dejittered the same way [PyXDF](https://github.com/xdf-modules/pyxdf) does it. Irregular streams are drawn at their own time stamps, and marker streams become annotations.
-- We check samples and annotations against MNE-Python's readers (and PyXDF for XDF).
+- In BVRF recordings of several participants, each participant's channels and markers form a group of their own, and the channels are named after their participant (`Fp1 (P1)`), as in [PyBVRF](https://github.com/cbrnr/pybvrf).
+- We check samples and annotations against MNE-Python's readers (PyXDF for XDF, PyBVRF for BVRF).
 - Kymo never modifies your files.
 
 ### Navigation
@@ -57,8 +59,8 @@ These Kymo numbers are for files opened before. The first time you open a file, 
 
 ### Channels and scaling
 
-- The sidebar lists all channels grouped by type (or by stream for XDF files). You can fold groups and show or hide any channel or group.
-- Drag channels to reorder them, and mark them as bad. If the file already marks channels as bad, Kymo does too.
+- The sidebar lists all channels grouped by type (and by stream for XDF files, or by participant for BVRF recordings of several participants). You can fold groups and show or hide any channel or group.
+- Mark channels as bad. If the file already marks channels as bad, Kymo does too.
 - Set the amplitude scale for each channel type, or let **Auto Scale** pick it based on what you see in the current window.
 - Scale bars show the amplitude of each channel type.
 - **DC removal** keeps channels with large offsets centered in their rows.
