@@ -20,7 +20,7 @@ fn recordings(dir: &Path, found: &mut Vec<PathBuf>) {
         if path.is_dir() {
             recordings(&path, found);
         } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            ["edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf"]
+            ["edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf", "bvrh"]
                 .iter()
                 .any(|x| e.eq_ignore_ascii_case(x))
         }) {
@@ -47,14 +47,14 @@ fn windows(len: u64, rate: f64) -> Vec<Range<u64>> {
 #[ignore = "needs real recordings in KYMO_TEST_DATA"]
 fn real_recordings_open_and_read() {
     let dir = std::env::var_os("KYMO_TEST_DATA").expect(
-        "set KYMO_TEST_DATA to a directory of EDF, BDF, BrainVision, EEGLAB, GDF, FIFF and XDF \
-         recordings",
+        "set KYMO_TEST_DATA to a directory of EDF, BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and \
+         BVRF recordings",
     );
     let mut files = Vec::new();
     recordings(Path::new(&dir), &mut files);
     assert!(
         !files.is_empty(),
-        "no .edf, .bdf, .vhdr, .set, .gdf, .fif or .xdf files under {dir:?}"
+        "no .edf, .bdf, .vhdr, .set, .gdf, .fif, .xdf or .bvrh files under {dir:?}"
     );
 
     for path in &files {

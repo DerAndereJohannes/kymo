@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::{OpenError, Opened, brainvision, edf, eeglab, fiff, gdf, xdf};
+use crate::{OpenError, Opened, brainvision, bvrf, edf, eeglab, fiff, gdf, xdf};
 
 /// Bytes read to recognize a format: enough for MATLAB's 116-byte text header.
 const HEAD: u64 = 128;
@@ -20,6 +20,8 @@ enum Format {
     Fiff,
     Xdf,
     BrainVision,
+    /// A JSON file, as BVRF's header (`.bvrh`) is; the reader checks that it is one.
+    Json,
     /// A MATLAB file in the v5 format (MATLAB's v6 and v7 files), as EEGLAB writes `.set`.
     Mat,
     /// A MATLAB v7.3 file, which is HDF5.
@@ -48,6 +50,8 @@ fn detect(head: &[u8]) -> Option<Format> {
         Format::Gzip
     } else if is_brainvision(head) {
         Format::BrainVision
+    } else if is_json(head) {
+        Format::Json
     } else if let Some(b'0' | 0xff) = head.first() {
         // EDF's version field is "0", BDF's starts with 0xFF ("\xffBIOSEMI").
         Format::Edf
@@ -70,16 +74,24 @@ fn is_brainvision(head: &[u8]) -> bool {
         && line.windows(11).any(|w| w == b"Header File")
 }
 
+/// A JSON object's opening brace first, after an optional UTF-8 byte-order mark and
+/// whitespace. No other format read starts with one.
+fn is_json(head: &[u8]) -> bool {
+    let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
+    text.trim_ascii_start().first() == Some(&b'{')
+}
+
 /// Why a recognized format can't be opened (yet).
 fn unsupported(format: Format) -> &'static str {
     match format {
         Format::Edf
         | Format::BrainVision
+        | Format::Json
         | Format::Mat
         | Format::Gdf
         | Format::Fiff
         | Format::Xdf => {
-            unreachable!("EDF, BDF, BrainVision, EEGLAB, GDF, FIFF and XDF are read")
+            unreachable!("EDF, BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF are read")
         }
         Format::OtherGdf => "only GDF 1 and 2 files are supported",
         Format::Gzip => "compressed (gzip) files are not read; decompress it first",
@@ -104,12 +116,14 @@ fn head(path: &Path) -> Result<Vec<u8>, OpenError> {
 }
 
 /// For a data or marker file, the header file beside it that describes it, if it exists:
-/// BrainVision's `.vhdr` for `.eeg` and `.vmrk`, EEGLAB's `.set` for `.fdt`.
+/// BrainVision's `.vhdr` for `.eeg` and `.vmrk`, EEGLAB's `.set` for `.fdt`, BVRF's `.bvrh`
+/// for `.bvrd`, `.bvrm` and `.bvri`.
 fn header_sibling(path: &Path) -> Option<PathBuf> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let candidates: &[&str] = match extension.as_str() {
         "eeg" | "vmrk" => &["vhdr", "VHDR"],
         "fdt" => &["set", "SET"],
+        "bvrd" | "bvrm" | "bvri" => &["bvrh", "BVRH"],
         _ => return None,
     };
     candidates
@@ -121,8 +135,9 @@ fn header_sibling(path: &Path) -> Option<PathBuf> {
 /// Opens a recording file, choosing the reader from the file's first bytes.
 ///
 /// A data or marker file whose content is not recognized (BrainVision's `.eeg` and `.vmrk`,
-/// EEGLAB's `.fdt`) opens the header file beside it, if there is one. EDF and BDF (with
-/// their + variants), BrainVision, EEGLAB, GDF 1 and 2, FIFF and XDF are read for now.
+/// EEGLAB's `.fdt`, BVRF's `.bvrd`, `.bvrm` and `.bvri`) opens the header file beside it, if
+/// there is one. EDF and BDF (with their + variants), BrainVision, EEGLAB, GDF 1 and 2, FIFF,
+/// XDF and BVRF are read for now.
 pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let (path, format) = match detect(&head(path)?) {
         Some(format) => (path.to_owned(), format),
@@ -136,7 +151,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                     return Err(OpenError::Unsupported {
                         path: path.to_owned(),
                         reason: "not a supported file format (EDF, BDF, BrainVision, EEGLAB, \
-                                 GDF, FIFF and XDF are read)"
+                                 GDF, FIFF, XDF and BVRF are read)"
                             .into(),
                     });
                 }
@@ -146,6 +161,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     match format {
         Format::Edf => edf::open(&path),
         Format::BrainVision => brainvision::open(&path),
+        Format::Json => bvrf::open(&path),
         Format::Mat => eeglab::open(&path),
         Format::Gdf => gdf::open(&path),
         Format::Fiff => fiff::open(&path),

@@ -1,5 +1,5 @@
-//! Command-line front end of the synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF
-//! generator.
+//! Command-line front end of the synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and
+//! BVRF generator.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use kymo_testgen::{PRESETS, Spec};
 
 const HELP: &str = "\
-kymo-testgen: generate synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files for tests
-and benchmarks
+kymo-testgen: generate synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF files for
+tests and benchmarks
 
 Usage: kymo-testgen <PRESET> <OUTPUT> [OPTIONS]
        kymo-testgen --list
@@ -21,6 +21,7 @@ Options:
   -h, --help                Print this help
 
 BrainVision presets write OUTPUT (the .vhdr) and its .eeg and .vmrk beside it.
+BVRF presets write OUTPUT (the .bvrh) and its .bvrd and .bvrm beside it.
 EEGLAB presets write OUTPUT (the .set), and its .fdt beside it for eeglab-fdt.
 fif-split writes OUTPUT (the first part) and its other parts beside it (OUTPUT-1.fif, ...).";
 

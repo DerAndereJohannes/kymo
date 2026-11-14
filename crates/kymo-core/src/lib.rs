@@ -6,6 +6,7 @@
 mod annotation;
 pub mod annotation_file;
 pub mod brainvision;
+pub mod bvrf;
 mod channel;
 pub mod decode;
 pub mod edf;

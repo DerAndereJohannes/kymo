@@ -1,17 +1,18 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["mne", "mnextend", "numpy", "pandas", "pyxdf"]
+# dependencies = ["mne", "mnextend", "numpy", "pandas", "pybvrf", "pyxdf"]
 # ///
-"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files with MNE-Python's
-(XDF: with pyxdf's and mnextend's).
+"""Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF files with
+MNE-Python's (XDF: with pyxdf's and mnextend's; BVRF: with pybvrf's).
 
 Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
     scripts/compare_mne.py --testgen           # files from kymo-testgen presets
     scripts/compare_mne.py --annotations ...   # also annotation files, both ways
 
-Needs numpy, mne, pandas (only with --annotations), pyxdf and mnextend (only for XDF). The dependencies are
+Needs numpy, mne, pandas (only with --annotations), pyxdf and mnextend (only for XDF), and pybvrf
+(only for BVRF). The dependencies are
 declared inline (PEP 723), so uv installs them on its own. Run the script directly or
 through uv:
     uv run scripts/compare_mne.py ...
@@ -179,6 +180,26 @@ differs:
   events are irregular), so theirs are compared without dejittering. Only mnextend's
   texts (and their number) are compared.
 - Stim events are not compared.
+
+BVRF, which MNE doesn't read: compared with pybvrf, the format's reference reader (its
+header parsing, decoding and marker reading, and RawBVRF for the rest). Where Kymo
+deliberately differs:
+- pybvrf scales only V, mV, \u00b5V and nV (other units raise an error) and ignores the
+  channels' coefficients. Its values are read in the resolution's units (every unit given
+  to it as V), then scaled as Kymo does: by the unit's SI factor and linear coefficients
+  (factor and offset); coefficients that aren't linear, by none (Kymo shows the sensor
+  output, in the resolution's unit). Real files have linear ones: the PHOTO channels'
+  [0, 0.001], so pybvrf's PHOTO values are 1000 times Kymo's (and BrainVision Analyzer's).
+- Two markers sharing a StartEndId are one annotation in Kymo, from the first to the
+  second; pybvrf makes two points. pybvrf's are paired the same way before comparing.
+- Kymo leaves out "Recording Info" markers (saving and synchronization, as Analyzer does);
+  pybvrf keeps them. They are left out of pybvrf's too.
+- A marker of value 0 is "Type/Code0" in Kymo; pybvrf leaves the 0 out. pybvrf's are
+  compared with the 0 put back.
+- A type without a code or value is the type alone in Kymo ("Reconnection"); pybvrf adds a
+  "/". pybvrf's are compared without the lone "/".
+- The start time (Kymo's from the earliest dated marker) isn't compared: pybvrf has none.
+  Channel kinds and filters are not compared either.
 
 With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
@@ -849,6 +870,7 @@ def compare(path, max_values=None, annotation_files=False):
             return compare_xdf(path, tmp, header, annotations, windows)
 
         brainvision = header["format"] == "BrainVision"
+        bvrf = header["format"] == "BVRF"
         eeglab = header["format"] == "EEGLAB"
         gdf = header["format"] == "GDF"
         fiff = header["format"] == "FIFF"
@@ -867,6 +889,8 @@ def compare(path, max_values=None, annotation_files=False):
                 )
             elif brainvision:
                 raw = mne.io.read_raw_brainvision(path, preload=False, verbose="error")
+            elif bvrf:
+                raw, coefficients = read_bvrf(path)
             elif eeglab:
                 raw = mne.io.read_raw_eeglab(
                     path, preload=False, verbose="error", uint16_codec="utf-16-le"
@@ -969,10 +993,27 @@ def compare(path, max_values=None, annotation_files=False):
                 not eeglab
                 and not fiff
                 and channels[c]["to_si"] is not None
-                and not mne_scales(channels[c], scaled, info if gdf else None)
+                and (bvrf or not mne_scales(channels[c], scaled, info if gdf else None))
                 for c in ids
             ]
             theirs_scale = np.where(unscaled, scale, 1.0)
+            theirs_offset = np.zeros(len(ids))
+            if bvrf:
+                # pybvrf's values are in the resolution's units: Kymo's scaling and the
+                # linear coefficients (see the docstring).
+                factor, shift = np.array([coefficients[c] for c in ids]).T
+                theirs_offset = shift * scale
+                theirs_scale = scale * factor
+                unscaled = [False] * len(ids)
+                if any(f != 1 or o != 0 for f, o in (coefficients[c] for c in ids)):
+                    notes.append(
+                        "pybvrf's values scaled by the linear coefficients: "
+                        + ", ".join(
+                            names[c]
+                            for c in ids
+                            if coefficients[c] != (1.0, 0.0)
+                        )
+                    )
             if eeglab:
                 codes = [channels[c]["kind"] == "Stim" for c in ids]
                 theirs_scale = np.where(codes, 1e6, theirs_scale)
@@ -1015,7 +1056,7 @@ def compare(path, max_values=None, annotation_files=False):
             reference = np.array(
                 [
                     abs(channels[c]["offset"]) * (channels[c]["to_si"] or 1.0)
-                    if eeglab or fiff
+                    if eeglab or fiff or bvrf
                     else 0.0
                     for c in ids
                 ]
@@ -1063,6 +1104,7 @@ def compare(path, max_values=None, annotation_files=False):
                 notes,
                 stim_scaling,
                 joined=not fiff,
+                theirs_offset=theirs_offset,
             )
             problems += p
             worst = max(worst, w)
@@ -1131,9 +1173,13 @@ def compare_grid(
     notes,
     stim_scaling,
     joined=True,
+    theirs_offset=None,
 ):
     """With `joined`, MNE's data drops Kymo's gaps (EDF+D); without, its samples line
-    up with Kymo's (FIFF, whose skips MNE fills with zeros)."""
+    up with Kymo's (FIFF, whose skips MNE fills with zeros). MNE's values are multiplied
+    by `theirs_scale`, and `theirs_offset` added (per channel, none by default)."""
+    if theirs_offset is None:
+        theirs_offset = np.zeros(len(ids))
     problems, worst, compared, n_missing = [], 0.0, 0, 0
     data = np.fromfile(tmp / f"grid{g}.f32", dtype="<f4")
     if grid["sample_type"] != "F32":
@@ -1197,7 +1243,7 @@ def compare_grid(
                 )
             theirs[k, gone] = np.nan
             n_missing += int(gone.sum())
-        theirs = theirs * theirs_scale[:, None]
+        theirs = theirs * theirs_scale[:, None] + theirs_offset[:, None]
         if (np.isnan(ours) != np.isnan(theirs)).any():
             problems.append(f"window {a}..{b}: NaNs differ between Kymo and MNE")
         error = np.abs(np.nan_to_num(ours) - np.nan_to_num(theirs))
@@ -1409,6 +1455,74 @@ def compare_annotations(raw, annotations, first_onset, format_name, event_rate=N
     return []
 
 
+def bvrf_coefficients(channel):
+    """A BVRF channel's linear coefficients as (factor, offset), as Kymo reads them; (1, 0)
+    where they aren't linear (Kymo shows the sensor output then)."""
+    c = channel.get("Coefficients") or {}
+
+    def terms(key, default):
+        values = list(default if c.get(key) is None else c[key])
+        while values and values[-1] == 0:
+            values.pop()
+        return values
+
+    num, denom = terms("Num", [0.0, 1.0]), terms("Denom", [1.0])
+    if len(num) <= 2 and len(denom) == 1:
+        num = num + [0.0] * (2 - len(num))
+        return (num[1] / denom[0], num[0] / denom[0])
+    return (1.0, 0.0)
+
+
+def read_bvrf(path):
+    """pybvrf's reading of a BVRF recording, as MNE's Raw (RawBVRF), its values in the
+    resolution's units, with its annotations adjusted to Kymo's rules (see the docstring),
+    and each channel's linear coefficients (factor, offset)."""
+    from pybvrf.mne_io import RawBVRF
+    from pybvrf.pybvrf import _read_bvrd, _read_bvrm, read_bvrf_header
+
+    header = read_bvrf_header(path)
+    n = header["n_channels"]
+    data = _read_bvrd(
+        path.with_suffix(".bvrd"), header["dtype"], n, ["V"] * n, header["ch_resolutions"]
+    )
+    markers = _read_bvrm(path.with_suffix(".bvrm"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = RawBVRF.from_data(header, data, markers, verbose="error")
+    columns = markers.dtype.names or ()
+    pairs = {}
+    onsets, durations, descriptions = [], [], []
+    for k, (onset, description) in enumerate(
+        zip(raw.annotations.onset, raw.annotations.description)
+    ):
+        row = markers[k]
+        value = row["Value"] if "Value" in columns else None
+        if value is not None and markers.dtype["Value"].kind in "iu" and value == 0:
+            description += "0"
+        description = description.removesuffix("/")
+        pair = str(row["StartEndId"]).strip() if "StartEndId" in columns else ""
+        if pair and pair in pairs:
+            first = pairs.pop(pair)
+            if first is not None:
+                start = min(onsets[first], onset)
+                durations[first] = abs(onset - onsets[first])
+                onsets[first] = start
+            continue
+        info = str(row["Type"]).strip() == "Recording Info"
+        if pair:
+            pairs[pair] = None if info else len(onsets)
+        if info:
+            continue
+        onsets.append(onset)
+        durations.append(0.0)
+        descriptions.append(description)
+    raw.set_annotations(mne.Annotations(onsets, durations, descriptions))
+    coefficients = [
+        bvrf_coefficients(c) for c in header["yaml_header"]["EEGModality"]["Channels"]
+    ]
+    return raw, coefficients
+
+
 def is_mat_v73(path):
     with open(path, "rb") as f:
         return f.read(19) == b"MATLAB 7.3 MAT-file"
@@ -1438,6 +1552,8 @@ def testgen_files(directory):
         ("bv-int16-multiplexed", "vhdr", []),
         ("bv-int32-vectorized", "vhdr", []),
         ("bv-float32-multiplexed", "vhdr", []),
+        ("bvrf-int16", "bvrh", []),
+        ("bvrf-float64", "bvrh", []),
         ("eeglab-fdt", "set", []),
         ("eeglab-set-single", "set", []),
         ("eeglab-set-double", "set", []),
@@ -1500,7 +1616,7 @@ def find_files(arguments):
                 p
                 for p in a.rglob("*")
                 if p.suffix.lower()
-                in (".edf", ".bdf", ".vhdr", ".set", ".gdf", ".fif", ".xdf")
+                in (".edf", ".bdf", ".vhdr", ".set", ".gdf", ".fif", ".xdf", ".bvrh")
             )
         else:
             files.append(a)
@@ -1512,7 +1628,8 @@ def main():
     parser.add_argument(
         "paths",
         nargs="*",
-        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF/FIFF/XDF files or directories",
+        help="EDF/BDF/BrainVision (.vhdr)/EEGLAB (.set)/GDF/FIFF/XDF/BVRF (.bvrh) files or "
+        "directories",
     )
     parser.add_argument(
         "--testgen", action="store_true", help="check kymo-testgen presets"
@@ -1539,7 +1656,7 @@ def main():
         if args.testgen:
             files += testgen_files(Path(generated))
         if not files:
-            sys.exit("no EDF, BDF, BrainVision, EEGLAB, GDF, FIFF or XDF files found")
+            sys.exit("no EDF, BDF, BrainVision, EEGLAB, GDF, FIFF, XDF or BVRF files found")
         skipped = 0
         for path in files:
             if path.suffix.lower() == ".set" and is_mat_v73(path):

@@ -98,8 +98,8 @@ impl Layout {
     }
 }
 
-/// Writes `spec` to a new file at `path` (overwriting it). BrainVision writes its data and
-/// marker files beside it too (see [`Format::files`](crate::Format::files)).
+/// Writes `spec` to a new file at `path` (overwriting it). BrainVision and BVRF write their
+/// data and marker files beside it too (see [`Format::files`](crate::Format::files)).
 pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
     if spec.format.is_brainvision() {
         return crate::brainvision::write(spec, path.as_ref());
@@ -115,6 +115,9 @@ pub fn write(spec: &Spec, path: impl AsRef<Path>) -> Result<(), Error> {
     }
     if spec.format.is_xdf() {
         return crate::xdf::write(spec, path.as_ref());
+    }
+    if spec.format.is_bvrf() {
+        return crate::bvrf::write(spec, path.as_ref());
     }
     let file = File::create(path)?;
     write_to(spec, BufWriter::with_capacity(1 << 20, file))

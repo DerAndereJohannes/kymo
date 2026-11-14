@@ -7,10 +7,14 @@ use crate::common::{TempDir, TempFile};
 use kymo_core::OpenError;
 
 const BRAINVISION: &[u8] = b"Brain Vision Data Exchange Header File Version 1.0\r\n; comment\r\n";
+/// A BVRF header that is only its first lines: a JSON object without its channels.
+const BVRF: &[u8] =
+    b"\xef\xbb\xbf{\r\n  \"BVRF\": {\"Version\": \"1.0.0\"},\r\n  \"EEGModality\": {}\r\n}\r\n";
 const MAT: &[u8] = b"MATLAB 5.0 MAT-file, Platform: GLNXA64, Created on: Mon Jan  1 00:00:00 2024";
 
 /// The reason `path` could not be opened, and the file it names: unsupported, or a
-/// BrainVision header, MAT-file, GDF header, FIFF file id or XDF magic the reader refused
+/// BrainVision header, MAT-file, GDF header, FIFF file id, XDF magic or BVRF header the
+/// reader refused
 /// (these are only first lines).
 fn unsupported(path: &Path) -> (PathBuf, String) {
     match kymo_core::open(path) {
@@ -20,6 +24,7 @@ fn unsupported(path: &Path) -> (PathBuf, String) {
         Err(OpenError::Gdf { path, source }) => (path, format!("GDF: {source}")),
         Err(OpenError::Fiff { path, source }) => (path, format!("FIFF: {source}")),
         Err(OpenError::Xdf { path, source }) => (path, format!("XDF: {source}")),
+        Err(OpenError::Bvrf { path, source }) => (path, format!("BVRF: {source}")),
         other => panic!("{}: expected a refusal, got {other:?}", path.display()),
     }
 }
@@ -57,6 +62,13 @@ fn formats_are_recognized_by_their_first_bytes() {
         ),
         (MAT, "EEGLAB: "),
         (b"MATLAB 7.3 MAT-file, Platform: GLNXA64", "HDF5"),
+        (BVRF, "BVRF: "),
+        (b"{\"BVRF\": {}}", "BVRF: "),
+        (b" \r\n\t{\"EEGModality\": 1}", "BVRF: "),
+        // JSON, but some other file.
+        (b"{\"name\": \"package\"}", "not a BVRF header"),
+        (b"\xef\xbb\xbf[1, 2]", UNKNOWN),
+        (b"{ not json", "BVRF: the header is not valid JSON"),
         // Not quite any of them.
         (b"BrainVision rocks\nHeader File", UNKNOWN),
         (b"XDF", UNKNOWN),
@@ -90,7 +102,12 @@ fn data_and_marker_files_open_their_header_file() {
     let dir = TempDir::new();
     let vhdr = write(&dir, "rec.vhdr", BRAINVISION);
     let set = write(&dir, "set.set", MAT);
+    let bvrh = write(&dir, "b.bvrh", BVRF);
     for (name, header) in [
+        ("b.bvrd", &bvrh),
+        ("b.bvrm", &bvrh),
+        ("b.bvri", &bvrh),
+        ("b.BVRD", &bvrh),
         ("rec.eeg", &vhdr),
         ("rec.vmrk", &vhdr),
         ("rec.EEG", &vhdr),

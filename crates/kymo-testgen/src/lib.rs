@@ -1,11 +1,12 @@
-//! Synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF and XDF files for tests and benchmarks.
+//! Synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF files for tests and
+//! benchmarks.
 //!
 //! A [`Spec`] describes a file: format, channels (each with its own rate and scaling),
 //! record layout, gaps (EDF+D/BDF+D) and annotations (TALs in EDF+/BDF+, markers in
-//! BrainVision, events in EEGLAB and GDF, marker streams in XDF). [`write()`] streams it to
+//! BrainVision and BVRF, events in EEGLAB and GDF, marker streams in XDF). [`write()`] streams it to
 //! disk. Records are
 //! EDF's and GDF's data records and FIFF's data buffers; formats without them (BrainVision,
-//! EEGLAB) only take their length from them.
+//! EEGLAB, XDF, BVRF) only take their length from them.
 //! The sample values come from a deterministic truth function, [`Spec::digital`], so tests
 //! can check any reader output without keeping the data in memory.
 //!
@@ -17,6 +18,7 @@
 //! ([`Spec::spike_every`]), so they don't cover the traces in a viewer.
 
 mod brainvision;
+mod bvrf;
 mod eeglab;
 pub mod fiff;
 mod gdf;
@@ -68,6 +70,57 @@ pub enum Format {
     /// stored as physical values (`digital × gain`); no gaps; a "record" is only a unit of
     /// length.
     Xdf,
+    /// BVRF: a header (`.bvrh`, the path written to), the samples (`.bvrd`, multiplexed)
+    /// and the markers (`.bvrm`) beside it. One rate; physical = digital × resolution, with
+    /// a channel's offset and any factor of [`BvrfOptions::scaling`] as linear
+    /// coefficients; no gaps; a "record" is only a unit of length. Channel types come from
+    /// [`ChannelSpec::kind`] (EEG if empty).
+    Bvrf(BvrfData),
+}
+
+/// The numeric data type of a BVRF data file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BvrfData {
+    Int16,
+    Int32,
+    /// The truth function's integers, stored as floats (exact up to 2^24).
+    Single,
+    /// The truth function's integers, stored as floats.
+    Double,
+}
+
+impl BvrfData {
+    /// The header's `NumericDataType`.
+    pub fn name(self) -> &'static str {
+        match self {
+            BvrfData::Int16 => "Int16",
+            BvrfData::Int32 => "Int32",
+            BvrfData::Single => "Single",
+            BvrfData::Double => "Double",
+        }
+    }
+}
+
+/// How a BVRF channel's numbers become its values.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum BvrfScaling {
+    /// The gain as the resolution; the offset, if any, as linear coefficients `[offset, 1]`.
+    #[default]
+    Resolution,
+    /// Linear coefficients `[offset, factor]`: the resolution is the gain over `factor`, as
+    /// in the specification's BIP2AUX example (`Num: [0, 50]`).
+    Linear(f64),
+    /// Coefficients that aren't linear (`Num: [0, 1], Denom: [1, 0.5]`, unit µS), as the
+    /// specification's GSR sensor has them. The resolution is the gain, the channel's
+    /// dimension its `ResolutionUnit`: kymo shows that sensor output. No offset.
+    Rational,
+}
+
+/// BVRF's own options.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BvrfOptions {
+    /// Per channel, by index; channels past its end are [`BvrfScaling::Resolution`].
+    pub scaling: Vec<BvrfScaling>,
 }
 
 /// The type of FIFF data buffers.
@@ -343,6 +396,14 @@ impl Format {
         Format::Fiff(FiffType::Mixed),
     ];
 
+    /// Every BVRF data type.
+    pub const BVRF: [Format; 4] = [
+        Format::Bvrf(BvrfData::Int16),
+        Format::Bvrf(BvrfData::Int32),
+        Format::Bvrf(BvrfData::Single),
+        Format::Bvrf(BvrfData::Double),
+    ];
+
     /// Every EEGLAB storage and layout.
     pub const EEGLAB: [Format; 6] = [
         Format::Eeglab(Storage::Fdt, Layout::Struct),
@@ -367,6 +428,7 @@ impl Format {
             Format::Gdf(..) => "GDF",
             Format::Fiff(..) => "FIFF",
             Format::Xdf => "XDF",
+            Format::Bvrf(_) => "BVRF",
         }
     }
 
@@ -390,6 +452,10 @@ impl Format {
         matches!(self, Format::BrainVision(..))
     }
 
+    pub fn is_bvrf(self) -> bool {
+        matches!(self, Format::Bvrf(_))
+    }
+
     pub fn is_eeglab(self) -> bool {
         matches!(self, Format::Eeglab(..))
     }
@@ -401,6 +467,7 @@ impl Format {
             && !self.is_gdf()
             && !self.is_fiff()
             && !self.is_xdf()
+            && !self.is_bvrf()
     }
 
     /// EDF+ or BDF+: has an annotation signal with a time-keeping TAL in every record.
@@ -417,9 +484,9 @@ impl Format {
     }
 
     /// Whether physical values have an offset (`digital × gain + offset`); BrainVision's,
-    /// EEGLAB's, FIFF's and XDF's are `digital × gain`.
+    /// EEGLAB's, FIFF's and XDF's are `digital × gain`. BVRF's come from linear coefficients.
     pub fn has_offset(self) -> bool {
-        self.is_edf() || self.is_gdf()
+        self.is_edf() || self.is_gdf() || self.is_bvrf()
     }
 
     /// Bytes per stored sample; for GDF, of the default sample type (int16, see
@@ -431,6 +498,9 @@ impl Format {
             Format::Xdf => 4,
             Format::BrainVision(_, Binary::Int16 | Binary::UInt16) => 2,
             Format::BrainVision(_, Binary::Int32 | Binary::Float32) => 4,
+            Format::Bvrf(BvrfData::Int16) => 2,
+            Format::Bvrf(BvrfData::Int32 | BvrfData::Single) => 4,
+            Format::Bvrf(BvrfData::Double) => 8,
             Format::Eeglab(Storage::Double, _) => 8,
             Format::Eeglab(..) => 4,
             f if f.is_bdf() => 3,
@@ -446,6 +516,9 @@ impl Format {
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535),
             Format::BrainVision(_, Binary::Int32) => (i32::MIN, i32::MAX),
             Format::BrainVision(_, Binary::Float32) => (-16_777_216, 16_777_216),
+            Format::Bvrf(BvrfData::Int16) => (-32_768, 32_767),
+            Format::Bvrf(BvrfData::Single) => (-16_777_216, 16_777_216),
+            Format::Bvrf(_) => (i32::MIN, i32::MAX),
             // Stored as physical values, so any digital range.
             Format::Eeglab(..) => (i32::MIN, i32::MAX),
             // The default type, int16 (see `ChannelSpec::stored`).
@@ -461,27 +534,33 @@ impl Format {
     }
 
     /// Extension of the file written to: `"edf"`, `"bdf"`, `"vhdr"`, `"set"`, `"gdf"`,
-    /// `"fif"` or `"xdf"`.
+    /// `"fif"`, `"xdf"` or `"bvrh"`.
     pub fn extension(self) -> &'static str {
         match self {
             Format::Fiff(_) => "fif",
             Format::Xdf => "xdf",
             Format::Gdf(_) => "gdf",
             Format::BrainVision(..) => "vhdr",
+            Format::Bvrf(_) => "bvrh",
             Format::Eeglab(..) => "set",
             f if f.is_bdf() => "bdf",
             _ => "edf",
         }
     }
 
-    /// Every file [`write()`] writes for `path`: `path` itself, plus BrainVision's data and
-    /// marker files or EEGLAB's `.fdt` beside it.
+    /// Every file [`write()`] writes for `path`: `path` itself, plus BrainVision's or BVRF's
+    /// data and marker files or EEGLAB's `.fdt` beside it.
     pub fn files(self, path: &std::path::Path) -> Vec<std::path::PathBuf> {
         match self {
             Format::BrainVision(..) => vec![
                 path.to_owned(),
                 path.with_extension("eeg"),
                 path.with_extension("vmrk"),
+            ],
+            Format::Bvrf(_) => vec![
+                path.to_owned(),
+                path.with_extension("bvrd"),
+                path.with_extension("bvrm"),
             ],
             Format::Eeglab(Storage::Fdt, _) => vec![path.to_owned(), path.with_extension("fdt")],
             _ => vec![path.to_owned()],
@@ -534,6 +613,7 @@ impl ChannelSpec {
     ///
     /// BrainVision channels get 0.1 µV per step and no offset: int16 over its whole range,
     /// uint16 from 0 (so its signal sits at 3276.75 µV), int32 and float32 over BDF's range.
+    /// BVRF channels as BrainVision's (float64 over BDF's range too).
     /// EEGLAB channels too, stored as the physical values. GDF channels are int16 at 0.1 µV
     /// per step (see [`ChannelSpec::gdf`] for the other types).
     pub fn eeg(label: impl Into<String>, samples_per_record: u32, format: Format) -> Self {
@@ -553,9 +633,11 @@ impl ChannelSpec {
             );
         }
         let (digital_min, digital_max, physical_min, physical_max) = match format {
-            Format::BrainVision(_, Binary::Int16) => (-32_768, 32_767, -3276.8, 3276.7),
+            Format::BrainVision(_, Binary::Int16) | Format::Bvrf(BvrfData::Int16) => {
+                (-32_768, 32_767, -3276.8, 3276.7)
+            }
             Format::BrainVision(_, Binary::UInt16) => (0, 65_535, 0.0, 6553.5),
-            Format::BrainVision(..) | Format::Eeglab(..) => {
+            Format::BrainVision(..) | Format::Eeglab(..) | Format::Bvrf(_) => {
                 (-8_388_608, 8_388_607, -838_860.8, 838_860.7)
             }
             f if f.is_bdf() => (-8_388_608, 8_388_607, -262_144.0, 262_143.0),
@@ -781,6 +863,8 @@ pub struct Spec {
     pub fiff: FiffOptions,
     /// XDF's own options; ignored for other formats.
     pub xdf: XdfOptions,
+    /// BVRF's own options; ignored for other formats.
+    pub bvrf: BvrfOptions,
 }
 
 impl Spec {
@@ -810,6 +894,7 @@ impl Spec {
             spike_every: SPIKE_EVERY,
             fiff: FiffOptions::default(),
             xdf: XdfOptions::default(),
+            bvrf: BvrfOptions::default(),
         }
     }
 
@@ -940,7 +1025,7 @@ impl Spec {
         Ok(write::Layout::new(self)?.record_bytes as u64)
     }
 
-    /// Size of the file in bytes; for BrainVision and EEGLAB, of the samples; for a split
+    /// Size of the file in bytes; for BrainVision, EEGLAB and BVRF, of the samples; for a split
     /// FIFF recording, of all parts written as `rec.fif` (see [`fiff::file_size_at`]).
     pub fn file_size(&self) -> Result<u64, Error> {
         if self.format.is_gdf() {
@@ -990,9 +1075,9 @@ fn grid_start(elapsed: f64, samples_per_record: u32, record_duration: f64) -> u6
 
 mod presets {
     use super::{
-        Binary, ChannelSpec, EEG_AMPLITUDE, FiffSplit, FiffType, Format, GapSpec, GdfVersion,
-        Layout, MarkerValues, Orientation, Spec, SplitNaming, Storage, Stored, Tal, XdfBreak,
-        XdfFormat, XdfMarkers, XdfStamps, XdfStream,
+        Binary, BvrfData, BvrfScaling, ChannelSpec, EEG_AMPLITUDE, FiffSplit, FiffType, Format,
+        GapSpec, GdfVersion, Layout, MarkerValues, Orientation, Spec, SplitNaming, Storage, Stored,
+        Tal, XdfBreak, XdfFormat, XdfMarkers, XdfStamps, XdfStream,
     };
 
     pub const LIST: &[(&str, &str)] = &[
@@ -1043,6 +1128,16 @@ mod presets {
             "bv-float32-multiplexed",
             "BrainVision, multiplexed float32, 4 channels at 256 Hz, 1 min, units with the \
              Greek mu, markers",
+        ),
+        (
+            "bvrf-int16",
+            "BVRF, int16, 9 channels (EEG, EOG, ECG, a photo sensor with a linear coefficient, \
+             a temperature with an offset) at 500 Hz, 2 min, markers and start-end pairs",
+        ),
+        (
+            "bvrf-float64",
+            "BVRF, float64, 8 channels at 1000 Hz, 1 min, a large DC channel and a GSR sensor \
+             whose coefficients aren't linear, markers",
         ),
         (
             "eeglab-fdt",
@@ -1154,6 +1249,8 @@ mod presets {
             "bv-int16-multiplexed" => bv_int16_multiplexed(),
             "bv-int32-vectorized" => bv_int32_vectorized(),
             "bv-float32-multiplexed" => bv_float32_multiplexed(),
+            "bvrf-int16" => bvrf_int16(),
+            "bvrf-float64" => bvrf_float64(),
             "eeglab-fdt" => eeglab_fdt(),
             "eeglab-set-single" => eeglab_set_single(),
             "eeglab-set-double" => eeglab_set_double(),
@@ -1419,6 +1516,101 @@ mod presets {
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = bv_markers(60, 256);
         spec.seed = 7;
+        spec
+    }
+
+    /// Markers every 1.5 s as BrainVision Recorder writes them in BVRF: stimuli and
+    /// responses (a code and a value), annotations, some of them start-end pairs, a comment.
+    fn bvrf_markers(seconds: u32, rate: u32) -> Vec<Tal> {
+        (0..seconds * 2 / 3)
+            .map(|k| {
+                let onset = f64::from(k * 3 * rate / 2 + k % 5) / f64::from(rate);
+                let (text, duration) = match k % 6 {
+                    0 | 2 => (format!("Stimulus/S{}", 1 + k % 4), None),
+                    1 => (format!("Response/R{}", 1 + k % 3), None),
+                    3 => ("Annotation/Eyes closed".into(), Some(0.5)),
+                    4 => ("Annotation/Eye blink, \u{b5}V".into(), Some(0.0)),
+                    _ => ("Reconnection".into(), None),
+                };
+                Tal {
+                    onset,
+                    duration,
+                    texts: vec![text],
+                }
+            })
+            .collect()
+    }
+
+    fn bvrf_int16() -> Spec {
+        let f = Format::Bvrf(BvrfData::Int16);
+        let typed = |label: &str, kind: &str| ChannelSpec {
+            kind: kind.into(),
+            ..ChannelSpec::eeg(label, 500, f)
+        };
+        let mut channels: Vec<ChannelSpec> = ["Fp1", "Fz", "Cz", "Pz", "Oz"]
+            .iter()
+            .map(|l| typed(l, "EEG"))
+            .collect();
+        channels.push(ChannelSpec {
+            amplitude: 120.0,
+            ..typed("HEOG", "EOG")
+        });
+        channels.push(ChannelSpec {
+            amplitude: 400.0,
+            ..typed("ECG", "ECG")
+        });
+        // A photo sensor on an AUX input, in mV through a coefficient of 0.001, as
+        // Recorder writes them.
+        channels.push(ChannelSpec {
+            dimension: "mV".into(),
+            prefilter: String::new(),
+            ..typed("Photo_AUX1", "PHOTO")
+        });
+        // A temperature with an offset: 30 to 40 °C over int16.
+        channels.push(ChannelSpec {
+            dimension: "\u{b0}C".into(),
+            physical_min: 30.0,
+            physical_max: 40.0,
+            amplitude: 1.0,
+            prefilter: String::new(),
+            ..typed("Temp", "TEMP")
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 120);
+        spec.start = jiff::civil::date(2025, 11, 27).at(12, 15, 50, 843_151_000);
+        spec.annotations = bvrf_markers(120, 500);
+        spec.bvrf.scaling = vec![BvrfScaling::Resolution; 7];
+        spec.bvrf.scaling.push(BvrfScaling::Linear(0.001));
+        spec.seed = 13;
+        spec
+    }
+
+    fn bvrf_float64() -> Spec {
+        let f = Format::Bvrf(BvrfData::Double);
+        let mut channels: Vec<ChannelSpec> = (1..=6)
+            .map(|i| ChannelSpec::eeg(format!("E{i}"), 1000, f))
+            .collect();
+        channels.push(ChannelSpec {
+            // A large DC offset, 1 V at 0.1 µV per step, as DC amplifiers record.
+            label: "DC".into(),
+            digital_min: 9_995_000,
+            digital_max: 10_005_000,
+            physical_min: 999_500.0,
+            physical_max: 1_000_500.0,
+            ..ChannelSpec::eeg("", 1000, f)
+        });
+        // A GSR sensor: shown as its output voltage, as its coefficients aren't linear.
+        channels.push(ChannelSpec {
+            label: "GSR".into(),
+            kind: "GSR".into(),
+            dimension: "mV".into(),
+            prefilter: String::new(),
+            ..ChannelSpec::eeg("", 1000, f)
+        });
+        let mut spec = Spec::new(f, channels, 1.0, 60);
+        spec.annotations = bvrf_markers(60, 1000);
+        spec.bvrf.scaling = vec![BvrfScaling::Resolution; 7];
+        spec.bvrf.scaling.push(BvrfScaling::Rational);
+        spec.seed = 14;
         spec
     }
 

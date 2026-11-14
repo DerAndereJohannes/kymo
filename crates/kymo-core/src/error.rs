@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use crate::brainvision::BrainVisionError;
+use crate::bvrf::BvrfError;
 use crate::edf::EdfError;
 use crate::eeglab::EeglabError;
 use crate::fiff::FiffError;
@@ -146,6 +147,8 @@ pub enum OpenError {
         path: PathBuf,
         source: BrainVisionError,
     },
+    #[error("{}: {source}", path.display())]
+    Bvrf { path: PathBuf, source: BvrfError },
     #[error("{}: {source}", path.display())]
     Eeglab { path: PathBuf, source: EeglabError },
     #[error("{}: {source}", path.display())]

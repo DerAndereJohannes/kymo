@@ -10,6 +10,7 @@ mod common;
 mod annotation_file;
 mod annotations;
 mod brainvision;
+mod bvrf;
 mod channel;
 mod decode;
 mod edf_header;
