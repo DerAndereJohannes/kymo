@@ -38,6 +38,7 @@ pub(super) mod kind {
     pub const CH_COIL_TYPE: i32 = 350;
     pub const DATA_BUFFER: i32 = 300;
     pub const DATA_SKIP: i32 = 301;
+    pub const DATA_SKIP_SAMP: i32 = 303;
     pub const PROJ_NAME: i32 = 501;
     pub const MNE_CH_NAME_LIST: i32 = 3507;
     /// Annotation onsets.

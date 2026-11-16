@@ -337,6 +337,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             extra,
             bad_channels: Vec::new(),
             streams: stream_list,
+            utc_offset: None,
         },
         annotations,
         warnings,

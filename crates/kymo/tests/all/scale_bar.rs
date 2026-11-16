@@ -69,6 +69,7 @@ fn recording_in(kinds: &[ChannelKind], streams: &[Range<u32>]) -> Recording {
                     content: StreamContent::Channels(r.clone().map(ChannelId).collect()),
                 })
                 .collect(),
+            utc_offset: None,
         },
         annotations: vec![],
         warnings: vec![],

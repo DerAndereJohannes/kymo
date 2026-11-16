@@ -259,6 +259,7 @@ pub fn opened(channels: Vec<Channel>, grids: Vec<Grid>, data: Vec<MemData>) -> O
             extra: Vec::new(),
             bad_channels: Vec::new(),
             streams: Vec::new(),
+            utc_offset: None,
         },
         annotations: Vec::new(),
         warnings: Vec::new(),

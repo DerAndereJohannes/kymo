@@ -479,6 +479,33 @@ fn skips_are_gaps_except_before_the_first_buffer() {
 }
 
 #[test]
+fn skips_in_samples_and_skips_in_a_row() {
+    let frames = |k: i32, n: i32| -> Vec<[i32; 2]> { (0..n).map(|i| [k * 10 + i, -k]).collect() };
+    // FIFF_DATA_SKIP_SAMP is a skip of that many samples; skips before one buffer add up.
+    let bytes = file(eeg_channels, |t| {
+        t.int(kind::FIRST_SAMPLE, 100).int(kind::DATA_SKIP_SAMP, 7);
+        buffer(t, &frames(1, 3));
+        t.int(kind::DATA_SKIP_SAMP, 5);
+        buffer(t, &frames(2, 2));
+        t.int(kind::DATA_SKIP, 1).int(kind::DATA_SKIP, 2);
+        buffer(t, &frames(3, 4));
+        t.int(kind::DATA_SKIP, 1).int(kind::DATA_SKIP_SAMP, 3);
+        buffer(t, &frames(4, 2));
+    });
+    let rec = Built::new(&bytes).open();
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
+    assert_eq!(first_sample(&rec).as_deref(), Some("107"));
+    // Gaps of 5 samples, 3 buffers of 4, and 1 buffer of 2 plus 3 samples.
+    assert_eq!(rec.grids()[0].segments(), [0..3, 8..10, 22..26, 31..33]);
+    let present: Vec<i64> = values(&rec, 0)
+        .iter()
+        .filter(|v| !v.is_nan())
+        .map(|&v| (f64::from(v) * 1e6).round() as i64)
+        .collect();
+    assert_eq!(present, [10, 11, 12, 20, 21, 30, 31, 32, 33, 40, 41]);
+}
+
+#[test]
 fn tags_are_followed_wherever_next_points() {
     // As a file edited in place: a channel tag jumps to tags appended at the end (the
     // second channel and the end of the info), which jump back to the raw data.
@@ -664,6 +691,9 @@ fn channel_kinds_units_and_names() {
         (201, 112, 1.0, Misc, "T"),
         (900, -1, 1.0, Misc, ""),
         (1100, 114, 1.0, Misc, "\u{b0}C"),
+        (502, 118, 1.0, Misc, "s\u{b2}"),
+        // Eye tracking positions, in pixels.
+        (1400, 210, 1.0, Misc, "px"),
     ];
     let bytes = file(
         |t| {
@@ -797,6 +827,17 @@ fn start_times() {
             .find(|(k, _)| k == "time zone")
             .map(|(_, v)| v.as_str());
         assert_eq!(got, zone, "{date:?} {offset:?}");
+        // The file's date is UTC, so the start time's offset from it is known.
+        let seconds = match offset {
+            Some("+02:00") => 7200,
+            Some("-0530") => -19800,
+            _ => 0,
+        };
+        assert_eq!(
+            rec.utc_offset(),
+            expected.map(|_| jiff::tz::Offset::from_seconds(seconds).unwrap()),
+            "{date:?} {offset:?}"
+        );
         assert_eq!(
             rec.warnings().iter().any(|w| w.contains("UTC offset")),
             offset == Some("CET")

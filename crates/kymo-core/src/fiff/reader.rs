@@ -249,7 +249,10 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         );
         extra.push(("MaxShield".to_owned(), "yes".to_owned()));
     }
-    let start_time = start_time(info, first_samp, &mut extra, &mut warnings);
+    let (start_time, utc_offset) = match start_time(info, first_samp, &mut extra, &mut warnings) {
+        Some((time, offset)) => (Some(time), Some(offset)),
+        None => (None, None),
+    };
     extra.push(("first sample".to_owned(), first_samp.to_string()));
     if several {
         extra.push(("split parts".to_owned(), parts.len().to_string()));
@@ -265,6 +268,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             extra,
             bad_channels,
             streams: Vec::new(),
+            utc_offset,
         },
         annotations,
         warnings,
@@ -610,9 +614,10 @@ fn encoding(tag: &Tag) -> Result<Encoding, FiffError> {
 
 /// `first_samp` and the data buffers of a raw data block, the first starting at sample 0.
 ///
-/// A skip of `n` stands for `n` buffers of the length of the next one. A skip before the
-/// first buffer moves `first_samp` (as in MNE); later ones are gaps; one after the last
-/// buffer is ignored.
+/// A skip of `n` (`FIFF_DATA_SKIP`, "data skip in buffers") stands for `n` buffers of the
+/// length of the next one, as MNE reads it; `FIFF_DATA_SKIP_SAMP` for `n` samples. Skips
+/// before one buffer add up. A skip before the first buffer moves `first_samp` (as in MNE);
+/// later ones are gaps; one after the last buffer is ignored.
 fn buffers(
     raw: &Node,
     map: &[u8],
@@ -621,18 +626,25 @@ fn buffers(
 ) -> Result<(u64, Vec<Buffer>), FiffError> {
     let mut first_samp: i64 = 0;
     let mut buffers: Vec<Buffer> = Vec::new();
-    let mut skip: u64 = 0;
+    // Pending skips: in buffers of the next buffer's length, and in samples.
+    let (mut skip_buffers, mut skip_samples) = (0u64, 0u64);
+    let count = |tag: &Tag| {
+        tag.int(map)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0)
+    };
     let mut at = 0u64;
     for tag in &raw.tags {
         match tag.kind {
             kind::FIRST_SAMPLE if buffers.is_empty() => {
                 first_samp = tag.int(map).map_or(0, i64::from);
             }
+            // Skips before one buffer add up.
             kind::DATA_SKIP => {
-                skip = tag
-                    .int(map)
-                    .and_then(|n| u64::try_from(n).ok())
-                    .unwrap_or(0);
+                skip_buffers = skip_buffers.saturating_add(count(tag));
+            }
+            kind::DATA_SKIP_SAMP => {
+                skip_samples = skip_samples.saturating_add(count(tag));
             }
             kind::DATA_BUFFER => {
                 let encoding = encoding(tag)?;
@@ -651,14 +663,16 @@ fn buffers(
                         tag.at
                     ));
                 }
-                if skip > 0 {
-                    let skipped = skip.saturating_mul(len);
+                let skipped = skip_buffers
+                    .saturating_mul(len)
+                    .saturating_add(skip_samples);
+                if skipped > 0 {
                     if buffers.is_empty() {
                         first_samp = first_samp.saturating_add(skipped as i64);
                     } else {
                         at = at.saturating_add(skipped);
                     }
-                    skip = 0;
+                    (skip_buffers, skip_samples) = (0, 0);
                 }
                 if len > 0 {
                     buffers.push(Buffer {
@@ -708,14 +722,14 @@ fn prefilter(highpass: Option<f64>, lowpass: Option<f64>) -> String {
 }
 
 /// The wall-clock time of the first sample: `meas_date + first_samp / sfreq`, in the
-/// file's local time if it stores its UTC offset, in UTC otherwise; adds the time zone to
-/// `extra`.
+/// file's local time if it stores its UTC offset, in UTC otherwise, and that offset; adds
+/// the time zone to `extra`.
 fn start_time(
     info: &Info,
     first_samp: u64,
     extra: &mut Vec<(String, String)>,
     warnings: &mut Vec<String>,
-) -> Option<jiff::civil::DateTime> {
+) -> Option<(jiff::civil::DateTime, jiff::tz::Offset)> {
     let (secs, usecs) = info.meas_date?;
     let offset = match info.utc_offset.as_deref() {
         None => Some(jiff::tz::Offset::UTC),
@@ -746,7 +760,7 @@ fn start_time(
         format!("UTC{sign}{:02}:{:02}", minutes / 60, minutes % 60)
     };
     extra.push(("time zone".to_owned(), zone));
-    Some(offset.to_datetime(time))
+    Some((offset.to_datetime(time), offset))
 }
 
 /// `+HH:MM`, `+HHMM` or `+HH` as an offset.

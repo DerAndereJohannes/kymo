@@ -166,6 +166,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             extra,
             bad_channels: Vec::new(),
             streams,
+            utc_offset: None,
         },
         annotations: markers.annotations,
         warnings,

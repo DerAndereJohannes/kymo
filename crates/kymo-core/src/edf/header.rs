@@ -268,6 +268,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             extra: vec![("patient".into(), patient), ("recording".into(), recording)],
             bad_channels: Vec::new(),
             streams: Vec::new(),
+            utc_offset: None,
         },
         layout: RecordLayout {
             bytes_per_sample,

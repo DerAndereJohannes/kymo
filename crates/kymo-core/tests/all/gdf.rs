@@ -458,6 +458,9 @@ fn version_boundaries() {
     let (rec, got) = Patched::new(&z).open();
     assert_eq!(zone(&rec).as_deref(), Some("UTC-05:30"));
     assert_eq!(rec.start_time(), Some(spec.start));
+    // GDF stores local time, as MNE reads it (and writes it in its CSV), so the offset is
+    // only shown.
+    assert_eq!(rec.utc_offset(), None);
     assert_eq!(summary(&got), summary(&events));
     put(&mut z, 254, &60i16.to_le_bytes());
     assert_eq!(

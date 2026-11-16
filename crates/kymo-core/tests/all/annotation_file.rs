@@ -15,6 +15,7 @@ fn context(first_sample: f64) -> Context {
             .into(),
         // Stream 1 isn't shown, so it holds no annotations.
         streams: vec![Some(1), None, Some(7), Some(3)],
+        utc_offset: None,
     }
 }
 
@@ -245,6 +246,27 @@ fn mne_csv_reads_as_mne_wrote_it() {
     // Another day's: outside the recording.
     let loaded = load(undated, Format::MneCsv, &context).unwrap();
     assert_eq!((loaded.annotations.len(), loaded.outside), (0, 1));
+}
+
+#[test]
+fn mne_csv_times_are_utc_where_the_file_dates_are() {
+    // A FIFF file's date is UTC, and MNE writes its CSV in UTC; kymo's start time is local
+    // where the file stores its offset (03:04:05 at UTC+01:00 is 02:04:05 UTC).
+    let csv = |utc: &str| format!("onset,duration,description\n2024-01-02 {utc},1.0,x\n");
+    // 03:04:05 at UTC−05:30 is 08:34:05 UTC.
+    for (seconds, utc) in [(3600, "02:04:07.5"), (-19800, "08:34:07.5")] {
+        let offset = jiff::tz::Offset::from_seconds(seconds).unwrap();
+        let context = Context {
+            utc_offset: Some(offset),
+            ..context(0.0)
+        };
+        let loaded = load(&csv(utc), Format::MneCsv, &context).unwrap();
+        assert_eq!(loaded.annotations, [data(2.5, 1.0, "x", &[])], "{seconds}");
+    }
+    // Without one (other formats, whose times MNE reads as UTC), the CSV is in the start
+    // time's own time.
+    let loaded = load(&csv("02:04:07.5"), Format::MneCsv, &context(0.0)).unwrap();
+    assert_eq!(loaded.outside, 1);
 }
 
 #[test]

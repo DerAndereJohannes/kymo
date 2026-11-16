@@ -146,7 +146,8 @@ FIFF, where Kymo deliberately differs from MNE:
 - Bad channels and the annotations' channels are compared too.
 - Skips in the data are gaps in Kymo; MNE fills them with zeros (so its sample indices
   line up with Kymo's) and adds BAD_ACQ_SKIP annotations. Kymo must report NaN exactly
-  where MNE's skips are, and MNE's BAD_ACQ_SKIP annotations are left out.
+  where MNE's skips are, and MNE's BAD_ACQ_SKIP annotations are left out, in the
+  annotation files too.
 - Stim channels whose calibration (range x cal) isn't 1 are misc channels in Kymo (5 V
   trigger lines, analog inputs); their samples compare the same, and only Kymo's stim
   channels' events are compared.
@@ -462,7 +463,8 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
             f"Kymo's table in MNE: {len(got)} annotations, MNE has {len(theirs)}"
         )
     else:
-        # In time order, ties by description (MNE keeps the order of equal onsets).
+        # In time order, ties by description (MNE keeps the order of equal onsets). Onsets
+        # within a microsecond: MNE moves onsets between origins in whole microseconds.
         def ordered(a):
             return sorted(
                 zip(a.onset, a.duration, a.description), key=lambda x: (x[0], x[2])
@@ -470,7 +472,7 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
 
         for k, (a, b) in enumerate(zip(ordered(got), ordered(theirs))):
             if (
-                abs(a[0] - b[0]) > 1e-9
+                abs(a[0] - b[0]) > 1e-6
                 or not same_duration(a[1], b[1], 1e-9)
                 or a[2] != b[2]
             ):
@@ -1251,9 +1253,18 @@ def compare(path, max_values=None, annotation_files=False):
             if len(header["sources"]) > 1:
                 notes.append(f"{len(header['sources'])} split parts")
         if annotation_files:
+            # MNE's BAD_ACQ_SKIP annotations are left out here too (Kymo has gaps).
+            keep = [
+                k
+                for k, d in enumerate(raw.annotations.description)
+                if d != "BAD_ACQ_SKIP"
+            ]
+            files_raw = raw
+            if fiff and len(keep) < len(raw.annotations):
+                files_raw = raw.copy().set_annotations(raw.annotations[keep])
             problems += compare_annotation_files(
                 path,
-                raw,
+                files_raw,
                 annotations,
                 header["grids"][0]["start"],
                 tmp,

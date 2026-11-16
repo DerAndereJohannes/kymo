@@ -40,6 +40,7 @@ pub mod kind {
     pub const CH_COIL_TYPE: i32 = 350;
     pub const DATA_BUFFER: i32 = 300;
     pub const DATA_SKIP: i32 = 301;
+    pub const DATA_SKIP_SAMP: i32 = 303;
     pub const REF_ROLE: i32 = 115;
     pub const REF_FILE_NUM: i32 = 117;
     pub const REF_FILE_NAME: i32 = 118;

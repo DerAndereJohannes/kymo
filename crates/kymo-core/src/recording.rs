@@ -29,6 +29,12 @@ pub struct Header {
     /// channels are in effect one stream. If any, every channel belongs to exactly one, and
     /// a stream's channels are consecutive.
     pub streams: Vec<Stream>,
+    /// The start time's offset from UTC, where the file stores its date in UTC and kymo
+    /// shows it in local time (FIFF: UTC unless the file stores an offset). `None` where the
+    /// file's date is local time already, even with an offset beside it (GDF, BVRF), as MNE
+    /// reads those times as they are. MNE's CSV of a recording has UTC times where this is
+    /// set.
+    pub utc_offset: Option<jiff::tz::Offset>,
 }
 
 /// A stream of a file that has several (XDF; BVRF's participants).
@@ -159,6 +165,12 @@ impl Recording {
 
     pub fn start_time(&self) -> Option<jiff::civil::DateTime> {
         self.header.start_time
+    }
+
+    /// The start time's offset from UTC, where the file's date is in UTC (see
+    /// [`Header::utc_offset`]).
+    pub fn utc_offset(&self) -> Option<jiff::tz::Offset> {
+        self.header.utc_offset
     }
 
     /// Channels the file marks as bad.

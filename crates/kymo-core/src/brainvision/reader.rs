@@ -112,6 +112,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             extra: parsed.extra,
             bad_channels: Vec::new(),
             streams: Vec::new(),
+            utc_offset: None,
         },
         annotations,
         warnings,

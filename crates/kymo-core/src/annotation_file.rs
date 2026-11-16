@@ -58,6 +58,9 @@ pub struct Context {
     /// Per stream (by index into [`Recording::streams`]) its id, `None` for a stream that
     /// isn't shown and so holds no annotations.
     pub streams: Vec<Option<u32>>,
+    /// The start time's offset from UTC where the file's date is in UTC
+    /// ([`Recording::utc_offset`]): MNE's CSV then has UTC times.
+    pub utc_offset: Option<jiff::tz::Offset>,
 }
 
 impl Context {
@@ -81,6 +84,7 @@ impl Context {
                 .iter()
                 .map(|s| (!matches!(s.content, StreamContent::NotShown(_))).then_some(s.id))
                 .collect(),
+            utc_offset: recording.utc_offset(),
         }
     }
 }
@@ -262,7 +266,8 @@ fn number(text: &str, what: &str) -> Result<f64, String> {
 }
 
 /// Seconds since the first sample of an MNE CSV onset: a date and time, counted from the
-/// start time (or 1970-01-01 without one).
+/// start time (or 1970-01-01 without one). MNE writes `meas_date + onset`, in UTC where the
+/// file's date is UTC (FIFF), so it moves to the start time's offset there.
 fn mne_time(text: &str, context: &Context) -> Result<f64, String> {
     let time: DateTime = text.parse().map_err(|_| {
         if text.parse::<f64>().is_ok() {
@@ -274,6 +279,12 @@ fn mne_time(text: &str, context: &Context) -> Result<f64, String> {
             format!("onset \"{text}\" is not a date and time")
         }
     })?;
+    let time = match context.utc_offset {
+        Some(offset) => time
+            .checked_add(jiff::SignedDuration::from_secs(i64::from(offset.seconds())))
+            .map_err(|_| format!("onset \"{text}\" is out of range"))?,
+        None => time,
+    };
     let origin = context
         .start_time
         .unwrap_or_else(|| jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0));

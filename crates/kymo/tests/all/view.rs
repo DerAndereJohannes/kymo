@@ -85,6 +85,7 @@ fn recording_with(eeg: u32, seconds: u64, streams: bool) -> Recording {
             } else {
                 Vec::new()
             },
+            utc_offset: None,
         },
         annotations: vec![],
         warnings: vec![],
@@ -146,6 +147,7 @@ fn mixed_recording() -> Recording {
             extra: vec![],
             bad_channels: Vec::new(),
             streams: Vec::new(),
+            utc_offset: None,
         },
         annotations: vec![],
         warnings: vec![],
