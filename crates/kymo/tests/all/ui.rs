@@ -1921,14 +1921,12 @@ fn recording_info_tables_the_channels() {
     assert!(harness.query_by_label_contains("Aux_0, Aux_1").is_none());
 }
 
-/// Recording Info's grids start folded whenever kymo starts, whatever was unfolded before:
-/// egui's memory, which kymo saves, doesn't keep them. While kymo runs, each recording's
-/// stay as they were left, another recording's start folded.
+/// Recording Info's grids start folded whenever the window opens, whatever was unfolded
+/// before.
 #[test]
 fn recording_info_grids_start_folded() {
     let file = TempFile::preset("xdf-mixed");
-    let other = TempFile::preset("xdf-float32");
-    let open_info = |harness: &mut Harness<'_, KymoApp>| {
+    let toggle_info = |harness: &mut Harness<'_, KymoApp>| {
         harness.key_press_modifiers(command(), Key::I);
         harness.run_steps(10);
     };
@@ -1940,33 +1938,14 @@ fn recording_info_grids_start_folded() {
     };
     let mut harness = window(file.path());
     ready(&mut harness);
-    open_info(&mut harness);
+    toggle_info(&mut harness);
     assert!(!unfolded(&harness));
     unfold_grids(&mut harness);
     assert!(unfolded(&harness));
-    // Closed and opened again, as left.
-    open_info(&mut harness);
-    open_info(&mut harness);
-    assert!(unfolded(&harness));
-    // Another recording's start folded; the first one's are as left.
-    let ctx = harness.ctx.clone();
-    for (path, want) in [(other.path(), false), (file.path(), true)] {
-        harness.state_mut().open(&ctx, path.to_owned());
-        ready(&mut harness);
-        if !harness.state().info_open() {
-            open_info(&mut harness);
-        }
-        assert_eq!(unfolded(&harness), want, "{}", path.display());
-    }
-
-    // After a restart with the memory saved as eframe saves it, folded.
-    let saved = harness.ctx.memory(|m| ron::to_string(m).unwrap());
-    let mut restarted = window(file.path());
-    let memory: egui::Memory = ron::from_str(&saved).unwrap();
-    restarted.ctx.memory_mut(|m| *m = memory);
-    ready(&mut restarted);
-    open_info(&mut restarted);
-    assert!(!unfolded(&restarted));
+    // Closed and opened again: folded.
+    toggle_info(&mut harness);
+    toggle_info(&mut harness);
+    assert!(!unfolded(&harness));
 }
 
 /// The Recording Info window's Copy button puts exactly what `kymo --info` prints on the

@@ -17,6 +17,15 @@ pub const COPY: &str = "Copy";
 /// table of each grid's channels ([`grid_table`]) in place of its rows. Copy puts
 /// `--info`'s text on the clipboard.
 pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &Summary) {
+    if !*open {
+        // Its grids folded again when it next opens.
+        ctx.data_mut(|d| {
+            for i in 0..summary.grids.len() {
+                d.remove_temp::<bool>(unfolded_id(i));
+            }
+        });
+        return;
+    }
     let rows = summary.info_rows();
     let style = ctx.global_style();
     let font = TextStyle::Body.resolve(&style);
@@ -81,7 +90,7 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
     }
     for (i, grid) in summary.grids.iter().enumerate() {
         ui.add_space(6.0);
-        grid_table(ui, path, i, grid);
+        grid_table(ui, i, grid);
     }
 }
 
@@ -101,10 +110,10 @@ pub const COLUMNS: [&str; 7] = [
 /// ("Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording has several): the
 /// grid's rate, samples and channels, then a striped table, a row per channel
 /// ([`COLUMNS`]), which scrolls sideways where it is wider than the window. Folded whenever
-/// the recording at `path` is first shown in a session: whether it is unfolded is kept
-/// while kymo runs, and not in egui's memory, which kymo saves.
-fn grid_table(ui: &mut egui::Ui, path: &Path, index: usize, grid: &GridSummary) {
-    let unfolded = egui::Id::unique(("kymo info grid unfolded", path, index));
+/// the window opens: whether it is unfolded is kept only while the window is open, and not
+/// in egui's memory, which kymo saves.
+fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
+    let unfolded = unfolded_id(index);
     let open = ui.data(|d| d.get_temp::<bool>(unfolded)).unwrap_or(false);
     let mut title = format!("Grid {}", index + 1);
     if let Some(stream) = &grid.stream {
@@ -154,6 +163,11 @@ fn grid_table(ui: &mut egui::Ui, path: &Path, index: usize, grid: &GridSummary) 
     if response.header_response.clicked() {
         ui.data_mut(|d| d.insert_temp(unfolded, !open));
     }
+}
+
+/// Whether grid `index`'s table is unfolded, while the window is open.
+fn unfolded_id(index: usize) -> egui::Id {
+    egui::Id::unique(("kymo info grid unfolded", index))
 }
 
 /// `value` as written, or in scientific notation where that is long (a float format's
