@@ -10,12 +10,12 @@ Phase 3's plan, `docs/phase3-plan.md`, and phase 2's, `docs/phase2-plan.md`, hol
 
 ## Current scope
 
-Phases 1 to 4 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection), phase 4 file formats, part 1 (BrainVision, EEGLAB, GDF, FIFF, XDF with regular and irregular streams, BVRF with several participants as streams; `docs/phase4-plan.md`), an independent review of every algorithm against specifications and first principles (`docs/review.md`, with write-ups for upstream that only the user decides to report) and the measurements ("Phase 4 measurements" in `docs/design.md`); its open points stay in its plan. Phase 5 (display filters: high-pass and low-pass) is next; its scope is agreed in `docs/phase5-plan.md`. Each step's details are proposed before it starts. The crates:
+Phases 1 to 4 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection), phase 4 file formats, part 1 (BrainVision, EEGLAB, GDF, FIFF, XDF with regular and irregular streams, BVRF with several participants as streams; `docs/phase4-plan.md`), an independent review of every algorithm against specifications and first principles (`docs/review.md`, with write-ups for upstream that only the user decides to report) and the measurements ("Phase 4 measurements" in `docs/design.md`); its open points stay in its plan. Phase 5 (channels and measuring: a recording info window, DC removal and scaling per channel type, channel types changed by hand and saved to a BIDS `channels.tsv`, measuring by ⇧-dragging) is next; its scope is agreed in `docs/phase5-plan.md`. Phase 6 (display filters, `docs/phase6-plan.md`) follows. Each step's details are proposed before it starts. The crates:
 
 1. `crates/kymo-core`: recording model, EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF readers, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.
 
-Out of scope for now: formats beyond EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF until later parts add them (`docs/phase4-plan.md`), filters (phase 5, `docs/phase5-plan.md`), re-referencing (later), Python packaging (phase 6). SSP and bipolar montages are out of scope altogether.
+Out of scope for now: formats beyond EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF until later parts add them (`docs/phase4-plan.md`), filters (phase 6, `docs/phase6-plan.md`), re-referencing (later), Python packaging (phase 7). SSP and bipolar montages are out of scope altogether.
 But don't build anything that assumes EDF's record layout or a single sampling rate above the reader interface.
 
 ## Layout
@@ -30,7 +30,8 @@ CONTRIBUTING.md      toolchain setup per platform, build and checks
 docs/phase2-plan.md  plan for phase 2 (the viewer), done
 docs/phase3-plan.md  plan for phase 3 (viewer features), done
 docs/phase4-plan.md  plan for phase 4 (file formats, part 1)
-docs/phase5-plan.md  plan for phase 5 (display filters)
+docs/phase5-plan.md  plan for phase 5 (channels and measuring)
+docs/phase6-plan.md  plan for phase 6 (display filters)
 ```
 
 ## Non-negotiables
