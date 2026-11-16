@@ -1864,6 +1864,7 @@ def testgen_files(directory):
         ("edf+c-kinds", "edf", []),
         ("edf-64ch-1h", "edf", ["--duration", "60"]),
         ("bdf-256ch-8h", "bdf", ["--duration", "20"]),
+        ("fif-306ch-1h", "fif", ["--duration", "20"]),
         ("bv-int16-multiplexed", "vhdr", []),
         ("bv-int32-vectorized", "vhdr", []),
         ("bv-float32-multiplexed", "vhdr", []),

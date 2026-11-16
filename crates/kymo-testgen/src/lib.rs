@@ -1113,6 +1113,11 @@ mod presets {
             "BDF, 256 EEG channels at 2048 Hz, 8 h (45 GB)",
         ),
         (
+            "fif-306ch-1h",
+            "FIFF, float32, 102 magnetometers and 204 gradiometers (Neuromag's triplets) at \
+             1000 Hz, 1 h (4 GB)",
+        ),
+        (
             "edf+d-mixed",
             "EDF+D, 7 channels at 256/512/64 Hz, 10 min with 3 gaps, annotations, \
              huge offset, negative gain and a trigger channel",
@@ -1266,6 +1271,7 @@ mod presets {
             "edf-64ch-1h" => eeg(Format::Edf, 64, 1000, 1.0, 3600),
             "edf-306ch-1h" => eeg(Format::Edf, 306, 1000, 1.0, 3600),
             "bdf-256ch-8h" => eeg(Format::Bdf, 256, 2048, 1.0, 8 * 3600),
+            "fif-306ch-1h" => fif_306ch_1h(),
             "edf+d-mixed" => edf_d_mixed(),
             "bdf+c-small" => bdf_c_small(),
             "edf+c-annotations" => edf_c_annotations(),
@@ -1304,6 +1310,20 @@ mod presets {
             .map(|i| ChannelSpec::eeg(format!("EEG {i:03}"), spr, format))
             .collect();
         Spec::new(format, channels, record_duration, records)
+    }
+
+    /// A Neuromag recording's 102 sensor sites, each a magnetometer ("MEG 0111") and two
+    /// planar gradiometers ("MEG 0112", "MEG 0113"), in 1 s buffers.
+    fn fif_306ch_1h() -> Spec {
+        let f = Format::Fiff(FiffType::Float);
+        let channels = (1..=102)
+            .flat_map(|site| {
+                [(1, "mag"), (2, "grad"), (3, "grad")].map(|(k, kind)| {
+                    ChannelSpec::fiff(format!("MEG {:03}{k}", 10 + site), kind, 1000, f)
+                })
+            })
+            .collect();
+        Spec::new(f, channels, 1.0, 3600)
     }
 
     fn edf_d_mixed() -> Spec {
