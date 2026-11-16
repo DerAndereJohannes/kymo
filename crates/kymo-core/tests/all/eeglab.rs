@@ -213,8 +213,14 @@ fn presets_open_with_their_channels_and_events() {
             .annotations
             .iter()
             .flat_map(|a| {
-                let duration = a.duration.unwrap_or(0.0);
-                a.texts.iter().map(move |t| (a.onset, duration, t.clone()))
+                // A boundary's duration is the data removed there: a point in time.
+                a.texts.iter().map(move |t| {
+                    let duration = match t.as_str() {
+                        "boundary" => 0.0,
+                        _ => a.duration.unwrap_or(0.0),
+                    };
+                    (a.onset, duration, t.clone())
+                })
             })
             .collect();
         assert_eq!(annotations.len(), expected.len(), "{preset}");
@@ -628,8 +634,9 @@ fn events_become_annotations() {
             event(Value::Char("early".into()), 0.5, s(0.0)),
             event(Value::Char("odd".into()), 31.0, s(f64::NAN)),
             event(Value::Char("negative".into()), 32.0, s(-2.0)),
-            event(Value::Char("boundary".into()), 41.0, s(2.5)),
+            event(Value::Char("boundary".into()), 40.5, s(250.0)),
             event(Value::Empty, 45.5, s(0.0)),
+            event(Value::Char("boundary".into()), 46.5, s(f64::NAN)),
         ],
     );
     let data = Value::Single(vec![2, 50], vec![0.0; 100]);
@@ -647,8 +654,11 @@ fn events_become_annotations() {
             (0.2, 0.0, "1.5"),
             (0.3, 0.0, "odd"),
             (0.31, 0.0, "negative"),
-            (0.4, 0.025, "boundary"),
+            // A boundary's duration is the data removed there, not data that is shown:
+            // it is a point in time, its duration unknown (NaN) as it may be.
+            (0.395, 0.0, "boundary"),
             (0.445, 0.0, ""),
+            (0.455, 0.0, "boundary"),
         ]
     );
     assert_eq!(

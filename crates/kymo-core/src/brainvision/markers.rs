@@ -16,7 +16,8 @@ pub(super) struct Markers {
 /// Each marker `Mk<n>=<type>,<description>,<position>,<size>,<channel>[,<date>]` becomes an
 /// annotation:
 /// - description "type/description" (MNE's form), or whichever of the two is not empty;
-/// - onset `(position − 1) / rate`, as positions count from 1;
+/// - onset `(position − 1) / rate`, as positions count from 1 (a marker at a position below
+///   1, which the spec doesn't allow, is left out with a warning);
 /// - duration `size / rate`, except that a size of 0 or 1 marks a point in time (0 s);
 /// - the channel it names, or all channels for 0.
 ///
@@ -31,7 +32,7 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
         ));
     }
     let mut markers = Markers::default();
-    let (mut skipped, mut bad_channels) = (0usize, 0usize);
+    let (mut skipped, mut before, mut bad_channels) = (0usize, 0usize, 0usize);
     let mut repairs = Repairs::new("marker descriptions");
     for (key, value) in ini.section("Marker Infos") {
         if !key.get(..2).is_some_and(|k| k.eq_ignore_ascii_case("mk")) {
@@ -42,6 +43,10 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
             skipped += 1;
             continue;
         };
+        if position < 1 {
+            before += 1;
+            continue;
+        }
         let kind = unescape(fields[0]);
         let description = unescape(fields[1]);
         let size = fields
@@ -89,6 +94,12 @@ pub(super) fn parse(ini: &Ini, rate: f64, channels: usize, warnings: &mut Vec<St
     if skipped > 0 {
         warnings.push(format!(
             "{skipped} markers without a valid position are ignored"
+        ));
+    }
+    if before > 0 {
+        warnings.push(format!(
+            "{before} markers at positions below 1 (before the first sample, as positions count \
+             from 1) are ignored"
         ));
     }
     repairs.warn(warnings);

@@ -1757,7 +1757,7 @@ mod presets {
         ];
         let mut spec = Spec::new(f, channels, 1.0, 60);
         spec.annotations = eeglab_events(60, 256);
-        // A boundary, where EEGLAB removed data.
+        // A boundary, where EEGLAB removed 2 s of data (its duration).
         spec.annotations.insert(
             0,
             Tal {

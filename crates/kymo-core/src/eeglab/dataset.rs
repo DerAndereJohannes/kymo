@@ -299,8 +299,12 @@ fn scaling(kind: ChannelKind) -> (&'static str, f64) {
     }
 }
 
-/// The events as annotations, as MNE reads them: onset (latency − 1) / rate, duration /
-/// rate, the type as description.
+/// The type of the events `eeg_insertbound` puts where data was removed, between the two
+/// samples it joins.
+const BOUNDARY: &str = "boundary";
+
+/// The events as annotations: onset (latency − 1) / rate, duration / rate, the type as
+/// description. A boundary event is a point in time.
 fn events(
     event: Option<Value>,
     rate: f64,
@@ -325,7 +329,15 @@ fn events(
             before += 1;
             continue;
         }
+        let description = s
+            .field(k, "type")?
+            .as_ref()
+            .and_then(text_or_number)
+            .unwrap_or_default();
         let duration = match s.field(k, "duration")? {
+            // Its duration is the length of the data removed there (NaN where unknown), not
+            // a span of the data.
+            _ if description == BOUNDARY => 0.0,
             None => 0.0,
             Some(v) if v.is_empty() => 0.0,
             Some(v) => match v.scalar() {
@@ -336,11 +348,6 @@ fn events(
                 }
             },
         };
-        let description = s
-            .field(k, "type")?
-            .as_ref()
-            .and_then(text_or_number)
-            .unwrap_or_default();
         annotations.push(AnnotationData {
             onset,
             duration,

@@ -3,7 +3,7 @@
 use super::BrainVisionError;
 use super::text::{Ini, Repairs, unescape};
 use crate::channel::kind_from_name;
-use crate::decode::Encoding;
+use crate::decode::{ByteOrder, Encoding};
 use crate::{Channel, ChannelKind, GridId, Quantity, Unit};
 
 /// How samples are ordered in the data file.
@@ -24,6 +24,9 @@ pub(super) struct ParsedHeader {
     pub(super) marker_file: Option<String>,
     pub(super) orientation: Orientation,
     pub(super) encoding: Encoding,
+    /// Little-endian, as the spec has it, unless `UseBigEndianOrder=YES` (a key of
+    /// Analyzer's generic data reader).
+    pub(super) order: ByteOrder,
     /// Hz.
     pub(super) rate: f64,
     /// `DataPoints`, if given.
@@ -94,6 +97,17 @@ pub(super) fn parse(
             )));
         }
     };
+    let order = match ini.get(BINARY, "UseBigEndianOrder") {
+        Some(v) if v.eq_ignore_ascii_case("YES") => ByteOrder::Big,
+        Some(v) if v.is_empty() || v.eq_ignore_ascii_case("NO") => ByteOrder::Little,
+        Some(v) => {
+            warnings.push(format!(
+                "invalid UseBigEndianOrder {v:?} (YES or NO); read as little-endian"
+            ));
+            ByteOrder::Little
+        }
+        None => ByteOrder::Little,
+    };
     let interval = required(COMMON, "SamplingInterval")?;
     let rate = interval
         .parse::<f64>()
@@ -149,6 +163,9 @@ pub(super) fn parse(
         },
     );
     push("binary format", required(BINARY, "BinaryFormat")?);
+    if order == ByteOrder::Big {
+        push("byte order", "big-endian");
+    }
     if let Some(codepage) = ini.get(COMMON, "Codepage") {
         push("codepage", codepage);
     }
@@ -158,6 +175,7 @@ pub(super) fn parse(
         marker_file,
         orientation,
         encoding,
+        order,
         rate,
         data_points,
         channels,
@@ -200,6 +218,9 @@ fn channels(
         ));
     }
     let coordinates = coordinates(ini, n);
+    // Radius 0 is an unknown position (A2-Radius): it tells a channel off the scalp only
+    // where the montage places others.
+    let placed = coordinates.iter().any(|r| r.is_some_and(|r| r != 0.0));
     let mut channels = Vec::with_capacity(n);
     let mut names = Repairs::new("channel names");
     let mut units = Repairs::new("channel units");
@@ -238,8 +259,9 @@ fn channels(
         let unit = Unit::from_label(unit);
         let kind = match unit.quantity() {
             Some(Quantity::Voltage) => match kind_from_name(&name) {
-                // A scalp channel the montage places nowhere is not on the scalp.
-                ChannelKind::Eeg if coordinates[i] == Some(0.0) => ChannelKind::Misc,
+                // A scalp channel the montage can't place, where it places others, is not on
+                // the scalp.
+                ChannelKind::Eeg if placed && coordinates[i] == Some(0.0) => ChannelKind::Misc,
                 kind => kind,
             },
             Some(Quantity::MagneticField) => ChannelKind::Mag,

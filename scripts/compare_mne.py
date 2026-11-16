@@ -62,6 +62,9 @@ BrainVision, where Kymo deliberately differs from MNE:
   long. MNE's one-sample durations are compared as 0.
 - Kymo's description of a marker with an empty type or description is the other part
   alone ("New Segment", not "New Segment/"); MNE's are compared without the lone "/".
+- Kymo leaves out markers at positions below 1, which the spec doesn't allow (positions
+  count from 1); MNE puts them at the first sample. They are read from the marker file and
+  left out of MNE's annotations.
 - Kymo's start time is the New Segment date moved back to the first sample; MNE takes the
   date as it is. They agree for New Segments at position 1, as in every file seen so far.
 - Kymo repairs names, units and marker descriptions that hold UTF-8 text decoded as
@@ -80,6 +83,9 @@ EEGLAB, where Kymo deliberately differs from MNE:
   them, so stim events are not compared.
 - Events whose duration isn't a number >= 0 are points in time in Kymo; MNE keeps NaN.
   MNE's NaN durations are compared as 0.
+- Boundary events are points in time in Kymo: their duration is the length of the data
+  removed there, not a span of the data; MNE keeps it. MNE's boundary annotations are
+  compared with duration 0.
 - Kymo leaves out events before the first sample (latency < 1); MNE keeps them. MNE's
   annotations with negative onsets are left out.
 - Float64 samples are read relative to each channel's first sample (see "Readers" in
@@ -362,6 +368,29 @@ def repair(text):
     return text
 
 
+def bv_markers_before_start(path, header):
+    """The descriptions, as MNE gives them, of a BrainVision recording's markers at positions
+    below 1, which Kymo leaves out (see the docstring)."""
+    name = dict(header["extra"]).get("marker file")
+    marker_file = Path(path).parent / name if name else None
+    if marker_file is None or not marker_file.is_file():
+        return []
+    found = []
+    text = marker_file.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if not key.strip().lower().startswith("mk"):
+            continue
+        fields = value.split(",")
+        try:
+            position = int(fields[2])
+        except (IndexError, ValueError):
+            continue
+        if position < 1:
+            found.append(f"{fields[0]}/{fields[1]}".replace("\\1", ","))
+    return found
+
+
 def cargo(*args):
     subprocess.run(["cargo", *args], check=True, cwd=REPO)
 
@@ -433,15 +462,20 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
             f"Kymo's table in MNE: {len(got)} annotations, MNE has {len(theirs)}"
         )
     else:
-        for k in range(len(got)):
+        # In time order, ties by description (MNE keeps the order of equal onsets).
+        def ordered(a):
+            return sorted(
+                zip(a.onset, a.duration, a.description), key=lambda x: (x[0], x[2])
+            )
+
+        for k, (a, b) in enumerate(zip(ordered(got), ordered(theirs))):
             if (
-                abs(got.onset[k] - theirs.onset[k]) > 1e-9
-                or not same_duration(got.duration[k], theirs.duration[k], 1e-9)
-                or got.description[k] != theirs.description[k]
+                abs(a[0] - b[0]) > 1e-9
+                or not same_duration(a[1], b[1], 1e-9)
+                or a[2] != b[2]
             ):
                 problems.append(
-                    f"Kymo's table in MNE, annotation {k}: {got[k]}, "
-                    f"MNE has {theirs[k]}"
+                    f"Kymo's table in MNE, annotation {k}: {a}, MNE has {b}"
                 )
                 break
 
@@ -936,6 +970,39 @@ def compare(path, max_values=None, annotation_files=False):
                 raw = reader(path, preload=False, verbose="error", infer_types=False)
         except Exception as e:  # noqa: BLE001 - report whatever MNE raises
             return [f"MNE could not read the file: {e!r}"]
+
+        # Kymo's rules where MNE's annotations would differ in the annotation files too;
+        # see the docstring.
+        if brainvision:
+            before = bv_markers_before_start(path, header)
+            keep = list(range(len(raw.annotations)))
+            for description in before:
+                k = next(
+                    (
+                        k
+                        for k in keep
+                        if raw.annotations.onset[k] == 0
+                        and raw.annotations.description[k] == description
+                    ),
+                    None,
+                )
+                if k is not None:
+                    keep.remove(k)
+            if len(keep) < len(raw.annotations):
+                notes.append(
+                    f"{len(raw.annotations) - len(keep)} MNE annotations of markers at "
+                    "positions below 1 left out"
+                )
+                raw.set_annotations(raw.annotations[keep])
+            names = {d: repair(d.strip("/")) for d in set(raw.annotations.description)}
+            raw.annotations.rename({d: n for d, n in names.items() if d != n})
+        if eeglab:
+            boundary = raw.annotations.description == "boundary"
+            if boundary.any():
+                raw.annotations.duration[boundary] = 0.0
+                notes.append(
+                    f"{boundary.sum()} boundary events compared as points in time"
+                )
 
         channels = header["channels"]
         names = [c["name"] for c in channels]

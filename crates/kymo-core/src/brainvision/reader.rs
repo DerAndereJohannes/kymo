@@ -9,7 +9,7 @@ use memmap2::Mmap;
 use super::header::{self, Orientation};
 use super::text::{Ini, decode};
 use super::{BrainVisionError, markers};
-use crate::decode::{ByteOrder, Decoder, frames};
+use crate::decode::{Decoder, frames};
 use crate::mapped::{self, map_read_only};
 use crate::open::companion;
 use crate::{
@@ -92,7 +92,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     };
     let (annotations, start_time) = annotations_and_start;
 
-    let decoder = Decoder::new(parsed.encoding, ByteOrder::Little);
+    let decoder = Decoder::new(parsed.encoding, parsed.order);
     let grid = Grid::continuous(
         Timebase::Regular {
             rate: parsed.rate,

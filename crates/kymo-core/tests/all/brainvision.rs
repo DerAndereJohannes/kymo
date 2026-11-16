@@ -291,7 +291,7 @@ fn markers(lines: &str) -> String {
 #[test]
 fn channel_lines_give_names_units_scaling_and_kinds() {
     let channels = "Ch1=Fp1\\1a,REF,0.5,\u{b5}V\r\n\
-                    Ch2=Cz\r\n\
+                    Ch2=C\u{1}z\r\n\
                     Ch3= Dummy\t\t ,,,\r\n\
                     Ch4=Temp,,2,\u{b0}C\r\n\
                     Ch5=VEOGb,,1,uV\r\n\
@@ -326,8 +326,9 @@ fn channel_lines_give_names_units_scaling_and_kinds() {
         got,
         [
             ("Fp1,a", Eeg, "\u{b5}V", Some(1e-6), 0.5),
-            // No resolution and unit: 1 µV per step, as the spec defaults.
-            ("Cz", Eeg, "\u{b5}V", Some(1e-6), 1.0),
+            // No resolution and unit: 1 µV per step, as the spec defaults; the byte 0x01
+            // is a comma, as the spec's placeholder.
+            ("C,z", Eeg, "\u{b5}V", Some(1e-6), 1.0),
             ("Dummy", Eeg, "\u{b5}V", Some(1e-6), 1.0),
             ("Temp", Misc, "\u{b0}C", None, 2.0),
             ("VEOGb", Eog, "uV", Some(1e-6), 1.0),
@@ -708,7 +709,10 @@ fn markers_become_annotations() {
          Mk6=,lonely,51,1,0\r\n\
          Mk7=New Segment,,61,1,0,20240208115842181247\r\n\
          Mk8=Stimulus,S  2,not a position,1,0\r\n\
-         Mk9=Stimulus,S  3,71,1,9\r\n",
+         Mk9=Stimulus,S  3,71,1,9\r\n\
+         Mk10=Marker,Impedance,0,1,0\r\n\
+         Mk11=Stimulus,S\u{1}4,81,1,-1\r\n\
+         Mk12=Stimulus,S  5,-3,1,0\r\n",
     );
     let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 200]), Some(vmrk.as_bytes()));
     let (rec, annotations) = written.open().unwrap();
@@ -725,6 +729,8 @@ fn markers_become_annotations() {
             (0.12, 0.0, "New Segment", vec![]),
             // A channel the header doesn't have means all of them.
             (0.14, 0.0, "Stimulus/S  3", vec![]),
+            // Channel −1 is all channels too (the spec's table); 0x01 is a comma.
+            (0.16, 0.0, "Stimulus/S,4", vec![]),
         ]
     );
     assert_eq!(
@@ -737,6 +743,11 @@ fn markers_become_annotations() {
         "{warnings}"
     );
     assert!(warnings.contains("name a channel"), "{warnings}");
+    // Positions count from 1 (the spec requires > 0): 0 and below are before the data.
+    assert!(
+        warnings.contains("2 markers at positions below 1"),
+        "{warnings}"
+    );
 }
 
 #[test]
@@ -933,4 +944,48 @@ fn the_sidecar_follows_the_header_and_samples_but_not_the_markers() {
     bytes[0] ^= 1;
     std::fs::write(eeg, bytes).unwrap();
     assert!(!complete());
+}
+
+#[test]
+fn use_big_endian_order() {
+    let values = [1i16, -2, 300, -32768];
+    let big: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    for (binary, data, warning) in [
+        ("INT_16\r\nUseBigEndianOrder=YES", big.clone(), None),
+        ("INT_16\r\nUseBigEndianOrder=yes", big, None),
+        ("INT_16\r\nUseBigEndianOrder=NO", int16s(&values), None),
+        (
+            "INT_16\r\nUseBigEndianOrder=maybe",
+            int16s(&values),
+            Some("UseBigEndianOrder"),
+        ),
+    ] {
+        let vhdr = header(COMMON, binary, "Ch1=A\r\nCh2=B\r\n");
+        let written = Written::new(vhdr.as_bytes(), &data, None);
+        let (rec, _) = written.open().unwrap();
+        let got = read_native(&rec, &[ChannelId(0), ChannelId(1)], 0..2);
+        assert_eq!(got, [1, 300, -2, -32768], "{binary}");
+        let warnings = rec.warnings().join("\n");
+        match warning {
+            Some(w) => assert!(warnings.contains(w), "{warnings}"),
+            None => assert!(!warnings.contains("UseBigEndianOrder"), "{warnings}"),
+        }
+    }
+}
+
+#[test]
+fn a_montage_without_positions_says_nothing_about_kinds() {
+    let channels = "Ch1=Fp1\r\nCh2=Out\r\n";
+    let kinds = |coordinates: &str| {
+        let vhdr = header(COMMON, "INT_16", channels) + "\r\n[Coordinates]\r\n" + coordinates;
+        let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 4]), None);
+        let (rec, _) = written.open().unwrap();
+        rec.channels().iter().map(|c| c.kind).collect::<Vec<_>>()
+    };
+    use ChannelKind::*;
+    // Radius 0 is an unknown position (the spec's A2-Radius): where the montage places other
+    // channels, a channel it can't place isn't on the scalp; where it places none, the radii
+    // say nothing.
+    assert_eq!(kinds("Ch1=1,-90,-72\r\nCh2=0,0,0\r\n"), [Eeg, Misc]);
+    assert_eq!(kinds("Ch1=0,0,0\r\nCh2=0,0,0\r\n"), [Eeg, Eeg]);
 }

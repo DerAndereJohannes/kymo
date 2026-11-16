@@ -233,7 +233,9 @@ impl Ini {
     }
 }
 
-/// Turns BrainVision's escaped commas (`\1`) back into commas.
+/// Turns BrainVision's comma placeholders back into commas: the two characters `\1`, as
+/// Recorder and the spec's examples write them, and the byte 0x01, as the spec's text
+/// (A2-Comma-Placeholder) describes it.
 pub(super) fn unescape(field: &str) -> String {
-    field.replace("\\1", ",")
+    field.replace("\\1", ",").replace('\u{1}', ",")
 }
