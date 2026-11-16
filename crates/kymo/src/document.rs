@@ -154,18 +154,8 @@ impl Summary {
             }
             None => SidebarRow::new("Start", "unknown".into()),
         };
-        // The format's own fields on hover, a line each, and that a click shows them all.
-        let mut hover: String = self
-            .fields
-            .iter()
-            .map(|(key, value)| format!("{key}: {value}\n"))
-            .collect();
-        if !hover.is_empty() {
-            hover.push('\n');
-        }
-        hover.push_str(INFO_HINT);
+        // The format's own fields are in the Recording Info window its click opens.
         let format = SidebarRow {
-            hover: Some(hover),
             info: true,
             ..SidebarRow::new("Format", self.format.to_owned())
         };
@@ -318,16 +308,12 @@ pub fn format_start(time: jiff::civil::DateTime, rounded: bool) -> String {
 pub struct SidebarRow {
     pub key: String,
     pub value: String,
-    /// What hovering the value shows: the format's own fields and [`INFO_HINT`] for Format,
-    /// the exact rates, channels and samples for Sampling, the start with every digit where
-    /// it has more than three decimals.
+    /// What hovering the value shows: the exact rates, channels and samples for Sampling,
+    /// the start with every digit where it has more than three decimals.
     pub hover: Option<String>,
     /// Whether a click on the value opens the Recording Info window (Format's).
     pub info: bool,
 }
-
-/// The last line of the Format row's hover.
-pub const INFO_HINT: &str = "Click for Recording Info";
 
 impl SidebarRow {
     fn new(key: &str, value: String) -> SidebarRow {
@@ -629,21 +615,17 @@ mod tests {
         }
     }
 
-    /// The format's own fields show on hovering the Format row and under `--info`'s format
-    /// line, a line each, each on one line.
+    /// The format's own fields show under `--info`'s format line (and so in Recording
+    /// Info), a line each, each on one line, and not on hovering the Format row.
     #[test]
-    fn format_fields_show_on_hover_and_in_info() {
+    fn format_fields_show_in_info() {
         let file = TempFile::preset("bv-int16-multiplexed");
         let summary = open(file.path()).unwrap().summary();
         let rows = summary.sidebar_rows();
         let format = rows.iter().find(|r| r.key == "Format").unwrap();
         assert_eq!(format.value, "BrainVision");
-        let hover = format.hover.as_deref().unwrap();
-        assert!(hover.contains("\norientation: multiplexed\n"), "{hover}");
-        assert!(
-            hover.ends_with("binary format: INT_16\ncodepage: UTF-8\n\nClick for Recording Info"),
-            "{hover}"
-        );
+        assert!(format.info);
+        assert_eq!(format.hover, None);
         let info = summary.to_string();
         assert!(
             info.starts_with(
@@ -795,12 +777,9 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .filter(|r| r.key != "Sampling" && r.key != "Format")
+                .filter(|r| r.key != "Sampling")
                 .all(|r| r.hover.is_none())
         );
-        // Without fields, Format's hover only says a click shows Recording Info.
-        let format = rows.iter().find(|r| r.key == "Format").unwrap();
-        assert_eq!(format.hover.as_deref(), Some(INFO_HINT));
         assert!(
             one.to_string()
                 .contains("500.006493 Hz, 1000 samples, 2 channels"),

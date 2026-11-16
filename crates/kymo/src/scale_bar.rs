@@ -146,9 +146,10 @@ const PREFIXES: [(&str, f64); 6] = [
 ];
 
 /// `value` in `unit`, with the unit's SI prefix the largest one that keeps the value at
-/// least 1 ("2000 µV" as 2 mV, "0.5 mV" as 500 µV, "5000 fT/cm" as 5 pT/cm): volts and
-/// siemens from nano to none, teslas (also per length) from femto to none; with none of
-/// them (less than 1 nV, or 1000 V and more), the nearest. Other units stay as they are.
+/// least 1 ("2000 µV" as 2 mV, "0.5 mV" as 500 µV, "5000 fT/cm" as 5 pT/cm, "2000 ms" as
+/// 2 s): volts, siemens and seconds from nano to none, teslas (also per length) from femto
+/// to none; with none of them (less than 1 nV, or 1000 V and more), the nearest. Other
+/// units stay as they are.
 pub fn fitted(value: f64, unit: &str) -> (f64, String) {
     let (numerator, per) = match unit.split_once('/') {
         Some((n, d)) => (n, format!("/{d}")),
@@ -159,7 +160,7 @@ pub fn fitted(value: f64, unit: &str) -> (f64, String) {
     };
     let prefix = &numerator[..numerator.len() - base.len_utf8()];
     let smallest = match base {
-        'V' | 'S' if per.is_empty() => 1e-9,
+        'V' | 'S' | 's' if per.is_empty() => 1e-9,
         'T' => 1e-15,
         _ => return (value, unit.to_owned()),
     };
@@ -176,7 +177,7 @@ pub fn fitted(value: f64, unit: &str) -> (f64, String) {
         .find(|(_, f)| si / f >= 1.0 - 1e-9)
         .or(allowed.last())
         .copied()
-        .expect("volts and teslas allow a prefix");
+        .expect("volts, siemens, seconds and teslas allow a prefix");
     // Round values stay round (2000 µV as exactly 2 mV).
     let scaled = si / factor;
     let digits = 10f64.powi(9 - scaled.abs().log10().floor() as i32);

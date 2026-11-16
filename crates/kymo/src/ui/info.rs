@@ -13,7 +13,7 @@ pub const COPY: &str = "Copy";
 
 /// The Recording Info window, while `open`: the file's name and path, then the rows of
 /// [`Summary::info_rows`], keys at the left (capitalized, grayed) and values wrapping in the
-/// width left, format fields after their names. Copy puts `--info`'s text on the clipboard.
+/// width left, format fields after their names (capitalized: "Stream 1", "Patient"). Copy puts `--info`'s text on the clipboard.
 pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &Summary) {
     let rows = summary.info_rows();
     let style = ctx.global_style();
@@ -71,14 +71,17 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
             );
             ui.add_space(gap - ui.spacing().item_spacing.x);
             if let Some(field) = &row.field {
-                ui.add(Label::new(RichText::new(format!("{field}:")).weak()).extend());
+                ui.add(
+                    Label::new(RichText::new(format!("{}:", capitalized(field))).weak()).extend(),
+                );
             }
             ui.add(Label::new(&row.value).wrap());
         });
     }
 }
 
-/// `key` with its first letter in upper case ("grid 1" → "Grid 1").
+/// `key` with its first letter in upper case ("grid 1" → "Grid 1", "stream 1" →
+/// "Stream 1").
 fn capitalized(key: &str) -> String {
     let mut chars = key.chars();
     match chars.next() {

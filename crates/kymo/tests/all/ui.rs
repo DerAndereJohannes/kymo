@@ -1639,21 +1639,16 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     harness.get_by_label_contains(&exact);
 }
 
-/// Hovering the summary's format shows the format's own header fields.
+/// Hovering the summary's format shows nothing: its header fields are in Recording Info.
 #[test]
-fn the_format_shows_its_fields_on_hover() {
+fn the_format_has_no_hover() {
     let file = TempFile::preset("bv-int16-multiplexed");
     let mut harness = window(file.path());
     ready(&mut harness);
-    let fields = "orientation: multiplexed\nbinary format: INT_16";
-    assert!(harness.query_by_label_contains(fields).is_none());
     let format = harness.get_by_label("BrainVision").rect();
     hover(&mut harness, format.center());
-    assert!(tooltip(&mut harness, fields));
-    assert!(tooltip(
-        &mut harness,
-        "INT_16\ncodepage: UTF-8\n\nClick for Recording Info"
-    ));
+    assert!(!tooltip(&mut harness, "orientation: multiplexed"));
+    assert!(!tooltip(&mut harness, "Click for Recording Info"));
 }
 
 /// The channel named `name`.
@@ -1768,7 +1763,7 @@ fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
     ready(&mut harness);
     let open = |harness: &Harness<'_, KymoApp>| {
         let open = harness.state().info_open();
-        assert_eq!(harness.query_by_label("orientation:").is_some(), open);
+        assert_eq!(harness.query_by_label("Orientation:").is_some(), open);
         open
     };
     assert!(!open(&harness));
@@ -1802,9 +1797,9 @@ fn recording_info_shows_fields_grids_and_warnings() {
         (
             "bvrf-int16",
             &[
-                "amplifiers:",
+                "Amplifiers:",
                 "kymo-testgen (serial 0)",
-                "power line frequency:",
+                "Power line frequency:",
                 "Grid 1",
                 "500 Hz, 60000 samples, 9 channels",
                 "Fp1, Fz, Cz, Pz, Oz, HEOG, ECG, Photo_AUX1, Temp",
@@ -1813,7 +1808,7 @@ fn recording_info_shows_fields_grids_and_warnings() {
         (
             "xdf-mixed",
             &[
-                "stream 3:",
+                "Stream 3:",
                 "\"Amp\" (EEG), 3 × int16, 256 Hz, 23040 samples: channels; effective rate \
                  256.000000 Hz, 1 segment",
                 "Grid 6",
