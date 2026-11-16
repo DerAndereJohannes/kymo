@@ -115,7 +115,7 @@ fn main() {
         }
     };
 
-    let report = run(path, sidecar_dir, settings, edit);
+    let report = run(path, sidecar_dir, settings.clone(), edit);
     if let Some(dir) = fresh_dir {
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -153,7 +153,7 @@ fn events_json(rec: &Recording) -> Result<String> {
             .grid(GridId(g))
             .channels()
             .iter()
-            .any(|&c| rec.channel(c).kind == kymo_core::ChannelKind::Stim);
+            .any(|&c| rec.channel(c).kind.is_stim());
         if !has_stim {
             continue;
         }
@@ -251,6 +251,20 @@ fn header_json(rec: &Recording) -> String {
         })
         .collect();
     let _ = writeln!(j, "  \"streams\": [{}],", streams.join(","));
+    // Every name, key and other spelling of the types kymo knows, in lowercase, and the
+    // type's key: how a type written in the file maps to a channel's "key".
+    let known: Vec<String> = kymo_core::KNOWN_KINDS
+        .iter()
+        .flat_map(|k| {
+            let name = k.name.to_lowercase();
+            [name.as_str(), k.key]
+                .into_iter()
+                .chain(k.aliases.iter().copied())
+                .map(|spelling| format!("{}: {}", string(spelling), string(k.key)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let _ = writeln!(j, "  \"known_kinds\": {{{}}},", known.join(", "));
     j.push_str("  \"channels\": [");
     for (i, c) in rec.channels().iter().enumerate() {
         let sep = if i == 0 { "" } else { "," };
@@ -263,11 +277,14 @@ fn header_json(rec: &Recording) -> String {
             .map_or_else(|| "null".to_owned(), |m| m.to_string());
         let _ = write!(
             j,
-            "{sep}\n    {{\"name\": {}, \"kind\": {}, \"unit\": {}, \"to_si\": {to_si}, \
+            "{sep}\n    {{\"name\": {}, \"kind\": {}, \"key\": {}, \"mne_type\": {}, \
+             \"unit\": {}, \"to_si\": {to_si}, \
              \"gain\": {}, \"offset\": {}, \"grid\": {}, \"prefilter\": {}, \
              \"trigger_mask\": {mask}, \"events\": {}}}",
             string(&c.name),
-            string(&format!("{:?}", c.kind)),
+            string(c.kind.name()),
+            string(c.kind.key()),
+            string(c.kind.mne_name()),
             string(&c.unit.label),
             c.gain,
             c.offset,

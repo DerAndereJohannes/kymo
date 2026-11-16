@@ -202,7 +202,7 @@ fn readings_relative_to_a_baseline() {
 fn stim_channels_read_their_codes() {
     let len = 60_000u64;
     let mut stim = channel("Status", 0, 2.0, 1e6);
-    stim.kind = ChannelKind::Stim;
+    stim.kind = ChannelKind::STIM;
     stim.trigger_mask = Some(0xffff);
     // Code 0, 85, 170 or 255 per second, over status bits.
     let code = |i: u64| (i / 100 % 4 * 85) as i32;
@@ -240,15 +240,10 @@ fn stim_channels_read_their_codes() {
 /// it measures the same quantity; other channels keep their own unit.
 #[test]
 fn readings_show_each_types_unit() {
+    use crate::kinds::*;
     use kymo::ui::readout::display_unit;
-    use kymo_core::{Channel, GridId, Unit};
-    let typed = |kind: ChannelKind, unit: &str| Channel {
-        kind,
-        unit: Unit::from_label(unit),
-        ..Channel::new("c", GridId(0))
-    };
-    use ChannelKind::*;
-    let cases: [(ChannelKind, &str, &str, f64); 16] = [
+    use kymo_core::Unit;
+    let cases: [(ChannelKind, &str, &str, f64); 19] = [
         (Mag, "T", "fT", 1e15),
         (Mag, "pT", "fT", 1e3),
         (RefMeg, "T", "fT", 1e15),
@@ -260,6 +255,11 @@ fn readings_show_each_types_unit() {
         (Eog, "mV", "\u{b5}V", 1e3),
         (Bio, "\u{3bc}V", "\u{b5}V", 1.0),
         (Seeg, "uV", "mV", 1e-3),
+        // Types of their own whose own quantity is voltage.
+        (ChannelKind::named("HEOG"), "mV", "\u{b5}V", 1e3),
+        (ChannelKind::named("SaO2"), "V", "\u{b5}V", 1e6),
+        // A type kymo doesn't know keeps its unit.
+        (ChannelKind::named("Gaze"), "mV", "mV", 1.0),
         // Units of another quantity, or none MNE has for the type: kept.
         (Eeg, "AU", "AU", 1.0),
         (Bio, "%", "%", 1.0),
@@ -268,7 +268,7 @@ fn readings_show_each_types_unit() {
         (Stim, "Boolean", "", 1.0),
     ];
     for (kind, unit, label, factor) in cases {
-        let (got, f) = display_unit(&typed(kind, unit));
+        let (got, f) = display_unit(&kind, &Unit::from_label(unit));
         assert_eq!(got, label, "{kind:?} in {unit}");
         assert!(
             (f - factor).abs() <= 1e-9 * factor,

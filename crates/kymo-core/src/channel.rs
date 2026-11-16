@@ -1,117 +1,276 @@
 //! Per-channel metadata as stored in the file.
 
+use std::sync::Arc;
+
 use crate::GridId;
 
 /// Index of a channel in [`Recording::channels`](crate::Recording::channels).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChannelId(pub u32);
 
-/// Channel type: MNE's types that it scales or draws differently. MNE's other types
-/// (chpi, fNIRS, temperature, ...) are `Misc`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ChannelKind {
-    Eeg,
-    Eog,
-    Ecg,
-    Emg,
-    Stim,
-    Misc,
-    /// MEG magnetometer.
-    Mag,
-    /// MEG planar gradiometer.
-    Grad,
-    /// MEG reference sensor (magnetometer or gradiometer).
-    RefMeg,
-    /// Stereo-EEG (depth electrodes).
-    Seeg,
-    /// Electrocorticography.
-    Ecog,
-    /// Deep brain stimulation electrodes.
-    Dbs,
-    /// Respiration.
-    Resp,
-    /// Other biological signals (MNE's "bio": oximetry, plethysmography, ...).
-    Bio,
+/// A channel's type: a name, as the file gives it or as typed by hand. Names that differ only
+/// in case are one type ([`key`](Self::key)); a name kymo knows ([`KNOWN_KINDS`], also by its
+/// other spellings) is shown as kymo spells it, any other as first given. The one type with
+/// a behavior of its own is [`STIM`](Self::STIM): the readers make a channel stim when its
+/// values are codes.
+#[derive(Clone)]
+pub struct ChannelKind(Repr);
+
+#[derive(Clone)]
+enum Repr {
+    Known(&'static KnownKind),
+    Custom { name: Arc<str>, key: Arc<str> },
 }
 
-/// MNE's channel types that are `Misc` in kymo.
-const MNE_MISC: [&str; 22] = [
-    "chpi",
-    "csd",
-    "dipole",
-    "exci",
-    "eyegaze",
-    "fnirs_cw_amplitude",
-    "fnirs_fd_ac_amplitude",
-    "fnirs_fd_phase",
-    "fnirs_od",
-    "fnirs_td_gated_amplitude",
-    "fnirs_td_moments_intensity",
-    "fnirs_td_moments_mean",
-    "fnirs_td_moments_variance",
-    "gof",
-    "gsr",
-    "hbo",
-    "hbr",
-    "ias",
-    "pupil",
-    "syst",
-    "temperature",
-    "whitened",
+/// A type kymo knows: how it is shown, its other spellings and its name in MNE.
+#[derive(Debug, PartialEq, Eq)]
+pub struct KnownKind {
+    /// As shown, e.g. `"MEG Mag"`.
+    pub name: &'static str,
+    /// The lowercase name settings are kept under: MNE's name of the type where MNE has it
+    /// (`"ref_meg"`), the shown name in lowercase otherwise (`"heog"`).
+    pub key: &'static str,
+    /// Other spellings of the type, in lowercase: BIDS' (`"megmag"`), EDF+'s (`"temp"`) and
+    /// others (`"ekg"`).
+    pub aliases: &'static [&'static str],
+    /// MNE's channel type for it: its own, or the nearest (`"eog"` for HEOG, `"bio"` for
+    /// SaO2, `"misc"` where MNE has none).
+    pub mne: &'static str,
+}
+
+const fn known(
+    name: &'static str,
+    key: &'static str,
+    aliases: &'static [&'static str],
+    mne: &'static str,
+) -> KnownKind {
+    KnownKind {
+        name,
+        key,
+        aliases,
+        mne,
+    }
+}
+
+const EEG: KnownKind = known("EEG", "eeg", &[], "eeg");
+const MAG: KnownKind = known("MEG Mag", "mag", &["megmag"], "mag");
+const GRAD: KnownKind = known("MEG Grad", "grad", &["meggradplanar"], "grad");
+const REF_MEG: KnownKind = known(
+    "MEG Ref",
+    "ref_meg",
+    &["megrefmag", "megrefgradaxial", "megrefgradplanar"],
+    "ref_meg",
+);
+const EOG: KnownKind = known("EOG", "eog", &[], "eog");
+const HEOG: KnownKind = known("HEOG", "heog", &[], "eog");
+const VEOG: KnownKind = known("VEOG", "veog", &[], "eog");
+const ECG: KnownKind = known("ECG", "ecg", &["ekg"], "ecg");
+const EMG: KnownKind = known("EMG", "emg", &[], "emg");
+const SEEG: KnownKind = known("sEEG", "seeg", &[], "seeg");
+const ECOG: KnownKind = known("ECoG", "ecog", &[], "ecog");
+const DBS: KnownKind = known("DBS", "dbs", &[], "dbs");
+const RESP: KnownKind = known("Resp", "resp", &[], "resp");
+const BIO: KnownKind = known("Bio", "bio", &[], "bio");
+const MISC: KnownKind = known("Misc", "misc", &[], "misc");
+const STIM: KnownKind = known("Stim", "stim", &[], "stim");
+
+/// The types kymo knows, in the order the sidebar lists them where a stream has several:
+/// EEG, MEG, EOG, ECG, the other body and brain signals, then MNE's other types and EDF+'s
+/// type prefixes; misc and stim come last, after any type kymo doesn't know.
+pub static KNOWN_KINDS: [&KnownKind; 46] = [
+    &EEG,
+    &MAG,
+    &GRAD,
+    &REF_MEG,
+    &EOG,
+    &HEOG,
+    &VEOG,
+    &ECG,
+    &EMG,
+    &SEEG,
+    &ECOG,
+    &DBS,
+    &RESP,
+    &BIO,
+    &known("SaO2", "sao2", &[], "bio"),
+    &known("PPG", "ppg", &[], "bio"),
+    &known("GSR", "gsr", &[], "gsr"),
+    &known("Temperature", "temperature", &["temp"], "temperature"),
+    &known("Eye Gaze", "eyegaze", &[], "eyegaze"),
+    &known("Pupil", "pupil", &[], "pupil"),
+    &known("HbO", "hbo", &[], "hbo"),
+    &known("HbR", "hbr", &[], "hbr"),
+    &known(
+        "fNIRS CW Amplitude",
+        "fnirs_cw_amplitude",
+        &["nirscwamplitude"],
+        "fnirs_cw_amplitude",
+    ),
+    &known(
+        "fNIRS FD AC Amplitude",
+        "fnirs_fd_ac_amplitude",
+        &[],
+        "fnirs_fd_ac_amplitude",
+    ),
+    &known("fNIRS FD Phase", "fnirs_fd_phase", &[], "fnirs_fd_phase"),
+    &known("fNIRS OD", "fnirs_od", &[], "fnirs_od"),
+    &known(
+        "fNIRS TD Gated Amplitude",
+        "fnirs_td_gated_amplitude",
+        &[],
+        "fnirs_td_gated_amplitude",
+    ),
+    &known(
+        "fNIRS TD Moments Intensity",
+        "fnirs_td_moments_intensity",
+        &[],
+        "fnirs_td_moments_intensity",
+    ),
+    &known(
+        "fNIRS TD Moments Mean",
+        "fnirs_td_moments_mean",
+        &[],
+        "fnirs_td_moments_mean",
+    ),
+    &known(
+        "fNIRS TD Moments Variance",
+        "fnirs_td_moments_variance",
+        &[],
+        "fnirs_td_moments_variance",
+    ),
+    &known("CSD", "csd", &[], "csd"),
+    &known("cHPI", "chpi", &[], "chpi"),
+    &known("EXCI", "exci", &[], "exci"),
+    &known("IAS", "ias", &[], "ias"),
+    &known("SYST", "syst", &[], "syst"),
+    &known("Dipole", "dipole", &[], "dipole"),
+    &known("GOF", "gof", &[], "gof"),
+    &known("Whitened", "whitened", &[], "whitened"),
+    &known("ERG", "erg", &[], "misc"),
+    &known("MCG", "mcg", &[], "misc"),
+    &known("EP", "ep", &[], "misc"),
+    &known("Light", "light", &[], "misc"),
+    &known("Sound", "sound", &[], "misc"),
+    &known("Event", "event", &[], "misc"),
+    &MISC,
+    &STIM,
 ];
 
 impl ChannelKind {
-    pub const ALL: [ChannelKind; 14] = [
-        ChannelKind::Eeg,
-        ChannelKind::Eog,
-        ChannelKind::Ecg,
-        ChannelKind::Emg,
-        ChannelKind::Stim,
-        ChannelKind::Misc,
-        ChannelKind::Mag,
-        ChannelKind::Grad,
-        ChannelKind::RefMeg,
-        ChannelKind::Seeg,
-        ChannelKind::Ecog,
-        ChannelKind::Dbs,
-        ChannelKind::Resp,
-        ChannelKind::Bio,
-    ];
+    pub const EEG: ChannelKind = ChannelKind(Repr::Known(&EEG));
+    /// MEG magnetometer.
+    pub const MAG: ChannelKind = ChannelKind(Repr::Known(&MAG));
+    /// MEG planar gradiometer.
+    pub const GRAD: ChannelKind = ChannelKind(Repr::Known(&GRAD));
+    /// MEG reference sensor (magnetometer or gradiometer).
+    pub const REF_MEG: ChannelKind = ChannelKind(Repr::Known(&REF_MEG));
+    pub const EOG: ChannelKind = ChannelKind(Repr::Known(&EOG));
+    pub const HEOG: ChannelKind = ChannelKind(Repr::Known(&HEOG));
+    pub const VEOG: ChannelKind = ChannelKind(Repr::Known(&VEOG));
+    pub const ECG: ChannelKind = ChannelKind(Repr::Known(&ECG));
+    pub const EMG: ChannelKind = ChannelKind(Repr::Known(&EMG));
+    /// Stereo-EEG (depth electrodes).
+    pub const SEEG: ChannelKind = ChannelKind(Repr::Known(&SEEG));
+    /// Electrocorticography.
+    pub const ECOG: ChannelKind = ChannelKind(Repr::Known(&ECOG));
+    /// Deep brain stimulation electrodes.
+    pub const DBS: ChannelKind = ChannelKind(Repr::Known(&DBS));
+    /// Respiration.
+    pub const RESP: ChannelKind = ChannelKind(Repr::Known(&RESP));
+    /// Other biological signals (MNE's "bio": oximetry, plethysmography, ...).
+    pub const BIO: ChannelKind = ChannelKind(Repr::Known(&BIO));
+    /// Channels of no particular type.
+    pub const MISC: ChannelKind = ChannelKind(Repr::Known(&MISC));
+    /// Channels whose values are codes, whose changes are events.
+    pub const STIM: ChannelKind = ChannelKind(Repr::Known(&STIM));
 
-    /// MNE's name of this type, e.g. `"ref_meg"`.
-    pub fn mne_name(self) -> &'static str {
-        match self {
-            ChannelKind::Eeg => "eeg",
-            ChannelKind::Eog => "eog",
-            ChannelKind::Ecg => "ecg",
-            ChannelKind::Emg => "emg",
-            ChannelKind::Stim => "stim",
-            ChannelKind::Misc => "misc",
-            ChannelKind::Mag => "mag",
-            ChannelKind::Grad => "grad",
-            ChannelKind::RefMeg => "ref_meg",
-            ChannelKind::Seeg => "seeg",
-            ChannelKind::Ecog => "ecog",
-            ChannelKind::Dbs => "dbs",
-            ChannelKind::Resp => "resp",
-            ChannelKind::Bio => "bio",
+    /// The type named `name`, ignoring surrounding whitespace: the known type with that
+    /// name, key or other spelling, in any case ("EEG", "eeg", "MEGMAG", "Temp"), or a type
+    /// of that name; Misc for an empty name.
+    pub fn named(name: &str) -> ChannelKind {
+        let name = name.trim();
+        if name.is_empty() {
+            return ChannelKind::MISC;
+        }
+        let key = name.to_lowercase();
+        match KnownKind::find(&key) {
+            Some(known) => ChannelKind(Repr::Known(known)),
+            None => ChannelKind(Repr::Custom {
+                name: name.into(),
+                key: key.into(),
+            }),
         }
     }
 
-    /// The kind of an MNE channel type name (as EEGLAB's `chanlocs.type` and XDF's channel
-    /// types use them), ignoring case and surrounding whitespace. MNE's types without a kind
-    /// of their own are `Misc`; `None` if the name is not an MNE type.
-    pub fn from_mne(name: &str) -> Option<ChannelKind> {
-        let name = name.trim().to_ascii_lowercase();
-        ChannelKind::ALL
-            .into_iter()
-            .find(|k| k.mne_name() == name)
-            .or_else(|| {
-                MNE_MISC
-                    .contains(&name.as_str())
-                    .then_some(ChannelKind::Misc)
-            })
+    /// The name as shown ("MEG Mag", or a type kymo doesn't know as first given).
+    pub fn name(&self) -> &str {
+        match &self.0 {
+            Repr::Known(known) => known.name,
+            Repr::Custom { name, .. } => name,
+        }
+    }
+
+    /// The name types are compared and settings kept under: lowercase, a known type's
+    /// [`KnownKind::key`].
+    pub fn key(&self) -> &str {
+        match &self.0 {
+            Repr::Known(known) => known.key,
+            Repr::Custom { key, .. } => key,
+        }
+    }
+
+    /// The known type this is, if kymo knows it.
+    pub fn known(&self) -> Option<&'static KnownKind> {
+        match self.0 {
+            Repr::Known(known) => Some(known),
+            Repr::Custom { .. } => None,
+        }
+    }
+
+    /// MNE's channel type for it: a known type's [`KnownKind::mne`], misc for others.
+    pub fn mne_name(&self) -> &'static str {
+        self.known().map_or("misc", |k| k.mne)
+    }
+
+    /// Whether it is [`STIM`](Self::STIM).
+    pub fn is_stim(&self) -> bool {
+        self.key() == STIM.key
+    }
+}
+
+impl KnownKind {
+    /// The known type with the lowercase `key` as its key, other spelling or shown name.
+    fn find(key: &str) -> Option<&'static KnownKind> {
+        KNOWN_KINDS
+            .iter()
+            .copied()
+            .find(|k| k.key == key || k.aliases.contains(&key) || k.name.eq_ignore_ascii_case(key))
+    }
+}
+
+impl PartialEq for ChannelKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for ChannelKind {}
+
+impl std::hash::Hash for ChannelKind {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl std::fmt::Debug for ChannelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::fmt::Display for ChannelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -357,7 +516,7 @@ impl Channel {
     /// tiles hold codes, shown as they are (1 and 0), as MNE shows stim channels. Those are
     /// the digital values, masked for a channel with a [`trigger_mask`](Self::trigger_mask).
     pub fn tile_scaling(&self) -> (f64, f64) {
-        if self.kind == ChannelKind::Stim {
+        if self.kind == ChannelKind::STIM {
             (1.0, 0.0)
         } else {
             (self.gain, self.offset)
@@ -368,7 +527,7 @@ impl Channel {
     /// label, or none for stim channels, whose tiles hold codes (BioSemi files call the unit
     /// of their Status channel "Boolean").
     pub fn tile_unit(&self) -> &str {
-        if self.kind == ChannelKind::Stim {
+        if self.kind == ChannelKind::STIM {
             ""
         } else {
             &self.unit.label
@@ -379,7 +538,7 @@ impl Channel {
     pub fn new(name: impl Into<String>, grid: GridId) -> Self {
         Channel {
             name: name.into(),
-            kind: ChannelKind::Misc,
+            kind: ChannelKind::MISC,
             unit: Unit::default(),
             gain: 1.0,
             offset: 0.0,
@@ -402,12 +561,12 @@ pub(crate) fn kind_from_name(name: &str) -> ChannelKind {
     let upper = name.trim().to_ascii_uppercase();
     let starts = |prefixes: &[&str]| prefixes.iter().any(|p| upper.starts_with(p));
     if starts(&["EOG", "HEOG", "VEOG"]) {
-        ChannelKind::Eog
+        ChannelKind::EOG
     } else if starts(&["ECG", "EKG"]) {
-        ChannelKind::Ecg
+        ChannelKind::ECG
     } else if starts(&["EMG"]) {
-        ChannelKind::Emg
+        ChannelKind::EMG
     } else {
-        ChannelKind::Eeg
+        ChannelKind::EEG
     }
 }

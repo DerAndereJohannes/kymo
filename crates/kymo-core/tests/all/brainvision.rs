@@ -193,10 +193,10 @@ fn presets_open_with_their_channels_markers_and_start() {
         let rec = open(file.path()).0;
         rec.channels()
             .iter()
-            .map(|c| (c.kind, c.unit.to_si))
+            .map(|c| (c.kind.clone(), c.unit.to_si))
             .collect::<Vec<_>>()
     };
-    use ChannelKind::*;
+    use crate::kinds::*;
     let uv = Some(1e-6);
     assert_eq!(
         kinds("bv-int16-multiplexed"),
@@ -314,14 +314,14 @@ fn channel_lines_give_names_units_scaling_and_kinds() {
         .map(|c| {
             (
                 c.name.as_str(),
-                c.kind,
+                c.kind.clone(),
                 c.unit.label.as_str(),
                 c.unit.to_si,
                 c.gain,
             )
         })
         .collect();
-    use ChannelKind::*;
+    use crate::kinds::*;
     assert_eq!(
         got,
         [
@@ -980,9 +980,12 @@ fn a_montage_without_positions_says_nothing_about_kinds() {
         let vhdr = header(COMMON, "INT_16", channels) + "\r\n[Coordinates]\r\n" + coordinates;
         let written = Written::new(vhdr.as_bytes(), &int16s(&[0; 4]), None);
         let (rec, _) = written.open().unwrap();
-        rec.channels().iter().map(|c| c.kind).collect::<Vec<_>>()
+        rec.channels()
+            .iter()
+            .map(|c| c.kind.clone())
+            .collect::<Vec<_>>()
     };
-    use ChannelKind::*;
+    use crate::kinds::*;
     // Radius 0 is an unknown position (the spec's A2-Radius): where the montage places other
     // channels, a channel it can't place isn't on the scalp; where it places none, the radii
     // say nothing.

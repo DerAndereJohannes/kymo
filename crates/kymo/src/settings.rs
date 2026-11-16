@@ -9,8 +9,8 @@ use kymo_core::tile::DEFAULT_BUDGET;
 
 use crate::annotations::{AnnotationColors, Rgb};
 use crate::render::DEFAULT_GPU_BUDGET;
-use crate::ui::palette::TypeColors;
-use crate::view::{DEFAULT_SPAN, KINDS, TypeSettings};
+use crate::types::{TypeSet, TypeSettings};
+use crate::view::DEFAULT_SPAN;
 
 /// Megabytes the tile cache may take.
 pub const TILE_CACHE_MB: RangeInclusive<u32> = 64..=65_536;
@@ -29,21 +29,19 @@ const AUTO_SCALE_KEY: &str = "kymo.auto_scale_on_open";
 const THEME_KEY: &str = "kymo.theme";
 const SYSTEM_FONT_KEY: &str = "kymo.system_font";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
+const CHANNEL_TYPES_KEY: &str = "kymo.channel_types";
 
-/// The key of a channel type's color, by MNE's name of the type, e.g. `kymo.color.eeg` or
-/// `kymo.color.ref_meg`.
-fn type_color_key(kind: ChannelKind) -> String {
-    format!("kymo.color.{}", kind.mne_name())
-}
+/// The types kymo had before types were names, by MNE's names, whose settings were kept
+/// under a key each: `kymo.color.eeg`, `kymo.remove_dc.eeg`, `kymo.own_scale.ref_meg`.
+const OLD_TYPES: [&str; 14] = [
+    "eeg", "eog", "ecg", "emg", "stim", "misc", "mag", "grad", "ref_meg", "seeg", "ecog", "dbs",
+    "resp", "bio",
+];
 
-/// The keys of a channel type's DC removal and scaling each channel on its own, as
-/// [`type_color_key`]'s: `kymo.remove_dc.eeg`, `kymo.own_scale.misc`.
-fn remove_dc_key(kind: ChannelKind) -> String {
-    format!("kymo.remove_dc.{}", kind.mne_name())
-}
-
-fn own_scale_key(kind: ChannelKind) -> String {
-    format!("kymo.own_scale.{}", kind.mne_name())
+/// The keys an old type's color, DC removal and scaling each channel on its own were kept
+/// under.
+fn old_type_keys(name: &str) -> [String; 3] {
+    ["color", "remove_dc", "own_scale"].map(|setting| format!("kymo.{setting}.{name}"))
 }
 
 /// Light or dark: the system's choice, or one of them whatever the system uses. On
@@ -100,7 +98,7 @@ impl Theme {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Budget of the tile cache, in MB (2^20 bytes).
     pub tile_cache_mb: u32,
@@ -115,12 +113,10 @@ pub struct Settings {
     /// Whether each trace is centered on its mean over the window (DC removal), of the types
     /// `types` has it for.
     pub remove_dc: bool,
-    /// Per channel type: DC removal, and scaling each channel on its own.
+    /// Per channel type: its color, DC removal, and scaling each channel on its own.
     pub types: TypeSettings,
     /// Whether a recording opens with Auto Scale instead of the default amplitudes.
     pub auto_scale_on_open: bool,
-    /// Colors picked per channel type; the others keep their defaults.
-    pub type_colors: TypeColors,
     pub theme: Theme,
     /// Whether text is in the system's interface font rather than egui's (see
     /// [`crate::ui::fonts`]).
@@ -138,7 +134,6 @@ impl Default for Settings {
             remove_dc: true,
             types: TypeSettings::default(),
             auto_scale_on_open: true,
-            type_colors: [None; KINDS.len()],
             theme: Theme::System,
             system_font: false,
         }
@@ -170,29 +165,13 @@ impl Settings {
             remove_dc: get(REMOVE_DC_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.remove_dc),
-            types: {
-                let flags = |key: fn(ChannelKind) -> String, defaults: [bool; KINDS.len()]| {
-                    let mut flags = defaults;
-                    for (flag, kind) in flags.iter_mut().zip(KINDS) {
-                        if let Some(v) = get(&key(kind)).and_then(|v| v.trim().parse().ok()) {
-                            *flag = v;
-                        }
-                    }
-                    flags
-                };
-                TypeSettings {
-                    remove_dc: flags(remove_dc_key, defaults.types.remove_dc),
-                    own_scale: flags(own_scale_key, defaults.types.own_scale),
-                }
+            types: match get(CHANNEL_TYPES_KEY) {
+                Some(text) => parse_types(&text),
+                None => old_types(&get),
             },
             auto_scale_on_open: get(AUTO_SCALE_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.auto_scale_on_open),
-            type_colors: KINDS.map(|kind| {
-                get(&type_color_key(kind))
-                    .and_then(|v| parse_rgb(&v))
-                    .map(|[r, g, b]| Color32::from_rgb(r, g, b))
-            }),
             theme: get(THEME_KEY)
                 .and_then(|v| Theme::parse(&v))
                 .unwrap_or(defaults.theme),
@@ -211,20 +190,15 @@ impl Settings {
         storage.set_string(ANTIALIAS_KEY, self.antialias.to_string());
         storage.set_string(SCALE_BARS_KEY, self.scale_bars.to_string());
         storage.set_string(REMOVE_DC_KEY, self.remove_dc.to_string());
-        for (i, kind) in KINDS.into_iter().enumerate() {
-            storage.set_string(&remove_dc_key(kind), self.types.remove_dc[i].to_string());
-            storage.set_string(&own_scale_key(kind), self.types.own_scale[i].to_string());
+        storage.set_string(CHANNEL_TYPES_KEY, format_types(&self.types));
+        for name in OLD_TYPES {
+            for key in old_type_keys(name) {
+                storage.remove_string(&key);
+            }
         }
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
         storage.set_string(THEME_KEY, self.theme.key().to_owned());
         storage.set_string(SYSTEM_FONT_KEY, self.system_font.to_string());
-        for (kind, color) in KINDS.into_iter().zip(self.type_colors) {
-            let key = type_color_key(kind);
-            match color {
-                Some(c) => storage.set_string(&key, format_rgb([c.r(), c.g(), c.b()])),
-                None => storage.remove_string(&key),
-            }
-        }
     }
 
     /// Every setting within its range; NaN seconds become the default.
@@ -244,7 +218,6 @@ impl Settings {
             remove_dc: self.remove_dc,
             types: self.types,
             auto_scale_on_open: self.auto_scale_on_open,
-            type_colors: self.type_colors,
             theme: self.theme,
             system_font: self.system_font,
         }
@@ -257,6 +230,71 @@ impl Settings {
     pub fn gpu_memory_bytes(&self) -> usize {
         (self.gpu_memory_mb as usize) << 20
     }
+}
+
+/// The settings per channel type as kept: a line per type, its color (`#rrggbb`), whether DC
+/// removal centers it and whether each of its channels is scaled on its own (`true` or
+/// `false`), each empty where nothing was set, then its name with backslashes and line
+/// breaks escaped, separated by tabs.
+fn format_types(types: &TypeSettings) -> String {
+    let flag = |v: Option<bool>| v.map_or_else(String::new, |v| v.to_string());
+    types
+        .entries()
+        .map(|t| {
+            let color = t
+                .color
+                .map_or_else(String::new, |c| format_rgb([c.r(), c.g(), c.b()]));
+            format!(
+                "{color}\t{}\t{}\t{}\n",
+                flag(t.remove_dc),
+                flag(t.own_scale),
+                escape(&t.name)
+            )
+        })
+        .collect()
+}
+
+/// The inverse of [`format_types`]; unreadable lines and values are skipped.
+fn parse_types(text: &str) -> TypeSettings {
+    let mut types = TypeSettings::default();
+    for line in text.lines() {
+        let mut fields = line.splitn(4, '\t');
+        let (Some(color), Some(dc), Some(own), Some(name)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Some(name) = unescape(name).filter(|n| !n.trim().is_empty()) else {
+            continue;
+        };
+        types.insert(TypeSet {
+            name,
+            color: parse_rgb(color).map(|[r, g, b]| Color32::from_rgb(r, g, b)),
+            remove_dc: dc.trim().parse().ok(),
+            own_scale: own.trim().parse().ok(),
+        });
+    }
+    types
+}
+
+/// The settings per channel type as kept before types were names, a key per setting and
+/// type ([`old_type_keys`]).
+fn old_types(get: &dyn Fn(&str) -> Option<String>) -> TypeSettings {
+    let mut types = TypeSettings::default();
+    for name in OLD_TYPES {
+        let kind = ChannelKind::named(name);
+        let [color, remove_dc, own_scale] = old_type_keys(name).map(|key| get(&key));
+        if let Some([r, g, b]) = color.as_deref().and_then(parse_rgb) {
+            types.set_color(&kind, Some(Color32::from_rgb(r, g, b)));
+        }
+        if let Some(on) = remove_dc.and_then(|v| v.trim().parse().ok()) {
+            types.set_remove_dc(&kind, on);
+        }
+        if let Some(on) = own_scale.and_then(|v| v.trim().parse().ok()) {
+            types.set_own_scale(&kind, on);
+        }
+    }
+    types
 }
 
 /// The colors picked for annotation descriptions, kept in `storage`; empty without one.

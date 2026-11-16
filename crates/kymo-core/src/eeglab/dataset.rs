@@ -245,7 +245,6 @@ fn channels(
             }
         ));
     }
-    let mut unknown: Vec<String> = Vec::new();
     let mut channels = Vec::with_capacity(nbchan);
     for k in 0..nbchan {
         let field = |name: &str| -> Result<Option<String>, EeglabError> {
@@ -260,17 +259,13 @@ fn channels(
         } else {
             label
         };
-        let kind_name = field("type")?.unwrap_or_default().trim().to_owned();
-        let kind = match ChannelKind::from_mne(&kind_name) {
-            Some(kind) => kind,
-            None => {
-                if !kind_name.is_empty() && !unknown.contains(&kind_name) {
-                    unknown.push(kind_name);
-                }
-                kind_from_name(&name)
-            }
+        let kind_name = field("type")?.unwrap_or_default();
+        let kind = if kind_name.trim().is_empty() {
+            kind_from_name(&name)
+        } else {
+            ChannelKind::named(&kind_name)
         };
-        let (unit, gain) = scaling(kind);
+        let (unit, gain) = scaling(&kind);
         channels.push(Channel {
             kind,
             unit: Unit::from_label(unit),
@@ -278,24 +273,20 @@ fn channels(
             ..Channel::new(name, GridId(0))
         });
     }
-    if !unknown.is_empty() {
-        let types: Vec<String> = unknown.iter().map(|t| format!("{t:?}")).collect();
-        warnings.push(format!(
-            "channel types that aren't MNE's ({}) are read from the channel names",
-            types.join(", ")
-        ));
-    }
     Ok(channels)
 }
 
 /// Unit and gain of a channel of `kind`: EEGLAB stores µV, which MNE reads as stored × 1e-6
 /// in each type's SI unit; stim channels hold codes.
-fn scaling(kind: ChannelKind) -> (&'static str, f64) {
-    match kind {
-        ChannelKind::Mag | ChannelKind::RefMeg => ("T", 1e-6),
-        ChannelKind::Grad => ("T/m", 1e-6),
-        ChannelKind::Stim => ("", 1.0),
-        _ => ("\u{b5}V", 1.0),
+fn scaling(kind: &ChannelKind) -> (&'static str, f64) {
+    if *kind == ChannelKind::MAG || *kind == ChannelKind::REF_MEG {
+        ("T", 1e-6)
+    } else if *kind == ChannelKind::GRAD {
+        ("T/m", 1e-6)
+    } else if kind.is_stim() {
+        ("", 1.0)
+    } else {
+        ("\u{b5}V", 1.0)
     }
 }
 

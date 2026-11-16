@@ -7,8 +7,7 @@ use eframe::egui::Color32;
 use kymo::annotations::AnnotationColors;
 use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use kymo::settings::{load_annotation_colors, save_annotation_colors};
-use kymo::ui::palette::TypeColors;
-use kymo::view::{KINDS, TypeSettings, kind_index};
+use kymo::types::TypeSettings;
 use kymo_core::ChannelKind;
 use proptest::prelude::*;
 
@@ -46,27 +45,25 @@ fn defaults_without_storage_or_values() {
     assert_eq!(Settings::load(Some(&Memory::default())), defaults);
 }
 
-/// Type colors with `picked` set and the others default.
-/// The default per-type settings with DC removal off for `no_dc` and scaling each channel
-/// on its own flipped for `flipped`.
-fn types(no_dc: &[ChannelKind], flipped: &[ChannelKind]) -> TypeSettings {
+/// The default per-type settings with DC removal off for `no_dc`, scaling each channel on
+/// its own flipped for `flipped` and the colors `picked`.
+fn types(
+    no_dc: &[ChannelKind],
+    flipped: &[ChannelKind],
+    picked: &[(ChannelKind, Color32)],
+) -> TypeSettings {
     let mut types = TypeSettings::default();
-    for &kind in no_dc {
-        types.remove_dc[kind_index(kind)] = false;
+    for kind in no_dc {
+        types.set_remove_dc(kind, false);
     }
-    for &kind in flipped {
-        let own = &mut types.own_scale[kind_index(kind)];
-        *own = !*own;
+    for kind in flipped {
+        let own = types.own_scale(kind);
+        types.set_own_scale(kind, !own);
+    }
+    for (kind, color) in picked {
+        types.set_color(kind, Some(*color));
     }
     types
-}
-
-fn colors(picked: &[(ChannelKind, Color32)]) -> TypeColors {
-    let mut colors = [None; KINDS.len()];
-    for &(kind, color) in picked {
-        colors[kind_index(kind)] = Some(color);
-    }
-    colors
 }
 
 #[test]
@@ -79,33 +76,48 @@ fn saved_settings_read_back() {
         scale_bars: false,
         remove_dc: false,
         types: types(
-            &[ChannelKind::Eeg, ChannelKind::Grad],
-            &[ChannelKind::Misc, ChannelKind::Ecg],
+            &[
+                ChannelKind::EEG,
+                ChannelKind::GRAD,
+                ChannelKind::named("Gaze"),
+            ],
+            &[
+                ChannelKind::MISC,
+                ChannelKind::ECG,
+                ChannelKind::named("tab\there"),
+            ],
+            &[
+                (ChannelKind::EOG, Color32::from_rgb(10, 200, 30)),
+                (ChannelKind::MISC, Color32::from_rgb(0, 0, 0)),
+                (ChannelKind::REF_MEG, Color32::from_rgb(1, 2, 3)),
+                (
+                    ChannelKind::named("line\nbreak \\ Ü"),
+                    Color32::from_rgb(4, 5, 6),
+                ),
+            ],
         ),
         auto_scale_on_open: true,
-        type_colors: colors(&[
-            (ChannelKind::Eog, Color32::from_rgb(10, 200, 30)),
-            (ChannelKind::Misc, Color32::from_rgb(0, 0, 0)),
-            (ChannelKind::RefMeg, Color32::from_rgb(1, 2, 3)),
-        ]),
         theme: Theme::Dark,
         system_font: true,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
     assert_eq!(Settings::load(Some(&storage)), settings);
-    // Keyed by MNE's names of the types.
-    for key in [
-        "kymo.color.eog",
-        "kymo.color.misc",
-        "kymo.color.ref_meg",
-        "kymo.remove_dc.eeg",
-        "kymo.own_scale.ref_meg",
-    ] {
-        assert!(storage.0.contains_key(key), "{key}");
-    }
+    // The types by name, a type kymo doesn't know as first given.
+    let loaded = Settings::load(Some(&storage)).types;
+    assert!(!loaded.remove_dc(&ChannelKind::named("GAZE")));
+    let names: Vec<&str> = loaded.entries().map(|t| t.name.as_str()).collect();
+    assert!(
+        names.contains(&"Gaze") && names.contains(&"tab\there"),
+        "{names:?}"
+    );
+    assert!(storage.0.contains_key("kymo.channel_types"));
     for theme in Theme::ALL {
-        Settings { theme, ..settings }.save(&mut storage);
+        Settings {
+            theme,
+            ..settings.clone()
+        }
+        .save(&mut storage);
         assert_eq!(Settings::load(Some(&storage)).theme, theme);
     }
     assert_eq!(settings.tile_cache_bytes(), 1024 << 20);
@@ -121,9 +133,12 @@ fn unreadable_values_are_defaults_and_others_kept() {
         antialias: true,
         scale_bars: false,
         remove_dc: false,
-        types: types(&[ChannelKind::Eeg], &[ChannelKind::Misc]),
+        types: types(
+            &[ChannelKind::EEG],
+            &[ChannelKind::MISC],
+            &[(ChannelKind::GRAD, Color32::from_rgb(255, 0, 128))],
+        ),
         auto_scale_on_open: true,
-        type_colors: colors(&[(ChannelKind::Grad, Color32::from_rgb(255, 0, 128))]),
         theme: Theme::Light,
         system_font: true,
     };
@@ -133,84 +148,70 @@ fn unreadable_values_are_defaults_and_others_kept() {
             "kymo.tile_cache_mb",
             Settings {
                 tile_cache_mb: defaults.tile_cache_mb,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.gpu_memory_mb",
             Settings {
                 gpu_memory_mb: defaults.gpu_memory_mb,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.default_window_s",
             Settings {
                 default_window_s: defaults.default_window_s,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.antialias",
             Settings {
                 antialias: defaults.antialias,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.scale_bars",
             Settings {
                 scale_bars: defaults.scale_bars,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.remove_dc",
             Settings {
                 remove_dc: defaults.remove_dc,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.auto_scale_on_open",
             Settings {
                 auto_scale_on_open: defaults.auto_scale_on_open,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
-            "kymo.remove_dc.eeg",
+            "kymo.channel_types",
             Settings {
-                types: types(&[], &[ChannelKind::Misc]),
-                ..saved
-            },
-        ),
-        (
-            "kymo.own_scale.misc",
-            Settings {
-                types: types(&[ChannelKind::Eeg], &[]),
-                ..saved
-            },
-        ),
-        (
-            "kymo.color.grad",
-            Settings {
-                type_colors: defaults.type_colors,
-                ..saved
+                types: TypeSettings::default(),
+                ..saved.clone()
             },
         ),
         (
             "kymo.theme",
             Settings {
                 theme: defaults.theme,
-                ..saved
+                ..saved.clone()
             },
         ),
         (
             "kymo.system_font",
             Settings {
                 system_font: defaults.system_font,
-                ..saved
+                ..saved.clone()
             },
         ),
     ];
@@ -238,7 +239,6 @@ fn values_out_of_range_are_clamped() {
         remove_dc: true,
         types: TypeSettings::default(),
         auto_scale_on_open: false,
-        type_colors: [None; KINDS.len()],
         theme: Theme::System,
         system_font: false,
     }
@@ -287,7 +287,9 @@ fn annotation_colors_skip_unreadable_lines() {
 #[test]
 fn a_reset_type_color_is_not_read_back() {
     let mut picked = Settings::default();
-    picked.type_colors[0] = Some(Color32::from_rgb(1, 2, 3));
+    picked
+        .types
+        .set_color(&ChannelKind::EEG, Some(Color32::from_rgb(1, 2, 3)));
     let mut storage = Memory::default();
     picked.save(&mut storage);
     Settings::default().save(&mut storage);
@@ -373,24 +375,132 @@ fn recent_recordings_are_kept_in_storage() {
     assert_eq!(Recent::load(Some(&storage)).paths().len(), 1);
 }
 
-/// DC removal centers every type but misc and other biological signals (and stim, which it
-/// never centers); misc, other biological signals and respiration are scaled each channel
-/// on its own.
+/// DC removal centers brain signals, EOG, ECG, EMG and respiration, not misc, other
+/// biological signals, MNE's other types and types kymo doesn't know (and never stim);
+/// misc, other biological signals, respiration and those others are scaled each channel on
+/// its own.
 #[test]
 fn per_type_defaults() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     let types = Settings::default().types;
-    for kind in KINDS {
-        let i = kind_index(kind);
-        assert_eq!(
-            types.remove_dc[i],
-            !matches!(kind, Misc | Bio | Stim),
-            "{kind:?}"
-        );
-        assert_eq!(
-            types.own_scale[i],
-            matches!(kind, Misc | Bio | Resp),
-            "{kind:?}"
-        );
+    let named = ChannelKind::named;
+    let shared = [
+        Eeg,
+        Mag,
+        Grad,
+        RefMeg,
+        Eog,
+        named("HEOG"),
+        Ecg,
+        Emg,
+        Seeg,
+        Ecog,
+        Dbs,
+    ];
+    for kind in &shared {
+        assert!(types.remove_dc(kind), "{kind:?}");
+        assert!(!types.own_scale(kind), "{kind:?}");
+    }
+    assert!(types.remove_dc(&Resp) && types.own_scale(&Resp));
+    for kind in [
+        Misc,
+        Bio,
+        named("SaO2"),
+        named("Temperature"),
+        named("Gaze"),
+    ] {
+        assert!(!types.remove_dc(&kind), "{kind:?}");
+        assert!(types.own_scale(&kind), "{kind:?}");
+    }
+    assert!(!types.remove_dc(&Stim) && !types.own_scale(&Stim));
+    // Ticked, stim stays as it is.
+    let mut ticked = TypeSettings::default();
+    ticked.set_remove_dc(&Stim, true);
+    ticked.set_own_scale(&Stim, true);
+    assert!(!ticked.remove_dc(&Stim) && !ticked.own_scale(&Stim));
+}
+
+/// Settings per type kept before types were names, a key per setting and type by MNE's
+/// name, are read once and then kept the new way.
+#[test]
+fn old_per_type_keys_are_read_once() {
+    let mut storage = Memory::default();
+    for (key, value) in [
+        ("kymo.color.eog", "#0a0b0c"),
+        ("kymo.remove_dc.eeg", "false"),
+        ("kymo.own_scale.ref_meg", "true"),
+        ("kymo.own_scale.misc", "true"),
+        ("kymo.remove_dc.bio", "nonsense"),
+    ] {
+        storage.set_string(key, value.into());
+    }
+    let loaded = Settings::load(Some(&storage));
+    let types = &loaded.types;
+    assert_eq!(
+        types.color(&ChannelKind::EOG),
+        Some(Color32::from_rgb(10, 11, 12))
+    );
+    assert!(!types.remove_dc(&ChannelKind::EEG));
+    assert!(types.own_scale(&ChannelKind::REF_MEG));
+    // As they start: nothing set.
+    assert!(types.own_scale(&ChannelKind::MISC));
+    assert!(!types.remove_dc(&ChannelKind::BIO));
+    assert_eq!(types.entries().count(), 3);
+    loaded.save(&mut storage);
+    assert!(storage.0.keys().all(|k| !k.starts_with("kymo.color.")));
+    assert!(storage.0.contains_key("kymo.channel_types"));
+    assert_eq!(Settings::load(Some(&storage)), loaded);
+    // Once kept the new way, old keys don't count.
+    storage.set_string("kymo.remove_dc.eog", "false".into());
+    assert!(
+        Settings::load(Some(&storage))
+            .types
+            .remove_dc(&ChannelKind::EOG)
+    );
+}
+
+#[test]
+fn channel_types_skip_unreadable_lines_and_values() {
+    let mut storage = Memory::default();
+    storage.set_string(
+        "kymo.channel_types",
+        "garbage\n#0000ff\ttrue\t\tGaze\n\tfalse\tmaybe\tECG\n#00ff00\t\t\t\n\
+         #zzzzzz\tfalse\ttrue\tPupil\n\t\t\tbad \\x escape\n"
+            .into(),
+    );
+    let types = Settings::load(Some(&storage)).types;
+    let gaze = ChannelKind::named("gaze");
+    assert_eq!(types.color(&gaze), Some(Color32::from_rgb(0, 0, 255)));
+    assert!(types.remove_dc(&gaze));
+    assert!(types.own_scale(&gaze));
+    assert!(!types.remove_dc(&ChannelKind::ECG));
+    assert!(!types.own_scale(&ChannelKind::ECG));
+    let pupil = ChannelKind::named("Pupil");
+    assert_eq!(types.color(&pupil), None);
+    assert!(!types.remove_dc(&pupil) && types.own_scale(&pupil));
+    let names: Vec<&str> = types.entries().map(|t| t.name.as_str()).collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+}
+
+proptest! {
+    /// Any names (line breaks, tabs, backslashes, non-ASCII) and settings read back.
+    #[test]
+    fn channel_types_read_back(
+        set in proptest::collection::vec(
+            ("(?s)\\S.{0,12}", proptest::option::of(any::<[u8; 3]>()), any::<bool>(), any::<bool>()),
+            0..8,
+        ),
+    ) {
+        let mut types = TypeSettings::default();
+        for (name, color, dc, own) in &set {
+            let kind = ChannelKind::named(name);
+            types.set_color(&kind, color.map(|[r, g, b]| Color32::from_rgb(r, g, b)));
+            types.set_remove_dc(&kind, *dc);
+            types.set_own_scale(&kind, *own);
+        }
+        let settings = Settings { types, ..Settings::default() };
+        let mut storage = Memory::default();
+        settings.save(&mut storage);
+        prop_assert_eq!(Settings::load(Some(&storage)), settings);
     }
 }

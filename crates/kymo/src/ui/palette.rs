@@ -1,40 +1,49 @@
-//! Trace colors per channel type, close to MNE's, and annotation colors, for light and dark
-//! themes.
+//! Trace colors per channel type and annotation colors, for light and dark themes.
 
 use eframe::egui::{Color32, Visuals};
 
 use crate::annotations::{AnnotationColor, COLORS};
-use crate::view::{KINDS, kind_index};
+use crate::types::TypeSettings;
 use kymo_core::ChannelKind;
-
-/// Colors picked per channel type, in [`KINDS`] order; `None` keeps the default.
-pub type TypeColors = [Option<Color32>; KINDS.len()];
 
 /// The color of a channel type's traces and names: the one picked for it, used as it is
 /// in every theme, or the default ([`trace_color`]).
-pub fn type_color(kind: ChannelKind, picked: &TypeColors, visuals: &Visuals) -> Color32 {
-    picked[kind_index(kind)].unwrap_or_else(|| trace_color(kind, visuals))
+pub fn type_color(kind: &ChannelKind, types: &TypeSettings, visuals: &Visuals) -> Color32 {
+    types
+        .color(kind)
+        .unwrap_or_else(|| trace_color(kind, visuals))
 }
 
-/// The default color of a channel type's traces and names, close to MNE's: EOG blue, ECG
-/// magenta, stim amber, magnetometers teal, MEG references steel blue, sEEG brown and DBS
-/// green; the rest in the theme's text color. (MNE draws magnetometers dark blue and
-/// gradiometers blue, which kymo's blue EOG would be mistaken for.) Dark themes get lighter
-/// variants.
-pub fn trace_color(kind: ChannelKind, visuals: &Visuals) -> Color32 {
-    let dark = visuals.dark_mode;
-    let rgb = |light: (u8, u8, u8), lighter: (u8, u8, u8)| {
-        let (r, g, b) = if dark { lighter } else { light };
+/// The default color of a channel type's traces and names. EEG, misc and every other type
+/// are in the theme's text color; seven types get a hue each, all at one lightness and
+/// chroma per theme (OKLCH L 0.56, C 0.15 against white; L 0.66, C 0.13, lighter, against
+/// the dark theme's near black), so none stands out more than another: MEG green
+/// (magnetometers; gradiometers darker, or lighter in dark themes; references grayer),
+/// EOG blue (HEOG and VEOG alike), ECG red, EMG violet, intracranial orange (sEEG; ECoG
+/// darker, or lighter; DBS grayer), respiration magenta and stim amber. In the sidebar's
+/// order (EEG, MEG, EOG, ECG, EMG, intracranial, respiration; stim last), neighbors stay
+/// apart for color vision deficiencies (OKLab ΔE ≥ 8 under simulated protanopia and
+/// deuteranopia) and for normal vision (ΔE ≥ 15), and every hue keeps 3:1 contrast with
+/// the background. There are no more hues to give: any other at that lightness and chroma
+/// is within ΔE 13 of one of them, so other types keep the text color unless one is picked.
+pub fn trace_color(kind: &ChannelKind, visuals: &Visuals) -> Color32 {
+    let hex = |light: u32, dark: u32| {
+        let rgb = if visuals.dark_mode { dark } else { light };
+        let [_, r, g, b] = rgb.to_be_bytes();
         Color32::from_rgb(r, g, b)
     };
-    match kind {
-        ChannelKind::Eog => rgb((0, 60, 220), (110, 155, 255)),
-        ChannelKind::Ecg => rgb((185, 0, 185), (230, 115, 230)),
-        ChannelKind::Stim => rgb((200, 100, 0), (240, 160, 50)),
-        ChannelKind::Mag => rgb((0, 120, 130), (70, 200, 210)),
-        ChannelKind::RefMeg => rgb((70, 130, 180), (100, 170, 220)),
-        ChannelKind::Seeg => rgb((139, 69, 19), (210, 145, 90)),
-        ChannelKind::Dbs => rgb((30, 140, 80), (110, 210, 150)),
+    match kind.key() {
+        "mag" => hex(0x2b8a36, 0x5aa75e),
+        "grad" => hex(0x046f1c, 0x76c479),
+        "ref_meg" => hex(0x489476, 0x539277),
+        "eog" | "heog" | "veog" => hex(0x4170cb, 0x6591e1),
+        "ecg" => hex(0xbc4945, 0xd67069),
+        "emg" => hex(0x8959ba, 0xa57cd2),
+        "seeg" => hex(0xaa5f04, 0xcb7d34),
+        "ecog" => hex(0x864900, 0xea9952),
+        "dbs" => hex(0xa67943, 0xa17b4e),
+        "resp" => hex(0xaf4a88, 0xc96fa4),
+        "stim" => hex(0x8e7002, 0xb18e15),
         _ => visuals.text_color(),
     }
 }

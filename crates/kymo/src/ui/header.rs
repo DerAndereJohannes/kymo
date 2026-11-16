@@ -1,5 +1,7 @@
 //! The sidebar: the file's header and its channels.
 
+use std::collections::BTreeSet;
+
 use eframe::egui::{
     self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
     RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
@@ -10,12 +12,13 @@ use crate::action::Action;
 use crate::annotations::{AnnotationColors, Entry, Legend};
 use crate::document::{Document, Summary, format_rate, grid_rate, plural};
 use crate::keymap::{Keymap, Platform};
+use crate::types::TypeSettings;
 use crate::ui::axis::{Clock, format_time};
 use crate::ui::color::{Choice, swatch};
-use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
+use crate::ui::palette::{annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
 use crate::ui::{elide_middle, text_button};
-use crate::view::{KINDS, ViewState};
+use crate::view::ViewState;
 
 /// Runs `add_contents` in exactly the width `ui` offers, clipping whatever is wider. A panel
 /// grows to fit wider contents, and while its edge is dragged the difference stays unpainted
@@ -67,7 +70,7 @@ pub struct HeaderSource<'a> {
     pub document: &'a Document,
     pub summary: &'a Summary,
     /// The types' trace colors where picked.
-    pub type_colors: &'a TypeColors,
+    pub types: &'a TypeSettings,
     /// For the shortcuts in tooltips.
     pub platform: Platform,
 }
@@ -90,7 +93,7 @@ pub fn header_panel(
         recording,
         document,
         summary,
-        type_colors,
+        types,
         platform,
     } = source;
     let AnnotationPanel {
@@ -177,7 +180,7 @@ pub fn header_panel(
             });
         legend_rect = Some(panel.response.rect);
     }
-    channel_list(ui, recording, document, view, type_colors, rule);
+    channel_list(ui, recording, document, view, types, rule);
     // On top of both lists, as each would take the drag near the line between them.
     if let Some(rect) = legend_rect {
         let folded = ui
@@ -795,17 +798,25 @@ struct Measured {
 
 impl Columns {
     /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
-    /// font and scale (and again after [`forget_text_widths`]); `grouped`, the names within
-    /// their streams (see [`list_name`]).
-    fn of(ui: &Ui, document: &Document, grouped: bool) -> Columns {
+    /// font, scale and set of units shown (which follow the channels' types in `view`), and
+    /// again after [`forget_text_widths`]; `grouped`, the names within their streams (see
+    /// [`list_name`]).
+    fn of(ui: &Ui, document: &Document, view: &ViewState, grouped: bool) -> Columns {
         let font = TextStyle::Body.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
         let rec = &document.recording;
+        let channels = rec.channels();
+        let units: BTreeSet<String> = channels
+            .iter()
+            .enumerate()
+            .map(|(c, channel)| display_unit(view.kind_of(ChannelId(c as u32)), &channel.unit).0)
+            .collect();
         let key = Id::unique((
             "kymo channel columns",
             &document.path,
-            rec.channels().len(),
+            channels.len(),
             grouped,
+            &units,
         ));
         if let Some(m) = ui.data(|d| d.get_temp::<Measured>(key))
             && m.font == font
@@ -824,10 +835,9 @@ impl Columns {
                     .fold(0.0, f32::max)
             })
         };
-        let channels = rec.channels();
         let columns = Columns {
             name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned())),
-            unit: widest(&mut channels.iter().map(|c| display_unit(c).0)),
+            unit: widest(&mut units.into_iter()),
         };
         ui.data_mut(|d| {
             d.insert_temp(
@@ -883,12 +893,12 @@ struct GroupRate {
     mixed: bool,
 }
 
-fn group_rate(document: &Document, view: &ViewState, group: Group) -> GroupRate {
+fn group_rate(document: &Document, view: &ViewState, group: &Group) -> GroupRate {
     let rec = &document.recording;
     let grids: Vec<&kymo_core::Grid> = view
         .order()
         .iter()
-        .filter(|&&c| view.group_of(c) == group)
+        .filter(|&&c| view.group_of(c) == *group)
         .map(|&c| rec.grid(rec.channel(c).grid))
         .collect();
     let Some(first) = grids.first() else {
@@ -920,7 +930,7 @@ fn group_rate(document: &Document, view: &ViewState, group: Group) -> GroupRate 
 type Group = (Option<usize>, ChannelKind);
 
 /// One row of the channel list.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Item {
     /// A stream's row (by its index in the recording), above its channels.
     Stream(usize),
@@ -934,7 +944,7 @@ enum Item {
 }
 
 /// A row of the channel list that shows or hides the rows below it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Fold {
     Stream(usize),
     Kind(Group),
@@ -951,13 +961,13 @@ fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[Fo
         .iter()
         .map(|s| match &s.content {
             StreamContent::Channels(ids) => {
-                let kind = |c: &ChannelId| rec.channel(*c).kind;
+                let kind = |c: &ChannelId| &rec.channel(*c).kind;
                 ids.iter().any(|c| kind(c) != kind(&ids[0]))
             }
             _ => false,
         })
         .collect();
-    let mut items = Vec::with_capacity(view.order().len() + 2 * streams.len() + KINDS.len());
+    let mut items = Vec::with_capacity(view.order().len() + 3 * streams.len());
     let (mut stream_now, mut group_now) = (None, None);
     for &c in view.order() {
         let group @ (stream, _) = view.group_of(c);
@@ -975,11 +985,11 @@ fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[Fo
             typed = mixed[s];
         }
         if typed {
-            if group_now != Some(group) {
-                group_now = Some(group);
-                items.push(Item::Kind(group, depth));
+            if group_now.as_ref() != Some(&group) {
+                group_now = Some(group.clone());
+                items.push(Item::Kind(group.clone(), depth));
             }
-            if closed.contains(&Fold::Kind(group)) {
+            if closed.contains(&Fold::Kind(group.clone())) {
                 continue;
             }
         }
@@ -1034,7 +1044,7 @@ fn channel_list(
     recording: u64,
     document: &Document,
     view: &mut ViewState,
-    type_colors: &TypeColors,
+    types: &TypeSettings,
     rule: f32,
 ) {
     let rec = &document.recording;
@@ -1048,7 +1058,7 @@ fn channel_list(
     let mut closed: Vec<Fold> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
     let items = list_items(document, view, grouped, &closed);
     let mut toggled = None;
-    let columns = Columns::of(ui, document, grouped);
+    let columns = Columns::of(ui, document, view, grouped);
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
@@ -1075,8 +1085,8 @@ fn channel_list(
     let mixed_rates: Vec<Group> = items
         .iter()
         .filter_map(|item| match item {
-            Item::Kind(group, _) if !grouped && group_rate(document, view, *group).mixed => {
-                Some(*group)
+            Item::Kind(group, _) if !grouped && group_rate(document, view, group).mixed => {
+                Some(group.clone())
             }
             _ => None,
         })
@@ -1116,7 +1126,7 @@ fn channel_list(
                 };
                 let left = Layout::left_to_right(Align::Center);
 
-                let (id, group, depth) = match items[i] {
+                let (id, group, depth) = match items[i].clone() {
                     Item::Stream(s) => {
                         let open = !closed.contains(&Fold::Stream(s));
                         if stream_row(ui, document, s, open, view, row_response) {
@@ -1125,23 +1135,24 @@ fn channel_list(
                         continue;
                     }
                     Item::Kind(group, depth) => {
-                        let fold = Fold::Kind(group);
+                        let fold = Fold::Kind(group.clone());
                         let in_stream = group
                             .0
                             .filter(|_| grouped)
                             .map(|s| stream_name(&streams[s]));
-                        let name = kind_label(group.1, in_stream.as_deref());
+                        let name = kind_label(&group.1, in_stream.as_deref());
                         ui.add_space(depth as f32 * level);
+                        let rate = in_stream
+                            .is_none()
+                            .then(|| group_rate(document, view, &group));
                         let kind = KindRow {
                             group,
                             label: name,
                             open: !closed.contains(&fold),
                             // Under a stream, the stream's row has the rate.
-                            rate: in_stream
-                                .is_none()
-                                .then(|| group_rate(document, view, group)),
+                            rate,
                         };
-                        if kind_row(ui, view, kind, type_colors, row_response) {
+                        if kind_row(ui, view, kind, types, row_response) {
                             toggled = Some(fold);
                         }
                         continue;
@@ -1159,7 +1170,7 @@ fn channel_list(
                 // Under its stream, the name within it ("X" for "ACC X").
                 let listed = list_name(channel, grouped);
                 let grid = rec.grid(channel.grid);
-                let (unit, _) = display_unit(channel);
+                let (unit, _) = display_unit(view.kind_of(id), &channel.unit);
                 let short_name = elide_middle(ui.ctx(), listed, &body, name_width);
                 let short_unit = fit
                     .unit
@@ -1180,7 +1191,7 @@ fn channel_list(
                         };
                         format!(
                             "{name}\n{}{unit} \u{b7} {}",
-                            kind_name(channel.kind),
+                            view.kind_of(id).name(),
                             grid_rate(grid)
                         )
                     });
@@ -1198,7 +1209,7 @@ fn channel_list(
                 } else if !shown {
                     ui.visuals().weak_text_color()
                 } else {
-                    type_color(channel.kind, type_colors, ui.visuals())
+                    type_color(view.kind_of(id), types, ui.visuals())
                 };
                 let text = short_name.as_deref().unwrap_or(listed);
                 let label = Label::new(RichText::new(text).color(color))
@@ -1298,12 +1309,12 @@ fn channel_list(
             // Every row of its level (streams, or types) as this one goes.
             closed.retain(|f| !level(f));
             if open {
-                closed.extend(folds.iter().filter(|f| level(f)));
+                closed.extend(folds.iter().filter(|f| level(f)).cloned());
             }
         } else if open {
             closed.push(fold);
         } else {
-            closed.retain(|&f| f != fold);
+            closed.retain(|f| *f != fold);
         }
         ui.data_mut(|d| d.insert_temp(closed_key, closed));
     }
@@ -1475,10 +1486,10 @@ fn disclosure(ui: &mut Ui, open: bool, name: &str, height: f32) -> Response {
 
 /// What a type's row's controls name it: "EEG channels", or under a stream "EEG channels in
 /// Amp", as several streams can have one (and a channel can be named as its type).
-fn kind_label(kind: ChannelKind, stream: Option<&str>) -> String {
+fn kind_label(kind: &ChannelKind, stream: Option<&str>) -> String {
     match stream {
-        Some(stream) => format!("{} channels in {stream}", kind_name(kind)),
-        None => format!("{} channels", kind_name(kind)),
+        Some(stream) => format!("{} channels in {stream}", kind.name()),
+        None => format!("{} channels", kind.name()),
     }
 }
 
@@ -1502,7 +1513,7 @@ fn kind_row(
     ui: &mut Ui,
     view: &mut ViewState,
     spec: KindRow,
-    type_colors: &TypeColors,
+    types: &TypeSettings,
     row: Response,
 ) -> bool {
     let KindRow {
@@ -1512,8 +1523,8 @@ fn kind_row(
         rate,
     } = spec;
     let (stream, kind) = group;
-    let name = kind_name(kind);
-    let (shown, all) = view.group_shown(stream, kind);
+    let name = kind.name();
+    let (shown, all) = view.group_shown(stream, &kind);
     let row_height = row.rect.height();
     let clicked = disclosure(ui, open, &label, row_height).clicked();
 
@@ -1522,7 +1533,7 @@ fn kind_row(
     let response = ui.add(checkbox);
     accessible_label(ui, &response, format!("Show {label}"));
     if response.changed() {
-        view.set_group_shown(stream, kind, checked);
+        view.set_group_shown(stream, &kind, checked);
     }
 
     let body = TextStyle::Body.resolve(ui.style());
@@ -1551,7 +1562,7 @@ fn kind_row(
         room.clamp(0.0, name_width)
     };
 
-    let color = type_color(kind, type_colors, ui.visuals());
+    let color = type_color(&kind, types, ui.visuals());
     let (_, rect) = ui.allocate_space(vec2(name_room, row_height));
     let text = Label::new(RichText::new(name).color(color).strong())
         .sense(Sense::click())
@@ -1568,7 +1579,7 @@ fn kind_row(
         .order()
         .iter()
         .copied()
-        .find(|&c| view.group_of(c) == group && view.is_shown(c));
+        .find(|&c| view.group_of(c) == (stream, kind.clone()) && view.is_shown(c));
     if let Some(first) = first_shown {
         response = response
             .on_hover_text(format!("{full}\n\nShow in Traces"))
@@ -1637,25 +1648,6 @@ fn accessible_text(ui: &Ui, response: &Response, text: String) {
 fn accessible_label(ui: &Ui, response: &Response, label: String) {
     ui.ctx()
         .accesskit_node_builder(response.id, |node| node.set_label(label));
-}
-
-pub fn kind_name(kind: ChannelKind) -> &'static str {
-    match kind {
-        ChannelKind::Eeg => "EEG",
-        ChannelKind::Eog => "EOG",
-        ChannelKind::Ecg => "ECG",
-        ChannelKind::Emg => "EMG",
-        ChannelKind::Stim => "Stim",
-        ChannelKind::Mag => "MEG Mag",
-        ChannelKind::Grad => "MEG Grad",
-        ChannelKind::RefMeg => "MEG Ref",
-        ChannelKind::Seeg => "sEEG",
-        ChannelKind::Ecog => "ECoG",
-        ChannelKind::Dbs => "DBS",
-        ChannelKind::Resp => "Resp",
-        ChannelKind::Bio => "Bio",
-        _ => "Misc",
-    }
 }
 
 /// `area` scrolled to its top the first time it shows for `recording`. egui keeps scroll

@@ -3,13 +3,16 @@
 use std::ops::Range;
 
 use kymo::action::{Action, Gesture};
-use kymo::view::{Area, DEFAULT_ROWS, KINDS, ScaleGroup, UnitKey, ViewState, kind_index};
+use kymo::types;
+use kymo::view::{Area, DEFAULT_ROWS, ScaleGroup, UnitKey, ViewState};
 use kymo_core::tile::{Direction, prefetch, tiles_for_view};
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, Quantity,
     ReadError, Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
 };
 use proptest::prelude::*;
+
+use crate::kinds::KINDS;
 
 /// The view never reads samples.
 struct NoReader;
@@ -38,7 +41,7 @@ fn recording_with(eeg: u32, seconds: u64, streams: bool) -> Recording {
     let mut channels: Vec<Channel> = (0..eeg)
         .map(|c| {
             let mut ch = Channel::new(format!("EEG {c}"), GridId(0));
-            ch.kind = ChannelKind::Eeg;
+            ch.kind = ChannelKind::EEG;
             ch.unit = Unit {
                 label: "uV".into(),
                 to_si: Some(1e-6),
@@ -47,13 +50,13 @@ fn recording_with(eeg: u32, seconds: u64, streams: bool) -> Recording {
         })
         .collect();
     let mut eog = Channel::new("EOG", GridId(1));
-    eog.kind = ChannelKind::Eog;
+    eog.kind = ChannelKind::EOG;
     eog.unit = Unit {
         label: "mV".into(),
         to_si: Some(1e-3),
     };
     let mut stim = Channel::new("Status", GridId(1));
-    stim.kind = ChannelKind::Stim;
+    stim.kind = ChannelKind::STIM;
     channels.extend([eog, stim]);
     let rate = |rate| Timebase::Regular { rate, start: 0.0 };
     let grids = vec![
@@ -117,14 +120,18 @@ fn eeg_streams(eeg: u32) -> Vec<Stream> {
 
 /// Channels of types not in file order, without streams: stim, EEG, EOG, EEG, misc, EEG.
 fn mixed_recording() -> Recording {
-    use ChannelKind::*;
-    let kinds = [Stim, Eeg, Eog, Eeg, Misc, Eeg];
+    use crate::kinds::*;
+    recording_of(&[Stim, Eeg, Eog, Eeg, Misc, Eeg])
+}
+
+/// A channel of each of `kinds`, in that order, without streams.
+fn recording_of(kinds: &[ChannelKind]) -> Recording {
     let channels = kinds
         .iter()
         .enumerate()
-        .map(|(i, &kind)| {
+        .map(|(i, kind)| {
             let mut ch = Channel::new(format!("C{i}"), GridId(0));
-            ch.kind = kind;
+            ch.kind = kind.clone();
             ch
         })
         .collect();
@@ -189,7 +196,7 @@ fn starts_with_20_s_and_20_rows() {
     assert!(view.dc_removed());
     assert_eq!(view.bad_channels().count(), 0);
     // MNE's scalings for raw.plot.
-    use ChannelKind::*;
+    use crate::kinds::*;
     for (kind, amplitude) in [
         (Eeg, 20e-6),
         (Eog, 150e-6),
@@ -206,7 +213,7 @@ fn starts_with_20_s_and_20_rows() {
         (Resp, 1.0),
         (Bio, 1e-6),
     ] {
-        assert_eq!(view.amplitude(kind), amplitude, "{kind:?}");
+        assert_eq!(view.amplitude(&kind), amplitude, "{kind:?}");
     }
 }
 
@@ -232,7 +239,7 @@ fn amplitudes_follow_each_channels_unit() {
         act(&mut view, Action::ScaleUp);
     }
     assert!(close(view.channel_amplitude(ChannelId(0)), 10.0));
-    assert!(close(view.amplitude(ChannelKind::Eog), 75e-6));
+    assert!(close(view.amplitude(&ChannelKind::EOG), 75e-6));
     act(&mut view, Action::ScaleDown);
     act(&mut view, Action::ScaleDown);
     assert!(close(
@@ -452,19 +459,45 @@ fn hidden_channels_lose_their_rows_and_the_top_channel_stays_first() {
 fn channels_open_by_type() {
     let rec = mixed_recording();
     let mut view = ViewState::new(&rec);
-    // EEG, EOG, stim, misc, each in file order.
-    assert_eq!(view.order(), ids(&[1, 3, 5, 2, 0, 4]));
-    assert_eq!(view.visible_channels(), ids(&[1, 3, 5, 2, 0, 4]));
-    assert_eq!(view.group_of(ChannelId(3)), (None, ChannelKind::Eeg));
+    // EEG, EOG, misc, stim, each in file order.
+    assert_eq!(view.order(), ids(&[1, 3, 5, 2, 4, 0]));
+    assert_eq!(view.visible_channels(), ids(&[1, 3, 5, 2, 4, 0]));
+    assert_eq!(view.group_of(ChannelId(3)), (None, ChannelKind::EEG));
 
     // A type is shown and hidden as a whole.
     view.set_shown(ChannelId(3), false);
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (2, 3));
-    view.set_group_shown(None, ChannelKind::Eeg, false);
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (0, 3));
-    assert_eq!(view.visible_channels(), ids(&[2, 0, 4]));
-    view.set_group_shown(None, ChannelKind::Eeg, true);
-    assert_eq!(view.visible_channels(), ids(&[1, 3, 5, 2, 0, 4]));
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (2, 3));
+    view.set_group_shown(None, &ChannelKind::EEG, false);
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (0, 3));
+    assert_eq!(view.visible_channels(), ids(&[2, 4, 0]));
+    view.set_group_shown(None, &ChannelKind::EEG, true);
+    assert_eq!(view.visible_channels(), ids(&[1, 3, 5, 2, 4, 0]));
+}
+
+/// EEG, MEG, EOG and ECG first, then the other types kymo knows, then the types it doesn't
+/// in the order they first appear (in any case one type), then misc and stim.
+#[test]
+fn types_kymo_knows_come_first() {
+    use crate::kinds::*;
+    let named = ChannelKind::named;
+    let rec = recording_of(&[
+        named("Gaze"),
+        Stim,
+        Emg,
+        named("Accelerometer"),
+        Misc,
+        Ecg,
+        named("GAZE"),
+        named("Temperature"),
+        Grad,
+        Eog,
+        Eeg,
+        Mag,
+    ]);
+    let view = ViewState::new(&rec);
+    assert_eq!(view.order(), ids(&[10, 11, 8, 9, 5, 2, 7, 0, 6, 3, 4, 1]));
+    assert_eq!(view.group_of(ChannelId(6)), (None, named("gaze")));
+    assert_eq!(view.group_shown(None, &named("Gaze")), (2, 2));
 }
 
 #[test]
@@ -472,7 +505,7 @@ fn channels_open_by_stream_and_type() {
     // Streams: 0 = EEG 0 to 2, 1 = annotations, 2 = EEG 3 to 5, 3 = EOG 6 and stim 7.
     let rec = recording_with(6, 60, true);
     let mut view = ViewState::new(&rec);
-    assert_eq!(view.group_of(ChannelId(7)), (Some(3), ChannelKind::Stim));
+    assert_eq!(view.group_of(ChannelId(7)), (Some(3), ChannelKind::STIM));
     assert_eq!(view.order(), ids(&[0, 1, 2, 3, 4, 5, 6, 7]));
 
     // A hidden channel keeps its place.
@@ -499,21 +532,21 @@ fn channels_open_by_stream_and_type() {
 fn types_are_shown_and_hidden_together() {
     // 30 EEG channels, then EOG and stim.
     let (_, mut view) = state();
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (30, 30));
-    assert_eq!(view.group_shown(None, ChannelKind::Eog), (1, 1));
-    assert_eq!(view.group_shown(None, ChannelKind::Ecg), (0, 0));
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (30, 30));
+    assert_eq!(view.group_shown(None, &ChannelKind::EOG), (1, 1));
+    assert_eq!(view.group_shown(None, &ChannelKind::ECG), (0, 0));
     view.set_shown(ChannelId(4), false);
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (29, 30));
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (29, 30));
 
-    view.set_group_shown(None, ChannelKind::Eeg, false);
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (0, 30));
+    view.set_group_shown(None, &ChannelKind::EEG, false);
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (0, 30));
     assert_eq!(view.visible_channels(), ids(&[30, 31]));
     assert_eq!(view.rows(), 2);
     assert_eq!(view.top(), 0.0);
 
     // Nothing shown: no rows, and nothing breaks.
-    view.set_group_shown(None, ChannelKind::Eog, false);
-    view.set_group_shown(None, ChannelKind::Stim, false);
+    view.set_group_shown(None, &ChannelKind::EOG, false);
+    view.set_group_shown(None, &ChannelKind::STIM, false);
     assert_eq!(view.row_count(), 0);
     assert!(view.visible_channels().is_empty());
     assert_eq!(view.channel_at(10.0, 400.0), None);
@@ -523,8 +556,8 @@ fn types_are_shown_and_hidden_together() {
     assert!(view.visible_channels().is_empty());
 
     // All back: the 20 rows chosen before, from the top.
-    view.set_group_shown(None, ChannelKind::Eeg, true);
-    assert_eq!(view.group_shown(None, ChannelKind::Eeg), (30, 30));
+    view.set_group_shown(None, &ChannelKind::EEG, true);
+    assert_eq!(view.group_shown(None, &ChannelKind::EEG), (30, 30));
     assert_eq!(view.rows(), DEFAULT_ROWS);
     assert_eq!(view.visible_rows(), 0..20);
 }
@@ -533,19 +566,19 @@ fn types_are_shown_and_hidden_together() {
 fn the_chosen_number_of_rows_returns_with_hidden_channels() {
     let (_, mut view) = state();
     view.set_rows(10);
-    view.set_group_shown(None, ChannelKind::Eeg, false);
+    view.set_group_shown(None, &ChannelKind::EEG, false);
     assert_eq!(view.rows(), 2);
     // More rows than there are channels keeps the choice.
     act(&mut view, Action::MoreChannels);
     assert_eq!(view.rows(), 2);
-    view.set_group_shown(None, ChannelKind::Eeg, true);
+    view.set_group_shown(None, &ChannelKind::EEG, true);
     assert_eq!(view.rows(), 10);
 
     // Fewer rows than channels is a new choice.
-    view.set_group_shown(None, ChannelKind::Eeg, false);
+    view.set_group_shown(None, &ChannelKind::EEG, false);
     act(&mut view, Action::FewerChannels);
     assert_eq!(view.rows(), 1);
-    view.set_group_shown(None, ChannelKind::Eeg, true);
+    view.set_group_shown(None, &ChannelKind::EEG, true);
     assert_eq!(view.rows(), 1);
 }
 
@@ -644,7 +677,7 @@ fn pinching_zooms_around_the_pointer() {
     assert!(close(view.time_at(x, area.width), t));
     assert!(close(view.span(), 20.0 / 1.7));
     view.gesture(Gesture::Scale { factor: 2.0 }, area, Some(x));
-    assert!(close(view.amplitude(ChannelKind::Eeg), 10e-6));
+    assert!(close(view.amplitude(&ChannelKind::EEG), 10e-6));
 }
 
 #[test]
@@ -737,10 +770,10 @@ fn steps() -> impl Strategy<Value = Step> {
 /// The recordings' types, and one they don't have.
 fn kinds() -> impl Strategy<Value = ChannelKind> + Clone {
     proptest::sample::select(vec![
-        ChannelKind::Eeg,
-        ChannelKind::Eog,
-        ChannelKind::Stim,
-        ChannelKind::Ecg,
+        ChannelKind::EEG,
+        ChannelKind::EOG,
+        ChannelKind::STIM,
+        ChannelKind::ECG,
     ])
 }
 
@@ -769,9 +802,15 @@ proptest! {
         let duration = rec.duration();
         let channels = rec.channels().len();
         let of = streams_of(&rec);
-        let group = |c: ChannelId| (of[c.0 as usize], rec.channel(c).kind);
+        let group = |c: ChannelId| (of[c.0 as usize], rec.channel(c).kind.clone());
+        let mut first_seen = std::collections::HashMap::new();
+        for (c, channel) in rec.channels().iter().enumerate() {
+            first_seen.entry(channel.kind.clone()).or_insert(c);
+        }
         let mut order: Vec<ChannelId> = (0..channels as u32).map(ChannelId).collect();
-        order.sort_by_key(|&c| (of[c.0 as usize], kind_index(rec.channel(c).kind), c));
+        order.sort_by_key(|&c| {
+            (of[c.0 as usize], types::rank(&rec.channel(c).kind, &first_seen), c)
+        });
         for step in steps {
             match step {
                 Step::Act(action) => {
@@ -784,13 +823,13 @@ proptest! {
                 Step::Show(c, on) => view.set_shown(ChannelId(c), on),
                 Step::ShowGroup(s, kind, on) => {
                     let shown_before: Vec<bool> = (0..channels as u32).map(|c| view.is_shown(ChannelId(c))).collect();
-                    view.set_group_shown(s, kind, on);
+                    view.set_group_shown(s, &kind, on);
                     for c in 0..channels as u32 {
-                        let expected = if group(ChannelId(c)) == (s, kind) { on } else { shown_before[c as usize] };
+                        let expected = if group(ChannelId(c)) == (s, kind.clone()) { on } else { shown_before[c as usize] };
                         prop_assert_eq!(view.is_shown(ChannelId(c)), expected);
                     }
-                    let all = (0..channels as u32).filter(|&c| group(ChannelId(c)) == (s, kind)).count();
-                    prop_assert_eq!(view.group_shown(s, kind), (if on { all } else { 0 }, all));
+                    let all = (0..channels as u32).filter(|&c| group(ChannelId(c)) == (s, kind.clone())).count();
+                    prop_assert_eq!(view.group_shown(s, &kind), (if on { all } else { 0 }, all));
                 }
                 Step::ScrollTo(c) => {
                     let shown = view.is_shown(ChannelId(c));
@@ -820,8 +859,8 @@ proptest! {
             // visible while scrolling).
             prop_assert!(view.visible_rows().len() >= view.rows().min(rows));
             prop_assert!(view.visible_rows().end <= rows);
-            for kind in [ChannelKind::Eeg, ChannelKind::Stim] {
-                let a = view.amplitude(kind);
+            for kind in [ChannelKind::EEG, ChannelKind::STIM] {
+                let a = view.amplitude(&kind);
                 prop_assert!(a.is_finite() && a > 0.0);
             }
         }
@@ -851,7 +890,7 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     let expected = |view: &ViewState| -> Vec<(ChannelId, Range<u64>)> {
         view.visible_channels()
             .iter()
-            .filter(|&&c| rec.channel(c).kind != ChannelKind::Stim)
+            .filter(|&&c| rec.channel(c).kind != ChannelKind::STIM)
             .map(|&c| {
                 let grid = rec.grid(rec.channel(c).grid);
                 let t = view.time();
@@ -876,7 +915,7 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     assert_eq!(rec.channel(windows.last().unwrap().0).grid, GridId(1));
     // Status is on screen, but DC removal leaves it alone.
     let status = *view.visible_channels().last().unwrap();
-    assert_eq!(rec.channel(status).kind, ChannelKind::Stim);
+    assert_eq!(rec.channel(status).kind, ChannelKind::STIM);
     assert!(windows.iter().all(|&(c, _)| c != status));
     assert_eq!(windows.len(), view.visible_channels().len() - 1);
     // Off and on again: asked for afresh.
@@ -885,13 +924,13 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     view.set_dc_removed(true);
     assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
     // EOG unticked: its channel is left out too.
-    let mut types = view.type_settings();
-    types.remove_dc[kind_index(ChannelKind::Eog)] = false;
+    let mut types = view.type_settings().clone();
+    types.set_remove_dc(&ChannelKind::EOG, false);
     view.set_type_settings(types);
     let windows = view.dc_request(&rec).unwrap();
     let eog = windows
         .iter()
-        .filter(|&&(c, _)| rec.channel(c).kind == ChannelKind::Eog);
+        .filter(|&&(c, _)| rec.channel(c).kind == ChannelKind::EOG);
     assert_eq!(eog.count(), 0);
     assert_eq!(windows.len(), view.visible_channels().len() - 2);
     assert!(!view.dc_applies(status));
@@ -901,30 +940,30 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
 fn set_amplitudes_takes_only_positive_finite_ones() {
     let rec = recording(4, 60);
     let mut view = ViewState::new(&rec);
-    let before = KINDS.map(|k| view.amplitude(k));
+    let before = KINDS.map(|k| view.amplitude(&k));
     let volts = || UnitKey::Quantity(Quantity::Voltage);
     let amplitudes = [
-        (ChannelKind::Eeg, 0.0),
-        (ChannelKind::Eog, -1.0),
-        (ChannelKind::Ecg, f64::NAN),
-        (ChannelKind::Emg, f64::INFINITY),
-        (ChannelKind::Seeg, 3e-6),
+        (ChannelKind::EEG, 0.0),
+        (ChannelKind::EOG, -1.0),
+        (ChannelKind::ECG, f64::NAN),
+        (ChannelKind::EMG, f64::INFINITY),
+        (ChannelKind::SEEG, 3e-6),
     ]
     .map(|(kind, amplitude)| (ScaleGroup::Shared(kind, volts()), amplitude));
     view.set_amplitudes(amplitudes.into_iter().collect());
     for (i, kind) in KINDS.into_iter().enumerate() {
-        let want = if kind == ChannelKind::Seeg {
+        let want = if kind == ChannelKind::SEEG {
             3e-6
         } else {
             before[i]
         };
-        assert_eq!(view.amplitude(kind), want, "{kind:?}");
+        assert_eq!(view.amplitude(&kind), want, "{kind:?}");
     }
     // Scaled up or down first, a fitted amplitude is still the one given.
     view.apply(Action::ScaleUp);
-    let fitted = [(ScaleGroup::Shared(ChannelKind::Eeg, volts()), 4e-6)];
+    let fitted = [(ScaleGroup::Shared(ChannelKind::EEG, volts()), 4e-6)];
     view.set_amplitudes(fitted.into_iter().collect());
-    assert!((view.amplitude(ChannelKind::Eeg) - 4e-6).abs() < 1e-18);
+    assert!((view.amplitude(&ChannelKind::EEG) - 4e-6).abs() < 1e-18);
 }
 
 #[test]

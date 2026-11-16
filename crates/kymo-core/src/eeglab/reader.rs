@@ -93,7 +93,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         .enumerate()
         .map(|(c, channel)| {
             let decoder = Decoder::new(encoding, order);
-            if channel.kind == ChannelKind::Stim || samples == 0 {
+            if channel.kind == ChannelKind::STIM || samples == 0 {
                 return decoder;
             }
             let first = map.get(start + c * size..).unwrap_or_default();

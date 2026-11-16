@@ -191,6 +191,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
         let offset = physical_min - gain * dmin;
         let unit = Unit::from_label(text(column(2, i)));
         let kind = kind(&label, &unit);
+        let stim = kind.is_stim();
         channels.push(Channel {
             kind,
             unit,
@@ -203,7 +204,7 @@ pub fn parse_header(bytes: &[u8], file_len: u64) -> Result<ParsedHeader, EdfErro
             digital_range: Some((dmin, dmax)),
             // BioSemi keeps the trigger codes in the low 16 bits of the status channel; the
             // upper 8 are the amplifier's own (CMS in range, battery, ...).
-            trigger_mask: (bdf && kind == ChannelKind::Stim).then_some(0xffff),
+            trigger_mask: (bdf && stim).then_some(0xffff),
             events: true,
             in_stream: None,
             // TODO(later): duplicate labels stay as stored ("POL", "POL", ...). MNE renames
@@ -369,35 +370,32 @@ fn usable_records(
     }
 }
 
-/// Channel type from the label's EDF+ type prefix ("EEG Fpz-Cz", "SaO2 finger"), as MNE
-/// reads them, and BioSemi's status channel. A magnetic unit makes a MEG channel whatever
-/// the label (T: magnetometer, T/m: gradiometer). Anything else is EEG, as in MNE.
+/// Channel type from the label's type prefix ("EEG Fpz-Cz", "SaO2 finger"): EDF+'s (EEG, ECG,
+/// EOG, ERG, EMG, MCG, EP, Temp, Resp, SaO2, Light, Sound, Event) and MNE's others (EKG,
+/// sEEG, ECoG, DBS, Bio, Misc, Stim), in any case, and BioSemi's status channel. A magnetic
+/// unit makes a MEG channel whatever the label (T: magnetometer, T/m: gradiometer). Anything
+/// else is EEG, as in MNE.
 ///
 /// TODO(later): also recognize the type prefix without a space ("EOG-L", "EMG_chin",
 /// "ECGII"), and decide whether the channel name keeps the full label or drops the prefix
 /// ("L"). Until then such channels are EEG.
 pub(crate) fn kind(label: &str, unit: &Unit) -> ChannelKind {
     match unit.quantity() {
-        Some(Quantity::MagneticField) => return ChannelKind::Mag,
-        Some(Quantity::FieldGradient) => return ChannelKind::Grad,
+        Some(Quantity::MagneticField) => return ChannelKind::MAG,
+        Some(Quantity::FieldGradient) => return ChannelKind::GRAD,
         _ => {}
     }
     let upper = label.trim().to_ascii_uppercase();
     if upper == "STATUS" || upper == "TRIGGER" {
-        return ChannelKind::Stim;
+        return ChannelKind::STIM;
     }
     match upper.split(' ').next() {
-        Some("EOG") => ChannelKind::Eog,
-        Some("ECG" | "EKG") => ChannelKind::Ecg,
-        Some("EMG") => ChannelKind::Emg,
-        Some("SEEG") => ChannelKind::Seeg,
-        Some("ECOG") => ChannelKind::Ecog,
-        Some("DBS") => ChannelKind::Dbs,
-        Some("RESP") => ChannelKind::Resp,
-        Some("BIO" | "SAO2") => ChannelKind::Bio,
-        Some("STIM") => ChannelKind::Stim,
-        Some("TEMP" | "MISC") => ChannelKind::Misc,
-        _ => ChannelKind::Eeg,
+        Some(
+            prefix @ ("EEG" | "ECG" | "EKG" | "EOG" | "ERG" | "EMG" | "MCG" | "EP" | "TEMP"
+            | "RESP" | "SAO2" | "LIGHT" | "SOUND" | "EVENT" | "SEEG" | "ECOG" | "DBS"
+            | "BIO" | "MISC" | "STIM"),
+        ) => ChannelKind::named(prefix),
+        _ => ChannelKind::EEG,
     }
 }
 

@@ -66,10 +66,10 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         let channel = channels[start];
         let kind = view.kind_of(channel);
         start = end;
-        if kind == ChannelKind::Stim || bars.iter().any(|b| b.group == group) {
+        if kind.is_stim() || bars.iter().any(|b| b.group == group) {
             continue;
         }
-        let (unit, factor) = display_unit(recording.channel(channel));
+        let (unit, factor) = display_unit(kind, &recording.channel(channel).unit);
         let span = 2.0 * view.channel_amplitude(channel) * factor;
         let Some(value) = round_below(span) else {
             continue;
@@ -80,7 +80,7 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
             continue;
         }
         bars.push(ScaleBar {
-            kind,
+            kind: kind.clone(),
             group,
             channel,
             middle,

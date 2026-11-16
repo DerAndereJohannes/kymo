@@ -222,7 +222,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 channel.unit = Unit::from_label(unit);
                 // Stim channels show codes, without a unit.
                 if channel.unit.to_si.is_none()
-                    && channel.kind != ChannelKind::Stim
+                    && channel.kind != ChannelKind::STIM
                     && !unscaled_unit(unit)
                     && !unknown_units.iter().any(|u| u == unit)
                 {
@@ -230,14 +230,14 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 }
             }
             let decoder = Decoder::new(encoding, ByteOrder::Little);
-            let reference = if channel.kind == ChannelKind::Stim {
+            let reference = if channel.kind == ChannelKind::STIM {
                 0.0
             } else {
                 decoder.reference_among(reader.values(&map, c))
             };
             let decoder = decoder.with_reference(reference);
             channel.offset = decoder.reference();
-            stim.push(channel.kind == ChannelKind::Stim && reader.native == SampleType::F32);
+            stim.push(channel.kind == ChannelKind::STIM && reader.native == SampleType::F32);
             decoders.push(decoder);
             channels.push(channel);
         }
@@ -767,14 +767,14 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
     text
 }
 
-/// The kind of a channel: stim in streams of an event type and for the types "stim" and
-/// "trigger(s)", otherwise its MNE type, misc if it has none.
+/// The type of a channel: stim in streams of an event type and for the types "stim" and
+/// "trigger(s)", otherwise the type as written, misc if it has none.
 fn kind(event_stream: bool, channel_type: &str) -> ChannelKind {
     let lower = channel_type.trim().to_ascii_lowercase();
     if event_stream || matches!(lower.as_str(), "stim" | "trigger" | "triggers") {
-        ChannelKind::Stim
+        ChannelKind::STIM
     } else {
-        ChannelKind::from_mne(&lower).unwrap_or(ChannelKind::Misc)
+        ChannelKind::named(channel_type)
     }
 }
 

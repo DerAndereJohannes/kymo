@@ -68,7 +68,7 @@ impl<'a> PyramidBuilder<'a> {
             .enumerate()
             .filter_map(|(row, &id)| {
                 let channel = recording.channels().get(id.0 as usize)?;
-                (channel.kind == ChannelKind::Stim && channel.events)
+                (channel.kind == ChannelKind::STIM && channel.events)
                     .then(|| (row, Scanner::new(channel.trigger_mask)))
             })
             .collect();

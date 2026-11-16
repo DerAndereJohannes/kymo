@@ -101,8 +101,8 @@ fn parses_generated_headers() {
 
         // Channels: the annotation signal is not one of them.
         assert_eq!(h.channels.len(), 5);
-        let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind).collect();
-        use ChannelKind::*;
+        let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind.clone()).collect();
+        use crate::kinds::*;
         assert_eq!(kinds, [Eeg, Eog, Eeg, Ecg, Emg]);
         for (c, s) in h.channels.iter().zip(&spec.channels) {
             assert_eq!(c.name, s.label);
@@ -186,8 +186,8 @@ fn infers_kinds_and_units_from_labels() {
         set_signal(&mut bytes, ns, 2, i, dimensions[i]);
     }
     let h = parse(&bytes).header;
-    let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind).collect();
-    use ChannelKind::*;
+    let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind.clone()).collect();
+    use crate::kinds::*;
     // EDF+ separates the type from the name with a space; "EOG-L" has none, so it is EEG.
     assert_eq!(kinds, [Stim, Stim, Eeg, Ecg, Eeg]);
     let units: Vec<(&str, Option<f64>)> = h

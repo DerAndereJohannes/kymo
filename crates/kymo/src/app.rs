@@ -248,7 +248,7 @@ impl KymoApp {
     /// opened from now on; the theme from the next frame.
     pub fn set_settings(&mut self, settings: Settings) {
         let settings = settings.clamped();
-        self.options.settings = settings;
+        self.options.settings = settings.clone();
         self.gpu.set_budget(settings.gpu_memory_bytes());
         if let State::Ready(viewer) = &mut self.state {
             viewer.cache().set_budget(settings.tile_cache_bytes());
@@ -256,8 +256,7 @@ impl KymoApp {
             viewer.set_antialias(settings.antialias);
             viewer.set_scale_bars(settings.scale_bars);
             viewer.set_remove_dc(settings.remove_dc);
-            viewer.set_type_settings(settings.types);
-            viewer.set_type_colors(settings.type_colors);
+            viewer.set_type_settings(settings.types.clone());
         }
     }
 
@@ -484,7 +483,7 @@ impl KymoApp {
         {
             viewer.go_to(seconds);
         }
-        let mut settings = self.options.settings;
+        let mut settings = self.options.settings.clone();
         if settings_window(&ctx, &mut self.settings_open, &mut settings) {
             self.set_settings(settings);
             self.apply_theme(&ctx);
@@ -605,15 +604,15 @@ impl KymoApp {
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Action::ToggleDc => self.set_settings(Settings {
                 remove_dc: !self.options.settings.remove_dc,
-                ..self.options.settings
+                ..self.options.settings.clone()
             }),
             Action::ToggleScaleBars => self.set_settings(Settings {
                 scale_bars: !self.options.settings.scale_bars,
-                ..self.options.settings
+                ..self.options.settings.clone()
             }),
             Action::ToggleAntialias => self.set_settings(Settings {
                 antialias: !self.options.settings.antialias,
-                ..self.options.settings
+                ..self.options.settings.clone()
             }),
             Action::Settings => self.settings_open = true,
             Action::GoToTime => {
@@ -1041,8 +1040,7 @@ impl KymoApp {
                 viewer.set_antialias(self.options.settings.antialias);
                 viewer.set_scale_bars(self.options.settings.scale_bars);
                 viewer.set_remove_dc(self.options.settings.remove_dc);
-                viewer.set_type_settings(self.options.settings.types);
-                viewer.set_type_colors(self.options.settings.type_colors);
+                viewer.set_type_settings(self.options.settings.types.clone());
                 if self.options.settings.auto_scale_on_open {
                     viewer.apply(Action::AutoScale);
                 }

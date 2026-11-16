@@ -35,9 +35,9 @@ fn recording_in(kinds: &[ChannelKind], streams: &[Range<u32>]) -> Recording {
     let channels = kinds
         .iter()
         .enumerate()
-        .map(|(i, &kind)| {
+        .map(|(i, kind)| {
             let mut ch = Channel::new(format!("{kind:?} {i}"), GridId(0));
-            ch.kind = kind;
+            ch.kind = kind.clone();
             ch.unit = Unit {
                 label: "uV".into(),
                 to_si: Some(1e-6),
@@ -83,7 +83,7 @@ fn recording_in(kinds: &[ChannelKind], streams: &[Range<u32>]) -> Recording {
 /// second starting at the second EEG block, as a type's channels stay together within a
 /// stream.
 fn blocks() -> (Recording, ViewState) {
-    use ChannelKind::{Eeg, Eog, Stim};
+    use crate::kinds::{Eeg, Eog, Stim};
     let kinds: Vec<_> = [(Eeg, 10), (Eog, 2), (Eeg, 10), (Stim, 1)]
         .into_iter()
         .flat_map(|(kind, n)| std::iter::repeat_n(kind, n))
@@ -98,7 +98,7 @@ fn blocks() -> (Recording, ViewState) {
 fn placed(rec: &Recording, view: &ViewState) -> Vec<(ChannelKind, u32, f64)> {
     scale_bars(rec, view)
         .into_iter()
-        .map(|b| (b.kind, b.channel.0, (b.middle * 1e9).round() / 1e9))
+        .map(|b| (b.kind.clone(), b.channel.0, (b.middle * 1e9).round() / 1e9))
         .collect()
 }
 
@@ -110,15 +110,23 @@ fn each_type_on_screen_gets_one_but_stim() {
     let bars = scale_bars(&rec, &view);
     let got: Vec<_> = bars
         .iter()
-        .map(|b| (b.kind, b.channel.0, b.middle, b.value, b.unit.as_str()))
+        .map(|b| {
+            (
+                b.kind.clone(),
+                b.channel.0,
+                b.middle,
+                b.value,
+                b.unit.as_str(),
+            )
+        })
         .collect();
     // EEG at 20 µV per spacing: ±20 µV spans the row, so 20 µV is half of it. EOG at
     // 150 µV, shown in µV although stored in mV: 200 µV of its 300.
     assert_eq!(
         got,
         [
-            (ChannelKind::Eeg, 0, 0.5, 20.0, "µV"),
-            (ChannelKind::Eog, 3, 3.5, 200.0, "µV"),
+            (ChannelKind::EEG, 0, 0.5, 20.0, "µV"),
+            (ChannelKind::EOG, 3, 3.5, 200.0, "µV"),
         ]
     );
     assert!((bars[0].fraction - 0.5).abs() < 1e-12);
@@ -128,7 +136,7 @@ fn each_type_on_screen_gets_one_but_stim() {
 
 #[test]
 fn a_bar_stays_put_while_its_block_scrolls_and_leaves_with_it() {
-    use ChannelKind::{Eeg, Eog};
+    use crate::kinds::{Eeg, Eog};
     let (rec, mut view) = blocks();
     // Within the first EEG block, at the top row's middle wherever the rows are.
     for step in 0..=80 {
@@ -161,12 +169,12 @@ fn a_bar_stays_put_while_its_block_scrolls_and_leaves_with_it() {
     assert_eq!(eog(&view), Some((Eog, 11, 0.5)));
     // Stim, the last row, never.
     view.apply(Action::LastChannels);
-    assert!(placed(&rec, &view).iter().all(|b| b.0 != ChannelKind::Stim));
+    assert!(placed(&rec, &view).iter().all(|b| b.0 != ChannelKind::STIM));
 }
 
 #[test]
 fn bad_rows_keep_it_and_hidden_ones_join_blocks() {
-    use ChannelKind::Eeg;
+    use crate::kinds::Eeg;
     let (rec, mut view) = blocks();
     view.toggle_bad(ChannelId(0));
     assert_eq!(placed(&rec, &view)[0], (Eeg, 0, 0.5));
@@ -186,7 +194,7 @@ fn the_value_follows_the_scale() {
     for _ in 0..12 {
         view.apply(Action::ScaleUp);
         let bar = scale_bars(&rec, &view).into_iter().next().unwrap();
-        let span = 2.0 * view.amplitude(ChannelKind::Eeg) * 1e6;
+        let span = 2.0 * view.amplitude(&ChannelKind::EEG) * 1e6;
         assert_eq!(Some(bar.value), round_below(span));
         assert!((bar.fraction - bar.value / span).abs() < 1e-12);
     }
@@ -196,7 +204,7 @@ fn the_value_follows_the_scale() {
 fn labels_have_the_decimals_they_need() {
     let label = |value: f64, unit: &str| {
         ScaleBar {
-            kind: ChannelKind::Eeg,
+            kind: ChannelKind::EEG,
             group: ScaleGroup::Channel(ChannelId(0)),
             channel: ChannelId(0),
             middle: 0.5,

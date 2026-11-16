@@ -254,7 +254,7 @@ impl Pyramid {
             recording
                 .channels()
                 .get(c.0 as usize)
-                .is_some_and(|ch| ch.kind == ChannelKind::Stim && ch.events)
+                .is_some_and(|ch| ch.kind == ChannelKind::STIM && ch.events)
         };
         self.grid
             .channels()

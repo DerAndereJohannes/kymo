@@ -33,7 +33,7 @@ pub mod testing;
 pub use annotation::{
     Annotation, AnnotationData, AnnotationId, AnnotationOp, AnnotationStore, Origin,
 };
-pub use channel::{Channel, ChannelId, ChannelKind, Quantity, Unit};
+pub use channel::{Channel, ChannelId, ChannelKind, KNOWN_KINDS, KnownKind, Quantity, Unit};
 pub use error::{AnnotationError, ModelError, OpenError, ReadError, TileError};
 pub use grid::{Grid, GridId, Piece, RegularRun, Timebase};
 pub use open::open;

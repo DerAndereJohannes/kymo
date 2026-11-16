@@ -231,11 +231,11 @@ fn presets_open_with_their_channels_markers_and_start() {
     // Kinds from the types, the photo sensor in mV through its coefficient, the offset.
     let file = TempFile::preset("bvrf-int16");
     let rec = open(file.path()).0;
-    use ChannelKind::*;
+    use crate::kinds::*;
     let summary: Vec<(ChannelKind, Option<f64>, f64)> = rec
         .channels()
         .iter()
-        .map(|c| (c.kind, c.unit.to_si, c.offset))
+        .map(|c| (c.kind.clone(), c.unit.to_si, c.offset))
         .collect();
     let uv = Some(1e-6);
     assert_eq!(
@@ -248,10 +248,10 @@ fn presets_open_with_their_channels_markers_and_start() {
             (Eeg, uv, 0.0),
             (Eog, uv, 0.0),
             (Ecg, uv, 0.0),
-            (Misc, Some(1e-3), 0.0),
+            (ChannelKind::named("PHOTO"), Some(1e-3), 0.0),
         ]
     );
-    assert_eq!(rec.channels()[8].kind, Misc);
+    assert_eq!(rec.channels()[8].kind.name(), "Temperature");
     assert!((rec.channels()[8].offset - 35.0).abs() < 1e-3);
     assert_eq!(rec.channels()[0].prefilter, "HP:0.1Hz LP:100Hz");
     assert_eq!(rec.channels()[7].prefilter, "");
@@ -376,27 +376,28 @@ fn channels_give_names_units_scaling_and_kinds() {
         .map(|c| {
             (
                 c.name.as_str(),
-                c.kind,
+                c.kind.clone(),
                 c.unit.label.as_str(),
                 c.gain,
                 c.offset,
             )
         })
         .collect();
-    use ChannelKind::*;
+    use crate::kinds::*;
     assert_eq!(
         summary,
         [
             ("Fz", Eeg, "µV", 0.5, 0.0),
-            ("Photo", Misc, "mV", 0.3 * 0.001, 2.0),
-            ("SpO2", Misc, "%", 1.0, 0.0),
-            ("GSR", Misc, "mV", 0.1, 0.0),
+            // Types as written.
+            ("Photo", ChannelKind::named("PHOTO"), "mV", 0.3 * 0.001, 2.0),
+            ("SpO2", ChannelKind::named("SPO2"), "%", 1.0, 0.0),
+            ("GSR", ChannelKind::named("gsr"), "mV", 0.1, 0.0),
             ("Odd", Misc, "", 1.0, 0.0),
             ("VEOG", Eog, "µV", 1.0, 0.0),
             ("EKG", Ecg, "mV", 1.0, 0.0),
             ("Chin", Emg, "µV", 1.0, 0.0),
             ("Trig", Stim, "", 1.0, 0.0),
-            ("Acc", Misc, "g", 1.0, 0.0),
+            ("Acc", ChannelKind::named("ACC"), "g", 1.0, 0.0),
             ("Untyped", Misc, "µV", 1.0, 0.0),
             ("MEG1", Mag, "fT", 1.0, 0.0),
             ("Ch13", Eeg, "µV", 1.0, 0.0),

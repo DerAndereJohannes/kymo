@@ -149,11 +149,9 @@ pub(super) fn parse(json: &Value, warnings: &mut Vec<String>) -> Result<ParsedHe
         }
         let unit = Unit::from_label(unit);
         let kind = match unit.quantity() {
-            Some(Quantity::MagneticField) => ChannelKind::Mag,
-            Some(Quantity::FieldGradient) => ChannelKind::Grad,
-            _ => text(item, &["Type"])
-                .and_then(ChannelKind::from_mne)
-                .unwrap_or(ChannelKind::Misc),
+            Some(Quantity::MagneticField) => ChannelKind::MAG,
+            Some(Quantity::FieldGradient) => ChannelKind::GRAD,
+            _ => ChannelKind::named(text(item, &["Type"]).unwrap_or_default()),
         };
         let mut prefilter = Vec::new();
         for id in at(item, &["FilterIds"])

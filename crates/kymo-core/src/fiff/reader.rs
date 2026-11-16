@@ -155,7 +155,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let maps: Vec<&[u8]> = parts.iter().map(|l| &l.map[..]).collect();
     let float64 = buffers.iter().any(|b| b.encoding == Encoding::F64);
     let reference = |c: usize, channel: &Channel| -> f64 {
-        if !float64 || channel.kind == ChannelKind::Stim {
+        if !float64 || channel.kind == ChannelKind::STIM {
             return 0.0;
         }
         // The channel's first finite value in the float64 buffers, in order.
@@ -291,11 +291,11 @@ fn stim(channels: &mut [Channel]) {
     let combined = ["STI101", "STI 014"].iter().find_map(|name| {
         channels
             .iter()
-            .position(|c| c.kind == ChannelKind::Stim && c.name == *name)
+            .position(|c| c.kind == ChannelKind::STIM && c.name == *name)
     });
     let Some(combined) = combined else { return };
     for (c, channel) in channels.iter_mut().enumerate() {
-        if channel.kind == ChannelKind::Stim {
+        if channel.kind == ChannelKind::STIM {
             channel.events = c == combined;
         }
     }

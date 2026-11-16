@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use crate::kinds::{KINDS, kind_index};
 use eframe::egui::{self, Key, Modifiers};
 use eframe::egui_wgpu;
 use egui_kittest::Harness;
@@ -15,9 +16,9 @@ use kymo::app::{KymoApp, Menus, Options};
 use kymo::app_mode::AppMode;
 use kymo::keymap::Platform;
 use kymo::settings::{Settings, Theme, load_annotation_colors};
+use kymo::types::TypeSettings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
-use kymo::view::{KINDS, TypeSettings, kind_index};
 use kymo::viewer::Viewer;
 use kymo_core::ChannelKind;
 use kymo_testgen::{TempDir, TempFile};
@@ -342,7 +343,14 @@ fn the_channel_list_shows_display_units() {
     let file = TempFile::preset("edf+c-kinds");
     let mut harness = window(file.path());
     ready(&mut harness);
-    // The list draws the rows in view: EEG Fz and SEEG LA1 come first.
+    // The list draws the rows in view: EEG Fz comes first; SEEG LA1 once the types between
+    // them are folded.
+    for kind in ["MEG Mag", "MEG Grad", "EOG", "ECG", "EMG"] {
+        harness
+            .get_by_label(&format!("Collapse {kind} channels"))
+            .click();
+        harness.run_steps(2);
+    }
     let unit_of = |name: &str| {
         let y = harness
             .get_by_role_and_label(Role::Label, name)
@@ -634,7 +642,7 @@ fn baselines_are_window_means(app: &KymoApp) -> bool {
     let rec = &viewer.document().recording;
     view.visible_channels().iter().all(|&c| {
         // DC removal leaves stim channels alone.
-        let want = if rec.channel(c).kind == kymo_core::ChannelKind::Stim {
+        let want = if rec.channel(c).kind == kymo_core::ChannelKind::STIM {
             0.0
         } else {
             window_mean(rec, c, view.time()).unwrap()
@@ -1227,9 +1235,9 @@ fn types_rows_give_their_rates() {
     assert!(harness.query_by_label("Boolean").is_none());
 }
 
-/// An XDF file as eye tracking recordings come: EEG in "microvolts", an AUX channel in
-/// microvolts (Misc, as MNE has no AUX type), a long name in a long unit, and an irregular
-/// 50 Hz stream with a long name.
+/// An XDF file as eye tracking recordings come: EEG in "microvolts", AUX channels (a type
+/// MNE doesn't have), one in microvolts and one with a long name in a long unit, and an
+/// irregular 50 Hz stream with a long name.
 fn long_names_xdf() -> TempFile {
     use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStamps, XdfStream};
     let f = kymo_testgen::Format::Xdf;
@@ -1238,7 +1246,7 @@ fn long_names_xdf() -> TempFile {
         ChannelSpec::xdf("AUX1", "AUX", "microvolts", 100, XdfFormat::F32),
         ChannelSpec::xdf(
             "POR X - (Point of regard), left eye",
-            "ScreenX",
+            "AUX",
             "normalized_signed",
             100,
             XdfFormat::F32,
@@ -1362,7 +1370,7 @@ fn the_channel_list_fits_its_width() {
     hover(&mut harness, unit.center());
     assert!(tooltip(
         &mut harness,
-        "POR X - (Point of regard), left eye\nMisc \u{b7} normalized_signed \u{b7} 100 Hz"
+        "POR X - (Point of regard), left eye\nAUX \u{b7} normalized_signed \u{b7} 100 Hz"
     ));
     hover(&mut harness, egui::pos2(900.0, 650.0));
 
@@ -1550,7 +1558,7 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     assert_eq!(format!("{rate:.4}"), "500.0065");
     // Every type's row and the summary's Sampling row.
     let rec = &viewer(&harness).document().recording;
-    let mut kinds: Vec<_> = rec.channels().iter().map(|c| c.kind).collect();
+    let mut kinds: Vec<_> = rec.channels().iter().map(|c| c.kind.clone()).collect();
     kinds.sort_unstable_by_key(|k| format!("{k:?}"));
     kinds.dedup();
     let rounded = harness.query_all_by_label_contains("500.01 Hz").count();
@@ -1600,7 +1608,7 @@ fn channel_named(harness: &Harness<'_, KymoApp>, name: &str) -> kymo_core::Chann
 }
 
 /// DC removal centers the types ticked in Settings' channel types table (EEG by default,
-/// not misc), the next frame after a box changes; the master switch over them all.
+/// not temperature), the next frame after a box changes; the master switch over them all.
 #[test]
 fn dc_removal_centers_only_the_types_ticked() {
     let file = TempFile::preset("bvrf-int16");
@@ -1619,10 +1627,20 @@ fn dc_removal_centers_only_the_types_ticked() {
     harness.run_steps(3);
     harness.get_by_label("Remove DC of EEG").click();
     harness.run_steps(2);
-    let eeg = kind_index(ChannelKind::Eeg);
-    assert!(!harness.state().settings().types.remove_dc[eeg]);
+    assert!(
+        !harness
+            .state()
+            .settings()
+            .types
+            .remove_dc(&ChannelKind::EEG)
+    );
     assert_eq!(viewer(&harness).baseline(fz), 0.0);
-    harness.get_by_label("Remove DC of Misc").click();
+    // TODO(step 2b): from the type's popup in the sidebar.
+    let mut settings = harness.state().settings().clone();
+    settings
+        .types
+        .set_remove_dc(&ChannelKind::named("Temperature"), true);
+    harness.state_mut().set_settings(settings);
     step_until(&mut harness, "Temp's mean", |app| {
         app.viewer().unwrap().baseline(temp) != 0.0
     });
@@ -1635,8 +1653,8 @@ fn dc_removal_centers_only_the_types_ticked() {
     assert_eq!(viewer(&harness).baseline(temp), 0.0);
 }
 
-/// Each channel of a type scaled each channel on its own has a scale bar (misc's photo
-/// sensor in mV and temperature in °C by default, the EEG channels once ticked), and
+/// Each channel of a type scaled each channel on its own has a scale bar (the photo sensor in
+/// mV and the temperature in °C by default, the EEG channels once ticked), and
 /// Restore Defaults puts the channel types' table back.
 #[test]
 fn channels_scaled_on_their_own_each_have_a_scale_bar() {
@@ -1647,18 +1665,19 @@ fn channels_scaled_on_their_own_each_have_a_scale_bar() {
         let bars = viewer(harness).scale_bars();
         bars.iter().filter(|(b, _)| b.kind == kind).count()
     };
-    assert_eq!(bars(&harness, ChannelKind::Misc), 2);
-    assert_eq!(bars(&harness, ChannelKind::Eeg), 1);
+    assert_eq!(bars(&harness, ChannelKind::named("PHOTO")), 1);
+    assert_eq!(bars(&harness, ChannelKind::named("Temperature")), 1);
+    assert_eq!(bars(&harness, ChannelKind::EEG), 1);
 
     harness.key_press_modifiers(command(), Key::Comma);
     harness.run_steps(3);
     harness.get_by_label("Scale Each EEG Channel").click();
     harness.run_steps(2);
-    assert_eq!(bars(&harness, ChannelKind::Eeg), 5);
+    assert_eq!(bars(&harness, ChannelKind::EEG), 5);
     harness.get_by_label("Restore Defaults").click();
     harness.run_steps(2);
     assert_eq!(harness.state().settings().types, TypeSettings::default());
-    assert_eq!(bars(&harness, ChannelKind::Eeg), 1);
+    assert_eq!(bars(&harness, ChannelKind::EEG), 1);
 }
 
 /// File → Recording Info…, ⌘I, the ⓘ button after the format's name and the name itself
@@ -1819,10 +1838,10 @@ fn scale_bars_show_beside_their_rows_and_hide() {
         viewer(h)
             .scale_bars()
             .iter()
-            .map(|(b, _)| (b.kind, b.channel.0))
+            .map(|(b, _)| (b.kind.clone(), b.channel.0))
             .collect::<Vec<_>>()
     };
-    use kymo_core::ChannelKind::{Ecg, Eeg, Eog};
+    use crate::kinds::{Ecg, Eeg, Eog};
     assert_eq!(kinds(&harness), [(Eeg, 0), (Eog, 2), (Ecg, 3)]);
     let traces = viewer(&harness).layout().unwrap().traces;
     let view = viewer(&harness).view();
@@ -2501,7 +2520,7 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
 /// Each type's amplitude per channel spacing, in [`KINDS`] order.
 fn amplitudes(harness: &Harness<'_, KymoApp>) -> [f64; KINDS.len()] {
     let view = viewer(harness).view();
-    KINDS.map(|kind| view.amplitude(kind))
+    KINDS.map(|kind| view.amplitude(&kind))
 }
 
 #[test]
@@ -2523,18 +2542,18 @@ fn auto_scale_fits_the_window_from_the_menu_keys_and_setting() {
     harness.run_steps(2);
     let fitted = amplitudes(&harness);
     let signal = kymo_testgen::EEG_AMPLITUDE * 1e-6;
-    for kind in [ChannelKind::Eeg, ChannelKind::Eog, ChannelKind::Ecg] {
-        let amplitude = fitted[kind_index(kind)];
+    for kind in [ChannelKind::EEG, ChannelKind::EOG, ChannelKind::ECG] {
+        let amplitude = fitted[kind_index(kind.clone())];
         assert!(
             (signal / 4.0..=signal * 2.0).contains(&amplitude),
             "{kind:?}: {amplitude}"
         );
     }
     // Stim keeps its scale, and so do types without channels.
-    for kind in [ChannelKind::Stim, ChannelKind::Emg, ChannelKind::Misc] {
+    for kind in [ChannelKind::STIM, ChannelKind::EMG, ChannelKind::MISC] {
         assert_eq!(
-            fitted[kind_index(kind)],
-            defaults[kind_index(kind)],
+            fitted[kind_index(kind.clone())],
+            defaults[kind_index(kind.clone())],
             "{kind:?}"
         );
     }
@@ -2630,7 +2649,7 @@ fn auto_scale_waits_for_the_windows_tiles() {
 
 #[test]
 fn auto_scale_ignores_a_dc_offset() {
-    let eeg = kind_index(ChannelKind::Eeg);
+    let eeg = kind_index(ChannelKind::EEG);
     let mut fitted = Vec::new();
     for offset in [0.0, 21_000.0] {
         let file = offset_preset("bdf+c-small", offset);
@@ -2707,8 +2726,7 @@ fn channel_type_colors_are_picked_and_reset() {
     let file = typed_preset();
     let mut harness = fonts_window(file.path(), options());
     ready(&mut harness);
-    let picked = |h: &Harness<'_, KymoApp>| h.state().settings().type_colors;
-    let eog = kind_index(ChannelKind::Eog);
+    let picked = |h: &Harness<'_, KymoApp>| h.state().settings().types.clone();
     harness.key_press_modifiers(command(), Key::Comma);
     harness.step();
 
@@ -2716,7 +2734,7 @@ fn channel_type_colors_are_picked_and_reset() {
     harness.get_by_label("Color of EOG").click();
     harness.run_steps(2);
     let visuals = harness.ctx.global_style().visuals.clone();
-    let default = trace_color(ChannelKind::Eog, &visuals);
+    let default = trace_color(&ChannelKind::EOG, &visuals);
     let value = |h: &Harness<'_, KymoApp>, channel: &str| {
         h.get_by_role_and_label(egui::accesskit::Role::SpinButton, channel)
             .accesskit_node()
@@ -2726,12 +2744,15 @@ fn channel_type_colors_are_picked_and_reset() {
     assert!(harness.get_by_label("Reset").accesskit_node().is_disabled());
 
     pick(&mut harness, "Color of EOG", [10, 200, 30]);
-    let mut want = [None; KINDS.len()];
-    want[eog] = Some(egui::Color32::from_rgb(10, 200, 30));
+    let mut want = TypeSettings::default();
+    want.set_color(
+        &ChannelKind::EOG,
+        Some(egui::Color32::from_rgb(10, 200, 30)),
+    );
     assert_eq!(picked(&harness), want);
     harness.get_by_label("Reset").click();
     harness.run_steps(2);
-    assert_eq!(picked(&harness), [None; KINDS.len()]);
+    assert_eq!(picked(&harness), TypeSettings::default());
 
     // Restore Defaults resets them too.
     pick(&mut harness, "Color of EOG", [10, 200, 30]);
@@ -2740,7 +2761,7 @@ fn channel_type_colors_are_picked_and_reset() {
     harness.run_steps(2);
     harness.get_by_label("Restore Defaults").click();
     harness.run_steps(2);
-    assert_eq!(picked(&harness), [None; KINDS.len()]);
+    assert_eq!(picked(&harness), TypeSettings::default());
 }
 
 #[test]
@@ -3424,7 +3445,7 @@ fn gpu_window(path: &Path, setup: egui_wgpu::WgpuSetup) -> Harness<'static, Kymo
 /// Turns anti-aliasing off, so every trace pixel has its color exactly (anti-aliased edges
 /// blend with the background and the annotations behind).
 fn whole_pixels(harness: &mut Harness<'_, KymoApp>) {
-    let settings = *harness.state().settings();
+    let settings = harness.state().settings().clone();
     harness.state_mut().set_settings(Settings {
         antialias: false,
         ..settings
@@ -3592,16 +3613,19 @@ fn traces_take_their_types_colors() {
     let mut harness = gpu_window(file.path(), setup);
     ready(&mut harness);
     whole_pixels(&mut harness);
+    // Without the annotations' bands, whose colors traces may share.
+    harness.get_by_label("Show Annotations").click();
+    harness.run_steps(2);
     let visuals = harness.ctx.global_style().visuals.clone();
     // The rows, top to bottom; the last is Status.
     let kinds = [
-        kymo_core::ChannelKind::Eeg,
-        kymo_core::ChannelKind::Eog,
-        kymo_core::ChannelKind::Ecg,
-        kymo_core::ChannelKind::Stim,
-        kymo_core::ChannelKind::Stim,
+        kymo_core::ChannelKind::EEG,
+        kymo_core::ChannelKind::EOG,
+        kymo_core::ChannelKind::ECG,
+        kymo_core::ChannelKind::STIM,
+        kymo_core::ChannelKind::STIM,
     ];
-    let colors: Vec<_> = kinds.iter().map(|&k| trace_color(k, &visuals)).collect();
+    let colors: Vec<_> = kinds.iter().map(|k| trace_color(k, &visuals)).collect();
     // Per row, the pixels in each type's color.
     let counts = |harness: &mut Harness<'_, KymoApp>| {
         let traces = viewer(harness).layout().unwrap().traces;
@@ -3836,7 +3860,7 @@ fn system_follows_the_app_mode_where_it_is_read() {
 
     // Light, whatever the app mode.
     let set = |harness: &mut Harness<'_, KymoApp>, theme| {
-        let settings = *harness.state().settings();
+        let settings = harness.state().settings().clone();
         harness
             .state_mut()
             .set_settings(Settings { theme, ..settings });
@@ -3914,13 +3938,13 @@ fn traces_take_the_themes_colors() {
             .count()
     };
     for (theme, own, other) in [(Theme::Light, &light, &dark), (Theme::Dark, &dark, &light)] {
-        let settings = *harness.state().settings();
+        let settings = harness.state().settings().clone();
         harness
             .state_mut()
             .set_settings(Settings { theme, ..settings });
         harness.run_steps(2);
-        let ours = count(&mut harness, trace_color(ChannelKind::Eog, own));
-        let theirs = count(&mut harness, trace_color(ChannelKind::Eog, other));
+        let ours = count(&mut harness, trace_color(&ChannelKind::EOG, own));
+        let theirs = count(&mut harness, trace_color(&ChannelKind::EOG, other));
         assert!(
             ours > 200 && theirs < ours / 20,
             "{theme:?}: {ours} and {theirs}"
@@ -3938,7 +3962,7 @@ fn traces_take_picked_type_colors() {
     whole_pixels(&mut harness);
     let green = egui::Color32::from_rgb(10, 200, 30);
     let visuals = harness.ctx.global_style().visuals.clone();
-    let blue = trace_color(ChannelKind::Eog, &visuals);
+    let blue = trace_color(&ChannelKind::EOG, &visuals);
     // Pixels of the EOG row near `color`.
     let count = |harness: &mut Harness<'_, KymoApp>, color: egui::Color32| {
         let traces = viewer(harness).layout().unwrap().traces;
@@ -4000,7 +4024,7 @@ fn stim_traces_stay_in_their_row() {
     dc_off(&mut harness);
     whole_pixels(&mut harness);
     let visuals = harness.ctx.global_style().visuals.clone();
-    let gray = trace_color(kymo_core::ChannelKind::Stim, &visuals);
+    let gray = trace_color(&kymo_core::ChannelKind::STIM, &visuals);
     let text = visuals.text_color();
     // Per row, the pixels in the stim color and in the text color; and the pixel line of
     // the last row with the most stim-colored pixels, from the row's top.
@@ -4099,7 +4123,7 @@ fn annotations_lie_behind_the_traces() {
         "band {tinted:?}, background {background:?}"
     );
     // The traces cross the band in their own color.
-    let trace = trace_color(kymo_core::ChannelKind::Eeg, &visuals);
+    let trace = trace_color(&kymo_core::ChannelKind::EEG, &visuals);
     let on_top = band
         .columns
         .clone()
@@ -5057,14 +5081,13 @@ fn unsaved_changes_are_asked_about() {
 #[test]
 fn every_channel_type_has_a_row_a_color_and_a_swatch() {
     use egui::accesskit::Role;
-    use kymo::ui::header::kind_name;
     let file = TempFile::preset("edf+c-kinds");
     let mut harness = screenshot_window(file.path());
     ready(&mut harness);
-    // Top to bottom, the types of edf+c-kinds: brain signals, other body signals, stim;
-    // none it lacks.
+    // Top to bottom, the types of edf+c-kinds: EEG, MEG, EOG, ECG, the other signals,
+    // stim; none it lacks.
     let present = [
-        "MEG Mag", "MEG Grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
+        "EEG", "MEG Mag", "MEG Grad", "EOG", "ECG", "EMG", "sEEG", "ECoG", "DBS", "Resp", "SaO2",
         "Stim",
     ];
     // Each collapsed, so all rows fit.
@@ -5084,7 +5107,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
         })
         .collect();
     assert!(tops.is_sorted_by(|a, b| a < b), "{tops:?}");
-    for absent in ["MEG Ref", "Misc"] {
+    for absent in ["MEG Ref", "Bio", "Misc"] {
         assert!(
             harness
                 .query_by_role_and_label(Role::CheckBox, &format!("Show {absent} channels"))
@@ -5095,13 +5118,13 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
     let image = harness.render().unwrap();
     let visuals = harness.ctx.global_style().visuals.clone();
     for kind in [
-        ChannelKind::Mag,
-        ChannelKind::Seeg,
-        ChannelKind::Dbs,
-        ChannelKind::Eog,
+        ChannelKind::MAG,
+        ChannelKind::SEEG,
+        ChannelKind::DBS,
+        ChannelKind::EOG,
     ] {
-        let r = kind_name_rect(&harness, kind_name(kind));
-        let color = trace_color(kind, &visuals);
+        let r = kind_name_rect(&harness, kind.name());
+        let color = trace_color(&kind, &visuals);
         let colored = (r.left() as u32..r.right() as u32)
             .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
             .filter(|&(x, y)| near(&image.get_pixel(x, y).0, color))
@@ -5111,10 +5134,7 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
 
     harness.key_press_modifiers(command(), Key::Comma);
     harness.run_steps(2);
-    let all = [
-        "MEG Mag", "MEG Grad", "EEG", "sEEG", "ECoG", "DBS", "EOG", "ECG", "EMG", "Resp", "Bio",
-        "MEG Ref", "Stim", "Misc",
-    ];
+    let all: Vec<&str> = KINDS.iter().map(|kind| kind.name()).collect();
     assert_eq!(all.len(), KINDS.len());
     let swatches: Vec<egui::Rect> = all
         .iter()
@@ -5569,7 +5589,7 @@ fn several_streams_group_the_channel_list() {
 #[test]
 fn streams_of_several_types_group_their_channels_by_type() {
     use egui::accesskit::Role;
-    // Amp: Fz (EEG), AUX1 and POR X (misc); Tracker: IPD (misc).
+    // Amp: Fz (EEG), AUX1 and POR X (AUX); Tracker: IPD (Gaze).
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -5578,19 +5598,19 @@ fn streams_of_several_types_group_their_channels_by_type() {
         [
             "Collapse Amp",
             "Collapse EEG channels in Amp",
-            "Collapse Misc channels in Amp",
+            "Collapse AUX channels in Amp",
             "Collapse Tracker"
         ]
     );
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
     let level = LEVEL;
     let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
-    let misc = left(&harness, "Show Misc channels in Amp");
+    let misc = left(&harness, "Show AUX channels in Amp");
     assert!(near(misc - left(&harness, "Show Amp"), level));
     assert!(near(left(&harness, "Show AUX1") - misc, level));
     // Its count, without the rate, which the stream's row has.
     let row = harness
-        .get_by_label("Show Misc channels in Amp")
+        .get_by_label("Show AUX channels in Amp")
         .rect()
         .center()
         .y;
@@ -5599,7 +5619,7 @@ fn streams_of_several_types_group_their_channels_by_type() {
         .filter(|n| (n.rect().center().y - row).abs() < 1.0)
         .filter_map(|n| n.accesskit_node().value())
         .collect();
-    assert_eq!(in_row, ["Misc", "2"]);
+    assert_eq!(in_row, ["AUX", "2"]);
     harness.get_by_label("3 \u{b7} 100 Hz");
     let tracker = left(&harness, "Show Tracker");
     let ipd = "IPD - Interpupillary distance, both eyes";
@@ -5615,18 +5635,16 @@ fn streams_of_several_types_group_their_channels_by_type() {
     assert_eq!(unit(&harness, "mm"), unit(&harness, "normalized_signed"));
 
     // Its box shows and hides only its channels in this stream.
-    click_in_list(&mut harness, Role::CheckBox, "Show Misc channels in Amp");
+    click_in_list(&mut harness, Role::CheckBox, "Show AUX channels in Amp");
     assert_eq!(shown(&harness), [0, 3]);
-    click_in_list(&mut harness, Role::CheckBox, "Show Misc channels in Amp");
+    click_in_list(&mut harness, Role::CheckBox, "Show AUX channels in Amp");
     assert_eq!(shown(&harness), [0, 1, 2, 3]);
     // Its arrow folds them.
-    harness
-        .get_by_label("Collapse Misc channels in Amp")
-        .click();
+    harness.get_by_label("Collapse AUX channels in Amp").click();
     harness.run_steps(2);
     assert!(harness.query_by_label("Show AUX1").is_none());
     harness.get_by_label("Show Fz");
-    harness.get_by_label("Expand Misc channels in Amp").click();
+    harness.get_by_label("Expand AUX channels in Amp").click();
     harness.run_steps(2);
     harness.get_by_label("Show AUX1");
 }
@@ -5690,12 +5708,12 @@ fn all_channel_groups_fold_and_unfold_at_once() {
 /// both and unfolds both.
 #[test]
 fn folding_all_reaches_streams_and_their_types() {
-    // Amp (EEG and misc types), Tracker.
+    // Amp (EEG and AUX types), Tracker.
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
     harness
-        .get_by_label("Collapse Misc channels in Amp")
+        .get_by_label("Collapse AUX channels in Amp")
         .click_modifiers(Modifiers::ALT);
     harness.run_steps(2);
     assert_eq!(folds(&harness), ["Collapse Amp", "Collapse Tracker"]);

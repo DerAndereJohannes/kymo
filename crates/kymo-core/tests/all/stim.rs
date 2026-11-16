@@ -141,9 +141,9 @@ fn recording(
     let channels = kinds
         .iter()
         .enumerate()
-        .map(|(i, &(kind, trigger_mask))| Channel {
-            kind,
-            trigger_mask,
+        .map(|(i, (kind, trigger_mask))| Channel {
+            kind: kind.clone(),
+            trigger_mask: *trigger_mask,
             ..Channel::new(format!("ch{i}"), GridId(0))
         })
         .collect();
@@ -159,7 +159,7 @@ fn recording(
 
 fn kinds() -> impl Strategy<Value = Vec<(ChannelKind, Option<u32>)>> {
     let mask = prop_oneof![Just(None), Just(Some(0xffff)), any::<u32>().prop_map(Some)];
-    let kind = prop_oneof![Just(ChannelKind::Stim), Just(ChannelKind::Eeg)];
+    let kind = prop_oneof![Just(ChannelKind::STIM), Just(ChannelKind::EEG)];
     proptest::collection::vec((kind, mask), 1..=3)
 }
 
@@ -182,7 +182,7 @@ proptest! {
         let rows = &rows[..kinds.len()];
         let (data, codes) = stored(sample_type, rows);
         let rec = recording(sample_type, len, segments.clone(), data, &kinds);
-        let stim: Vec<usize> = (0..kinds.len()).filter(|&c| kinds[c].0 == ChannelKind::Stim).collect();
+        let stim: Vec<usize> = (0..kinds.len()).filter(|&c| kinds[c].0 == ChannelKind::STIM).collect();
         let want: Vec<Vec<(u64, i32)>> = stim
             .iter()
             .map(|&c| present_codes(&segments, &codes[c], kinds[c].1))
@@ -299,7 +299,7 @@ fn changes_past_the_watermark_are_not_served() {
         len,
         vec![0..len],
         MemData::I32(vec![row.clone()]),
-        &[(ChannelKind::Stim, None)],
+        &[(ChannelKind::STIM, None)],
     );
     let pyramid = PyramidBuilder::new(&rec, GridId(0))
         .unwrap()
@@ -364,7 +364,7 @@ fn generated_files_and_sidecars_have_the_written_codes() {
             .0;
         let c = spec.channels.iter().position(|ch| ch.trigger).unwrap();
         let channel = rec.channel(ChannelId(c as u32));
-        assert_eq!(channel.kind, ChannelKind::Stim);
+        assert_eq!(channel.kind, ChannelKind::STIM);
         assert_eq!(channel.trigger_mask, spec.format.is_bdf().then_some(0xffff));
 
         let present = spec_codes(&spec, c);
@@ -407,7 +407,7 @@ fn generated_files_and_sidecars_have_the_written_codes() {
                 .grid(GridId(g))
                 .channels()
                 .iter()
-                .any(|&c| rec.channel(c).kind == ChannelKind::Stim);
+                .any(|&c| rec.channel(c).kind == ChannelKind::STIM);
             if GridId(g) != channel.grid && !stim {
                 assert!(
                     reopened
@@ -483,7 +483,7 @@ fn stim_tiles_hold_the_codes() {
     let channel = rec.channel(id);
     assert_eq!(channel.tile_scaling(), (1.0, 0.0));
     let eeg = rec.channel(ChannelId(0));
-    assert_eq!(eeg.kind, ChannelKind::Eeg);
+    assert_eq!(eeg.kind, ChannelKind::EEG);
     assert_eq!(eeg.tile_scaling(), (eeg.gain, eeg.offset));
 
     let grid = rec.grid(channel.grid);
@@ -585,14 +585,14 @@ fn edf_stim_channels_show_their_digital_codes() {
         .0;
     let id = ChannelId(c as u32);
     let channel = rec.channel(id);
-    assert_eq!(channel.kind, ChannelKind::Stim);
+    assert_eq!(channel.kind, ChannelKind::STIM);
     assert_eq!(channel.trigger_mask, None);
     assert!((channel.gain - 2.0).abs() < 1e-9 && (channel.offset - 100.0).abs() < 1e-6);
     assert_eq!(channel.tile_scaling(), (1.0, 0.0));
     assert_eq!(channel.tile_unit(), "");
     assert_eq!(channel.unit.label, "Boolean");
     let eeg = rec.channel(ChannelId(0));
-    assert_eq!(eeg.kind, ChannelKind::Eeg);
+    assert_eq!(eeg.kind, ChannelKind::EEG);
     assert_eq!(eeg.tile_scaling(), (eeg.gain, eeg.offset));
     assert_eq!(eeg.tile_unit(), eeg.unit.label);
     assert!(!eeg.tile_unit().is_empty());

@@ -5,58 +5,129 @@ use kymo_core::{ChannelKind, Quantity, Recording, Unit};
 use kymo_testgen::{Spec, TempFile};
 
 #[test]
-fn mne_type_names_map_to_kinds_and_back() {
-    use ChannelKind::*;
+fn type_names_are_known_by_any_spelling_and_case() {
+    use crate::kinds::*;
+    // MNE's names of the types kymo knows, and their names as shown.
     let named = [
-        ("eeg", Eeg),
-        ("eog", Eog),
-        ("ecg", Ecg),
-        ("emg", Emg),
-        ("stim", Stim),
-        ("misc", Misc),
-        ("mag", Mag),
-        ("grad", Grad),
-        ("ref_meg", RefMeg),
-        ("seeg", Seeg),
-        ("ecog", Ecog),
-        ("dbs", Dbs),
-        ("resp", Resp),
-        ("bio", Bio),
+        ("eeg", Eeg, "EEG"),
+        ("eog", Eog, "EOG"),
+        ("ecg", Ecg, "ECG"),
+        ("emg", Emg, "EMG"),
+        ("stim", Stim, "Stim"),
+        ("misc", Misc, "Misc"),
+        ("mag", Mag, "MEG Mag"),
+        ("grad", Grad, "MEG Grad"),
+        ("ref_meg", RefMeg, "MEG Ref"),
+        ("seeg", Seeg, "sEEG"),
+        ("ecog", Ecog, "ECoG"),
+        ("dbs", Dbs, "DBS"),
+        ("resp", Resp, "Resp"),
+        ("bio", Bio, "Bio"),
     ];
-    assert_eq!(named.len(), ChannelKind::ALL.len());
-    for (name, kind) in named {
-        assert_eq!(kind.mne_name(), name);
-        assert_eq!(ChannelKind::from_mne(name), Some(kind), "{name}");
-        // As EEGLAB and XDF write them.
-        assert_eq!(
-            ChannelKind::from_mne(&name.to_uppercase()),
-            Some(kind),
-            "{name}"
-        );
+    for (mne, kind, shown) in named {
+        assert_eq!(kind.mne_name(), mne);
+        assert_eq!(kind.key(), mne);
+        assert_eq!(kind.name(), shown);
+        let parsed = ChannelKind::named(mne);
+        assert_eq!(parsed, kind, "{mne}");
+        assert_eq!(parsed.name(), shown, "{mne}");
+        // As EEGLAB and XDF write them, and as kymo shows them.
+        assert_eq!(ChannelKind::named(&mne.to_uppercase()), kind, "{mne}");
+        assert_eq!(ChannelKind::named(shown), kind, "{mne}");
     }
-    assert_eq!(ChannelKind::from_mne(" EEG "), Some(Eeg));
-    // MNE's other types have no kind of their own.
-    for other in [
-        "chpi",
-        "exci",
-        "ias",
-        "syst",
-        "hbo",
-        "hbr",
-        "fnirs_cw_amplitude",
-        "fnirs_od",
-        "csd",
-        "gsr",
-        "temperature",
-        "eyegaze",
-        "pupil",
-        "dipole",
-        "gof",
+    assert_eq!(ChannelKind::named(" EEG "), Eeg);
+    // MNE's other types are types of their own, shown as kymo spells them.
+    for (mne, shown) in [
+        ("chpi", "cHPI"),
+        ("exci", "EXCI"),
+        ("ias", "IAS"),
+        ("syst", "SYST"),
+        ("hbo", "HbO"),
+        ("hbr", "HbR"),
+        ("fnirs_cw_amplitude", "fNIRS CW Amplitude"),
+        ("fnirs_od", "fNIRS OD"),
+        ("csd", "CSD"),
+        ("gsr", "GSR"),
+        ("temperature", "Temperature"),
+        ("eyegaze", "Eye Gaze"),
+        ("pupil", "Pupil"),
+        ("dipole", "Dipole"),
+        ("gof", "GOF"),
     ] {
-        assert_eq!(ChannelKind::from_mne(other), Some(Misc), "{other}");
+        let kind = ChannelKind::named(mne);
+        assert_eq!(
+            (kind.name(), kind.key(), kind.mne_name()),
+            (shown, mne, mne)
+        );
+        assert!(kind.known().is_some(), "{mne}");
+        assert_ne!(kind, Misc, "{mne}");
     }
-    for unknown in ["", "meg", "MEG", "Accelerometer", "electrode", "eeg2"] {
-        assert_eq!(ChannelKind::from_mne(unknown), None, "{unknown:?}");
+    // Other spellings: BIDS', EDF+'s and others.
+    for (other, kind) in [
+        ("MEGMAG", Mag),
+        ("MEGGRADPLANAR", Grad),
+        ("MEGREFMAG", RefMeg),
+        ("EKG", Ecg),
+        ("TEMP", ChannelKind::named("temperature")),
+    ] {
+        assert_eq!(ChannelKind::named(other), kind, "{other}");
+        assert_eq!(ChannelKind::named(other).name(), kind.name(), "{other}");
+    }
+    // Types of their own that MNE reads as one of its types.
+    for (name, mne) in [
+        ("HEOG", "eog"),
+        ("VEOG", "eog"),
+        ("SaO2", "bio"),
+        ("PPG", "bio"),
+    ] {
+        let kind = ChannelKind::named(name);
+        assert_eq!((kind.name(), kind.mne_name()), (name, mne));
+        assert_ne!(kind, ChannelKind::named(mne), "{name}");
+    }
+    // Any other name is a type of its own, shown as first given, one type in any case;
+    // MNE reads it as misc.
+    for name in [
+        "Gaze",
+        "Accelerometer",
+        "electrode",
+        "eeg2",
+        "MEG",
+        "Ölfühler",
+    ] {
+        let kind = ChannelKind::named(&format!(" {name} "));
+        assert_eq!(kind.name(), name);
+        assert_eq!(kind.mne_name(), "misc");
+        assert!(kind.known().is_none(), "{name}");
+        assert_eq!(kind, ChannelKind::named(&name.to_uppercase()), "{name}");
+        assert_eq!(kind, ChannelKind::named(&name.to_lowercase()), "{name}");
+        assert_eq!(
+            ChannelKind::named(&name.to_lowercase()).name(),
+            name.to_lowercase()
+        );
+        assert_ne!(kind, Misc, "{name}");
+    }
+    // No name is misc.
+    assert_eq!(ChannelKind::named(""), Misc);
+    assert_eq!(ChannelKind::named("  "), Misc);
+}
+
+#[test]
+fn every_known_type_has_one_key_and_spelling() {
+    let mut types = std::collections::HashMap::new();
+    for kind in kymo_core::KNOWN_KINDS {
+        assert_eq!(kind.key, kind.key.to_lowercase(), "{}", kind.name);
+        let spellings = [kind.name.to_lowercase(), kind.key.to_owned()]
+            .into_iter()
+            .chain(kind.aliases.iter().map(|a| (*a).to_owned()));
+        for spelling in spellings {
+            assert_eq!(spelling, spelling.to_lowercase(), "{}", kind.name);
+            let before = types.insert(spelling.clone(), kind.key);
+            assert!(
+                before.is_none_or(|k| k == kind.key),
+                "{spelling:?} names two types"
+            );
+            assert_eq!(ChannelKind::named(&spelling).key(), kind.key, "{spelling}");
+        }
     }
 }
 
@@ -184,11 +255,11 @@ fn units_show_as_symbols() {
 fn edf_labels_and_units_give_kinds() {
     let file = TempFile::written(&Spec::preset("edf+c-kinds").unwrap());
     let (rec, _) = Recording::new(kymo_core::open(file.path()).unwrap()).unwrap();
-    use ChannelKind::*;
+    use crate::kinds::*;
     let kinds: Vec<(&str, ChannelKind)> = rec
         .channels()
         .iter()
-        .map(|c| (c.name.as_str(), c.kind))
+        .map(|c| (c.name.as_str(), c.kind.clone()))
         .collect();
     assert_eq!(
         kinds,
@@ -201,7 +272,7 @@ fn edf_labels_and_units_give_kinds() {
             ("ECG", Ecg),
             ("EMG chin", Emg),
             ("Resp chest", Resp),
-            ("SaO2 finger", Bio),
+            ("SaO2 finger", ChannelKind::named("SaO2")),
             ("MEG 0111", Mag),
             ("MEG 0112", Grad),
             ("TRIGGER", Stim),

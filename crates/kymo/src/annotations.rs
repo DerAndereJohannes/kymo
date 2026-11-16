@@ -79,7 +79,7 @@ pub fn groups_streams(recording: &Recording, store: &AnnotationStore) -> bool {
             StreamContent::Annotations(_) => true,
             StreamContent::Channels(ids) => ids.iter().any(|&c| {
                 let channel = recording.channel(c);
-                channel.kind == ChannelKind::Stim && channel.events
+                channel.kind == ChannelKind::STIM && channel.events
             }),
             StreamContent::NotShown(_) => false,
         })

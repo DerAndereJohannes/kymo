@@ -30,7 +30,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     // References from the first finite samples, record by record.
     if parsed.n_records > 0 {
         for (channel, block) in parsed.channels.iter_mut().zip(&mut parsed.blocks) {
-            if channel.kind == ChannelKind::Stim || block.samples == 0 {
+            if channel.kind == ChannelKind::STIM || block.samples == 0 {
                 continue;
             }
             let size = block.decoder.encoding().size() as u64;

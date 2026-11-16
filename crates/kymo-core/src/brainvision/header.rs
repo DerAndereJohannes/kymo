@@ -258,15 +258,19 @@ fn channels(
         };
         let unit = Unit::from_label(unit);
         let kind = match unit.quantity() {
-            Some(Quantity::Voltage) => match kind_from_name(&name) {
+            Some(Quantity::Voltage) => {
+                let kind = kind_from_name(&name);
                 // A scalp channel the montage can't place, where it places others, is not on
                 // the scalp.
-                ChannelKind::Eeg if placed && coordinates[i] == Some(0.0) => ChannelKind::Misc,
-                kind => kind,
-            },
-            Some(Quantity::MagneticField) => ChannelKind::Mag,
-            Some(Quantity::FieldGradient) => ChannelKind::Grad,
-            _ => ChannelKind::Misc,
+                if kind == ChannelKind::EEG && placed && coordinates[i] == Some(0.0) {
+                    ChannelKind::MISC
+                } else {
+                    kind
+                }
+            }
+            Some(Quantity::MagneticField) => ChannelKind::MAG,
+            Some(Quantity::FieldGradient) => ChannelKind::GRAD,
+            _ => ChannelKind::MISC,
         };
         channels.push(Channel {
             kind,

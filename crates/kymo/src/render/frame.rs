@@ -7,7 +7,7 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use kymo_core::tile::{ChannelBlock, Placed, Query, Tile};
-use kymo_core::{ChannelId, ChannelKind, Grid, Recording, SampleType};
+use kymo_core::{ChannelId, Grid, Recording, SampleType};
 
 use crate::view::ViewState;
 
@@ -79,7 +79,7 @@ impl Scene {
                     },
                     baseline: 0.0,
                     color,
-                    clip: view.kind_of(channel) == ChannelKind::Stim,
+                    clip: view.kind_of(channel).is_stim(),
                 }
             })
             .collect();

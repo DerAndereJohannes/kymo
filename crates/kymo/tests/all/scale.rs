@@ -8,9 +8,8 @@ use std::sync::OnceLock;
 use crate::common::{Fixture, Rng, channel, f32_rows, grid, i16_rows, walk};
 use kymo::action::Action;
 use kymo::scale::{PERCENTILE, fit};
-use kymo::view::{
-    SCALE_STEP, ScaleGroup, TypeSettings, UnitKey, ViewState, kind_index, own_quantity,
-};
+use kymo::types::{TypeSettings, start};
+use kymo::view::{SCALE_STEP, ScaleGroup, UnitKey, ViewState};
 use kymo_core::tile::{Level, query, samples_in, tiles_for_view};
 use kymo_core::{Channel, ChannelId, ChannelKind, Quantity, SampleType, Unit};
 use proptest::prelude::*;
@@ -62,22 +61,22 @@ fn fixture() -> &'static Fixture {
                 let gain = 0.1 + f64::from(i) * 0.01;
                 let ch = channel(&format!("c{i}"), 0, gain, 1000.0 * f64::from(i));
                 match i {
-                    0..28 => typed(ch, ChannelKind::Eeg, "uV", Some(1e-6)),
-                    28..32 => typed(ch, ChannelKind::Eog, "mV", Some(1e-3)),
-                    32 => typed(ch, ChannelKind::Emg, "au", None),
-                    _ => typed(ch, ChannelKind::Stim, "", None),
+                    0..28 => typed(ch, ChannelKind::EEG, "uV", Some(1e-6)),
+                    28..32 => typed(ch, ChannelKind::EOG, "mV", Some(1e-3)),
+                    32 => typed(ch, ChannelKind::EMG, "au", None),
+                    _ => typed(ch, ChannelKind::STIM, "", None),
                 }
             })
             .collect();
         channels.push(typed(
             channel("float", 1, 1.5, -2.0e4),
-            ChannelKind::Eeg,
+            ChannelKind::EEG,
             "uV",
             Some(1e-6),
         ));
         channels.push(typed(
             channel("flipped", 1, -0.5, 100.0),
-            ChannelKind::Misc,
+            ChannelKind::MISC,
             "V",
             Some(1.0),
         ));
@@ -114,7 +113,7 @@ fn brute(fx: &Fixture, view: &ViewState, width: u32) -> HashMap<ScaleGroup, f64>
     let tiles = view.tile_view(width);
     let mut deviations: HashMap<ScaleGroup, Vec<f64>> = HashMap::new();
     for &id in view.visible_channels() {
-        if view.is_bad(id) || view.kind_of(id) == ChannelKind::Stim {
+        if view.is_bad(id) || view.kind_of(id).is_stim() {
             continue;
         }
         let grid = fx.grid_of(id);
@@ -234,7 +233,7 @@ fn sines(offsets: [f64; 4], gains: [f64; 4]) -> Fixture {
         .map(|i| {
             typed(
                 channel(&format!("EEG {i}"), 0, gains[i] * 0.5, offsets[i]),
-                ChannelKind::Eeg,
+                ChannelKind::EEG,
                 "uV",
                 Some(1e-6),
             )
@@ -242,39 +241,39 @@ fn sines(offsets: [f64; 4], gains: [f64; 4]) -> Fixture {
         .collect();
     channels.push(typed(
         channel("EEG bad", 0, 0.5, 0.0),
-        ChannelKind::Eeg,
+        ChannelKind::EEG,
         "uV",
         Some(1e-6),
     ));
     channels.push(typed(
         channel("EOG", 0, 0.01, 0.0),
-        ChannelKind::Eog,
+        ChannelKind::EOG,
         "mV",
         Some(1e-3),
     ));
     channels.push(typed(
         channel("EMG", 0, 1.0, 0.0),
-        ChannelKind::Emg,
+        ChannelKind::EMG,
         "uV",
         Some(1e-6),
     ));
     channels.push(typed(
         channel("Status", 0, 1.0, 0.0),
-        ChannelKind::Stim,
+        ChannelKind::STIM,
         "",
         None,
     ));
     for i in 0..9 {
         channels.push(typed(
             channel(&format!("EMG {i}"), 0, 1.0, 0.0),
-            ChannelKind::Emg,
+            ChannelKind::EMG,
             "uV",
             Some(1e-6),
         ));
     }
     channels.push(typed(
         channel("Misc", 0, 1.0, 0.0),
-        ChannelKind::Misc,
+        ChannelKind::MISC,
         "",
         None,
     ));
@@ -300,7 +299,9 @@ fn view_of(fx: &Fixture) -> ViewState {
 /// What `fitted` has for the channels of `kind` in its own quantity (for a type without one,
 /// those without a unit).
 fn amplitude(fitted: &HashMap<ScaleGroup, f64>, kind: ChannelKind) -> Option<f64> {
-    let unit = own_quantity(kind).map_or(UnitKey::Label(String::new()), UnitKey::Quantity);
+    let unit = start(&kind)
+        .quantity
+        .map_or(UnitKey::Label(String::new()), UnitKey::Quantity);
     fitted.get(&ScaleGroup::Shared(kind, unit)).copied()
 }
 
@@ -311,16 +312,16 @@ fn the_scale_follows_the_amplitude_not_an_artifact() {
     // Samples (20 per pixel) and envelopes (200 per pixel) alike.
     for width in [1000, 100] {
         let fitted = fitted(&fx, &view, width);
-        let eeg = amplitude(&fitted, ChannelKind::Eeg).unwrap();
+        let eeg = amplitude(&fitted, ChannelKind::EEG).unwrap();
         assert!((19e-6..=21e-6).contains(&eeg), "{width} px: EEG {eeg}");
-        let eog = amplitude(&fitted, ChannelKind::Eog).unwrap();
+        let eog = amplitude(&fitted, ChannelKind::EOG).unwrap();
         assert!((0.57e-3..=0.63e-3).contains(&eog), "{width} px: EOG {eog}");
         // Flat channels say nothing: EMG follows its live channel, and misc and stim keep
         // their scale.
-        let emg = amplitude(&fitted, ChannelKind::Emg).unwrap();
+        let emg = amplitude(&fitted, ChannelKind::EMG).unwrap();
         assert!((97e-6..=103e-6).contains(&emg), "{width} px: EMG {emg}");
-        assert_eq!(amplitude(&fitted, ChannelKind::Misc), None);
-        assert_eq!(amplitude(&fitted, ChannelKind::Stim), None);
+        assert_eq!(amplitude(&fitted, ChannelKind::MISC), None);
+        assert_eq!(amplitude(&fitted, ChannelKind::STIM), None);
     }
 }
 
@@ -331,8 +332,8 @@ fn offsets_and_flipped_signs_change_nothing() {
     let moved = sines([2.0e4, -5.0e3, 1.0e5, 0.0], [-1.0, 1.0, -1.0, 1.0]);
     let moved = fitted(&moved, &view_of(&moved), 1000);
     let (a, b) = (
-        amplitude(&plain, ChannelKind::Eeg).unwrap(),
-        amplitude(&moved, ChannelKind::Eeg).unwrap(),
+        amplitude(&plain, ChannelKind::EEG).unwrap(),
+        amplitude(&moved, ChannelKind::EEG).unwrap(),
     );
     assert!((a - b).abs() <= a * 1e-9, "{a} against {b}");
 }
@@ -342,19 +343,19 @@ fn offsets_and_flipped_signs_change_nothing() {
 fn bad_and_hidden_channels_are_left_out() {
     let fx = sines([0.0; 4], [1.0; 4]);
     let mut view = ViewState::new(&fx.recording);
-    let with_bad = amplitude(&fitted(&fx, &view, 1000), ChannelKind::Eeg).unwrap();
+    let with_bad = amplitude(&fitted(&fx, &view, 1000), ChannelKind::EEG).unwrap();
     assert!(
         with_bad > 1e-3,
         "the bad channel counts while it is good: {with_bad}"
     );
     view.set_shown(ChannelId(4), false);
-    let hidden = amplitude(&fitted(&fx, &view, 1000), ChannelKind::Eeg).unwrap();
+    let hidden = amplitude(&fitted(&fx, &view, 1000), ChannelKind::EEG).unwrap();
     assert!(hidden < 21e-6, "{hidden}");
     // Without any good EEG channel on screen, EEG keeps its scale.
     for i in 0..4 {
         view.toggle_bad(ChannelId(i));
     }
-    assert_eq!(amplitude(&fitted(&fx, &view, 1000), ChannelKind::Eeg), None);
+    assert_eq!(amplitude(&fitted(&fx, &view, 1000), ChannelKind::EEG), None);
 }
 
 /// MEG types fit in their SI units like any other: a magnetometer in fT, a gradiometer in
@@ -365,19 +366,19 @@ fn meg_types_fit_in_their_si_units() {
     let channels = vec![
         typed(
             channel("MEG 0111", 0, 1.0, 0.0),
-            ChannelKind::Mag,
+            ChannelKind::MAG,
             "fT",
             Some(1e-15),
         ),
         typed(
             channel("MEG 0112", 0, 1.0, 0.0),
-            ChannelKind::Grad,
+            ChannelKind::GRAD,
             "fT/cm",
             Some(1e-13),
         ),
         typed(
             channel("REF 1", 0, 1e-15, 0.0),
-            ChannelKind::RefMeg,
+            ChannelKind::REF_MEG,
             "T",
             Some(1.0),
         ),
@@ -389,14 +390,14 @@ fn meg_types_fit_in_their_si_units() {
     );
     let fitted = fitted(&fx, &ViewState::new(&fx.recording), 1000);
     for (kind, expected) in [
-        (ChannelKind::Mag, 600e-15),
-        (ChannelKind::Grad, 300e-13),
-        (ChannelKind::RefMeg, 900e-15),
+        (ChannelKind::MAG, 600e-15),
+        (ChannelKind::GRAD, 300e-13),
+        (ChannelKind::REF_MEG, 900e-15),
     ] {
-        let got = amplitude(&fitted, kind).unwrap();
+        let got = amplitude(&fitted, kind.clone()).unwrap();
         assert!((got - expected).abs() <= 0.05 * expected, "{kind:?}: {got}");
     }
-    assert_eq!(amplitude(&fitted, ChannelKind::Eeg), None);
+    assert_eq!(amplitude(&fitted, ChannelKind::EEG), None);
 }
 
 /// Channels share an amplitude only within a type and a quantity: an EEG channel in bpm
@@ -413,27 +414,27 @@ fn only_channels_of_a_type_and_quantity_share_an_amplitude() {
     let channels = vec![
         typed(
             channel("Fz", 0, 0.5, 0.0),
-            ChannelKind::Eeg,
+            ChannelKind::EEG,
             "uV",
             Some(1e-6),
         ),
         typed(
             channel("Cz", 0, 0.5, 0.0),
-            ChannelKind::Eeg,
+            ChannelKind::EEG,
             "uV",
             Some(1e-6),
         ),
         typed(
             channel("Pz", 0, 0.001, 0.0),
-            ChannelKind::Eeg,
+            ChannelKind::EEG,
             "mV",
             Some(1e-3),
         ),
-        typed(channel("HR", 0, 1.0, 0.0), ChannelKind::Eeg, "bpm", None),
-        typed(channel("Temp", 0, 0.01, 0.0), ChannelKind::Misc, "°C", None),
+        typed(channel("HR", 0, 1.0, 0.0), ChannelKind::EEG, "bpm", None),
+        typed(channel("Temp", 0, 0.01, 0.0), ChannelKind::MISC, "°C", None),
         typed(
             channel("Photo", 0, 0.001, 0.0),
-            ChannelKind::Misc,
+            ChannelKind::MISC,
             "mV",
             Some(1e-3),
         ),
@@ -478,11 +479,11 @@ fn only_channels_of_a_type_and_quantity_share_an_amplitude() {
     for c in 0..6 {
         assert_eq!(scaled.channel_amplitude(ChannelId(c)), starts[c as usize]);
     }
-    let eeg = ScaleGroup::Shared(ChannelKind::Eeg, UnitKey::Quantity(Quantity::Voltage));
+    let eeg = ScaleGroup::Shared(ChannelKind::EEG, UnitKey::Quantity(Quantity::Voltage));
     // The EEG channels in volts together, µV and mV alike: their deviations' 99th
     // percentile, Pz's.
     assert!(near(got.get(&eeg), 60e-6), "{got:?}");
-    let bpm = ScaleGroup::Shared(ChannelKind::Eeg, UnitKey::Label("bpm".into()));
+    let bpm = ScaleGroup::Shared(ChannelKind::EEG, UnitKey::Label("bpm".into()));
     assert!(near(got.get(&bpm), 70.0), "{got:?}");
     assert!(
         near(got.get(&ScaleGroup::Channel(ChannelId(4))), 3.0),
@@ -494,15 +495,13 @@ fn only_channels_of_a_type_and_quantity_share_an_amplitude() {
     );
     assert_eq!(got.len(), 4, "{got:?}");
 
-    let misc = kind_index(ChannelKind::Misc);
-    let eeg_index = kind_index(ChannelKind::Eeg);
     let mut types = TypeSettings::default();
-    types.own_scale[misc] = false;
-    types.own_scale[eeg_index] = true;
+    types.set_own_scale(&ChannelKind::MISC, false);
+    types.set_own_scale(&ChannelKind::EEG, true);
     view.set_type_settings(types);
     let got = fitted(&fx, &view, 1000);
-    let celsius = ScaleGroup::Shared(ChannelKind::Misc, UnitKey::Label("°C".into()));
-    let volts = ScaleGroup::Shared(ChannelKind::Misc, UnitKey::Quantity(Quantity::Voltage));
+    let celsius = ScaleGroup::Shared(ChannelKind::MISC, UnitKey::Label("°C".into()));
+    let volts = ScaleGroup::Shared(ChannelKind::MISC, UnitKey::Quantity(Quantity::Voltage));
     assert!(near(got.get(&celsius), 3.0), "{got:?}");
     assert!(near(got.get(&volts), 0.5e-3), "{got:?}");
     for (c, expected) in [(0, 20e-6), (1, 40e-6), (2, 60e-6), (3, 70.0)] {

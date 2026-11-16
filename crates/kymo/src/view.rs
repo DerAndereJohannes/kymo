@@ -10,6 +10,7 @@ use kymo_core::tile::{Direction, SignalVersion, TileKey, View, prefetch, samples
 use kymo_core::{ChannelId, ChannelKind, Quantity, Recording, StreamContent, Unit};
 
 use crate::action::{Action, Gesture};
+use crate::types::{self, TypeSettings};
 
 /// Seconds shown at first and after [`Action::DefaultWindow`], unless set otherwise.
 pub const DEFAULT_SPAN: f64 = 20.0;
@@ -29,39 +30,6 @@ pub const ROWS_STEP: f64 = 1.25;
 pub struct Area {
     pub width: f64,
     pub height: f64,
-}
-
-/// Default amplitude per channel spacing in SI units, as MNE's `scalings` for `raw.plot`.
-fn default_amplitude(kind: ChannelKind) -> f64 {
-    match kind {
-        ChannelKind::Eeg => 20e-6,
-        ChannelKind::Eog => 150e-6,
-        ChannelKind::Ecg => 5e-4,
-        ChannelKind::Emg => 1e-3,
-        ChannelKind::Mag | ChannelKind::RefMeg => 1e-12,
-        ChannelKind::Grad => 4e-11,
-        ChannelKind::Seeg | ChannelKind::Ecog | ChannelKind::Dbs => 1e-4,
-        ChannelKind::Bio => 1e-6,
-        _ => 1.0,
-    }
-}
-
-/// The quantity a channel type's amplitudes are in (volts for EEG); `None` for types of
-/// any quantity (stim, misc, respiration).
-pub fn own_quantity(kind: ChannelKind) -> Option<Quantity> {
-    match kind {
-        ChannelKind::Mag | ChannelKind::RefMeg => Some(Quantity::MagneticField),
-        ChannelKind::Grad => Some(Quantity::FieldGradient),
-        ChannelKind::Eeg
-        | ChannelKind::Eog
-        | ChannelKind::Ecg
-        | ChannelKind::Emg
-        | ChannelKind::Seeg
-        | ChannelKind::Ecog
-        | ChannelKind::Dbs
-        | ChannelKind::Bio => Some(Quantity::Voltage),
-        _ => None,
-    }
 }
 
 /// What a channel's unit measures, as far as sharing an amplitude goes: a quantity kymo
@@ -90,63 +58,15 @@ pub enum ScaleGroup {
 }
 
 /// The amplitude channels of `kind` in units of `unit` start at, SI units: the type's
-/// default ([`default_amplitude`]) in its own quantity, or for a type without one; 1
-/// otherwise (an EEG channel in °C, or in a unit kymo doesn't know, isn't drawn as microvolts).
-fn group_default(kind: ChannelKind, unit: &UnitKey) -> f64 {
-    match (own_quantity(kind), unit) {
-        (None, _) => default_amplitude(kind),
-        (Some(own), UnitKey::Quantity(q)) if own == *q => default_amplitude(kind),
+/// ([`types::start`]) in its own quantity, or for a type without one; 1 otherwise (an EEG
+/// channel in °C, or in a unit kymo doesn't know, isn't drawn as microvolts).
+fn group_default(kind: &ChannelKind, unit: &UnitKey) -> f64 {
+    let start = types::start(kind);
+    match (start.quantity, unit) {
+        (None, _) => start.amplitude,
+        (Some(own), UnitKey::Quantity(q)) if own == *q => start.amplitude,
         _ => 1.0,
     }
-}
-
-/// Per channel type in [`KINDS`] order: which DC removal centers (when it is on) and which
-/// are scaled each channel on its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TypeSettings {
-    pub remove_dc: [bool; KINDS.len()],
-    pub own_scale: [bool; KINDS.len()],
-}
-
-impl Default for TypeSettings {
-    /// DC removal for every type but misc and other biological signals, whose level means
-    /// something (temperature, oxygen saturation); each channel on its own for misc, other
-    /// biological signals and respiration, whose channels measure different things.
-    fn default() -> Self {
-        let off = [ChannelKind::Misc, ChannelKind::Bio, ChannelKind::Stim];
-        let own = [ChannelKind::Misc, ChannelKind::Bio, ChannelKind::Resp];
-        TypeSettings {
-            remove_dc: KINDS.map(|k| !off.contains(&k)),
-            own_scale: KINDS.map(|k| own.contains(&k)),
-        }
-    }
-}
-
-/// The channel types, in the order the sidebar lists them: brain signals, other body
-/// signals, then MEG references, stim and misc.
-pub const KINDS: [ChannelKind; 14] = [
-    ChannelKind::Mag,
-    ChannelKind::Grad,
-    ChannelKind::Eeg,
-    ChannelKind::Seeg,
-    ChannelKind::Ecog,
-    ChannelKind::Dbs,
-    ChannelKind::Eog,
-    ChannelKind::Ecg,
-    ChannelKind::Emg,
-    ChannelKind::Resp,
-    ChannelKind::Bio,
-    ChannelKind::RefMeg,
-    ChannelKind::Stim,
-    ChannelKind::Misc,
-];
-
-/// The index of a channel type in [`KINDS`]; types not listed there count as `Misc`.
-pub fn kind_index(kind: ChannelKind) -> usize {
-    KINDS
-        .iter()
-        .position(|&k| k == kind)
-        .unwrap_or(KINDS.len() - 1)
 }
 
 /// Per channel, the index of the recording's stream it belongs to; all `None` without
@@ -220,13 +140,17 @@ impl ViewState {
     pub fn with_default_span(recording: &Recording, seconds: f64) -> Self {
         let channels = recording.channels();
         let rate = recording.sfreq();
-        // The streams in file order, each by type (in KINDS order), a type's channels
+        // The streams in file order, each by type (see `types::rank`), a type's channels
         // in file order.
         let stream_of = stream_of(recording);
+        let mut first_seen = HashMap::new();
+        for (c, channel) in channels.iter().enumerate() {
+            first_seen.entry(channel.kind.clone()).or_insert(c);
+        }
         let mut order: Vec<ChannelId> = (0..channels.len() as u32).map(ChannelId).collect();
         order.sort_unstable_by_key(|c| {
             let c = c.0 as usize;
-            (stream_of[c], kind_index(channels[c].kind), c)
+            (stream_of[c], types::rank(&channels[c].kind, &first_seen), c)
         });
         let mut place = vec![0; channels.len()];
         for (i, c) in order.iter().enumerate() {
@@ -244,7 +168,7 @@ impl ViewState {
             place,
             stream_of,
             hidden: vec![false; channels.len()],
-            kinds: channels.iter().map(|c| c.kind).collect(),
+            kinds: channels.iter().map(|c| c.kind.clone()).collect(),
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
             units: channels.iter().map(|c| UnitKey::of(&c.unit)).collect(),
             start: 0.0,
@@ -333,12 +257,12 @@ impl ViewState {
     /// Amplitude per channel spacing for a channel type's channels in its own quantity, in
     /// SI units (V for EEG), unless the type is scaled each channel on its own; for a type
     /// without a quantity of its own, of its channels without a unit.
-    pub fn amplitude(&self, kind: ChannelKind) -> f64 {
-        let unit = match own_quantity(kind) {
+    pub fn amplitude(&self, kind: &ChannelKind) -> f64 {
+        let unit = match types::start(kind).quantity {
             Some(quantity) => UnitKey::Quantity(quantity),
             None => UnitKey::Label(String::new()),
         };
-        self.group_amplitude(&ScaleGroup::Shared(kind, unit))
+        self.group_amplitude(&ScaleGroup::Shared(kind.clone(), unit))
     }
 
     /// Amplitude per channel spacing for a scale group, in SI units.
@@ -348,7 +272,7 @@ impl ViewState {
             .get(group)
             .copied()
             .unwrap_or_else(|| match group {
-                ScaleGroup::Shared(kind, unit) => group_default(*kind, unit),
+                ScaleGroup::Shared(kind, unit) => group_default(kind, unit),
                 ScaleGroup::Channel(c) => group_default(self.kind_of(*c), self.unit_of(*c)),
             });
         base * self.scale
@@ -364,10 +288,10 @@ impl ViewState {
     /// each channel on its own, else those of its type whose units measure the same.
     pub fn scale_group(&self, channel: ChannelId) -> ScaleGroup {
         let kind = self.kind_of(channel);
-        if self.types.own_scale[kind_index(kind)] && kind != ChannelKind::Stim {
+        if self.types.own_scale(kind) {
             ScaleGroup::Channel(channel)
         } else {
-            ScaleGroup::Shared(kind, self.unit_of(channel).clone())
+            ScaleGroup::Shared(kind.clone(), self.unit_of(channel).clone())
         }
     }
 
@@ -392,12 +316,11 @@ impl ViewState {
         }
     }
 
-    /// The channel's type (`Misc` for a channel not in the recording).
-    pub fn kind_of(&self, channel: ChannelId) -> ChannelKind {
+    /// The channel's type (misc for a channel not in the recording).
+    pub fn kind_of(&self, channel: ChannelId) -> &ChannelKind {
         self.kinds
             .get(channel.0 as usize)
-            .copied()
-            .unwrap_or(ChannelKind::Misc)
+            .unwrap_or(&ChannelKind::MISC)
     }
 
     pub fn dc_removed(&self) -> bool {
@@ -413,12 +336,11 @@ impl ViewState {
     /// Whether DC removal centers `channel`: it is on, the channel's type is one it
     /// centers, and the channel isn't a stim channel.
     pub fn dc_applies(&self, channel: ChannelId) -> bool {
-        let kind = self.kind_of(channel);
-        self.dc && kind != ChannelKind::Stim && self.types.remove_dc[kind_index(kind)]
+        self.dc && self.types.remove_dc(self.kind_of(channel))
     }
 
-    pub fn type_settings(&self) -> TypeSettings {
-        self.types
+    pub fn type_settings(&self) -> &TypeSettings {
+        &self.types
     }
 
     /// The per-type settings from now on (the app's settings decide). Amplitudes fitted to
@@ -449,9 +371,9 @@ impl ViewState {
 
     /// How many channels of a group (see [`group_of`](Self::group_of)) are shown, and how
     /// many it has.
-    pub fn group_shown(&self, stream: Option<usize>, kind: ChannelKind) -> (usize, usize) {
+    pub fn group_shown(&self, stream: Option<usize>, kind: &ChannelKind) -> (usize, usize) {
         (0..self.order.len())
-            .filter(|&c| self.group(c) == (stream, kind))
+            .filter(|&c| self.in_group(c, stream, kind))
             .fold((0, 0), |(shown, all), c| {
                 (shown + usize::from(!self.hidden[c]), all + 1)
             })
@@ -657,9 +579,9 @@ impl ViewState {
 
     /// Shows or hides every channel of a group (see [`group_of`](Self::group_of)), as
     /// [`set_shown`](Self::set_shown).
-    pub fn set_group_shown(&mut self, stream: Option<usize>, kind: ChannelKind, shown: bool) {
+    pub fn set_group_shown(&mut self, stream: Option<usize>, kind: &ChannelKind, shown: bool) {
         for c in 0..self.order.len() {
-            if self.group(c) == (stream, kind) {
+            if self.in_group(c, stream, kind) {
                 self.hidden[c] = !shown;
             }
         }
@@ -805,7 +727,12 @@ impl ViewState {
 
     /// A channel's (by index) group, as [`group_of`](Self::group_of).
     fn group(&self, c: usize) -> (Option<usize>, ChannelKind) {
-        (self.stream_of[c], self.kinds[c])
+        (self.stream_of[c], self.kinds[c].clone())
+    }
+
+    /// Whether a channel (by index) is in the group of `stream` and `kind`.
+    fn in_group(&self, c: usize, stream: Option<usize>, kind: &ChannelKind) -> bool {
+        self.stream_of[c] == stream && self.kinds[c] == *kind
     }
 
     fn clamp_span(&mut self) {

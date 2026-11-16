@@ -28,30 +28,62 @@ impl ChInfo {
         f64::from(self.range) * f64::from(self.cal)
     }
 
-    /// kymo's kind for the channel: MNE's types, except that stim channels whose
+    /// The channel's type: MNE's, from its kind and, for MEG, EEG, fNIRS and eye tracking
+    /// channels, its unit or coil (as MNE's `channel_type`), except that stim channels whose
     /// calibration isn't 1 are misc (trigger lines in volts, analog inputs).
     pub fn kind(&self) -> ChannelKind {
-        match self.kind {
-            1 if self.unit == unit::T_M => ChannelKind::Grad,
-            1 => ChannelKind::Mag,
-            2 => ChannelKind::Eeg,
-            3 if self.calibration() == 1.0 => ChannelKind::Stim,
-            102 => ChannelKind::Bio,
-            202 => ChannelKind::Eog,
-            301 => ChannelKind::RefMeg,
-            302 => ChannelKind::Emg,
-            402 => ChannelKind::Ecg,
-            602 => ChannelKind::Resp,
-            802 => ChannelKind::Seeg,
-            803 => ChannelKind::Dbs,
-            902 => ChannelKind::Ecog,
-            _ => ChannelKind::Misc,
-        }
+        let mne = match self.kind {
+            1 if self.unit == unit::T_M => "grad",
+            1 => "mag",
+            2 if self.coil_type == coil::EEG_CSD => "csd",
+            2 => "eeg",
+            3 if self.calibration() == 1.0 => "stim",
+            102 => "bio",
+            202 => "eog",
+            301 => "ref_meg",
+            302 => "emg",
+            402 => "ecg",
+            602 => "resp",
+            700..=709 => "chpi",
+            802 => "seeg",
+            803 => "dbs",
+            900 => "syst",
+            902 => "ecog",
+            910 => "ias",
+            920 => "exci",
+            1000 => "dipole",
+            1001 => "gof",
+            1100 => match self.coil_type {
+                300 => "hbo",
+                301 => "hbr",
+                302 => "fnirs_cw_amplitude",
+                303 => "fnirs_od",
+                304 => "fnirs_fd_ac_amplitude",
+                305 => "fnirs_fd_phase",
+                306 => "fnirs_td_gated_amplitude",
+                307 => "fnirs_td_moments_intensity",
+                308 => "fnirs_td_moments_mean",
+                309 => "fnirs_td_moments_variance",
+                _ => "misc",
+            },
+            1200 => "temperature",
+            1300 => "gsr",
+            1400 if self.coil_type == coil::EYETRACK_PUPIL => "pupil",
+            1400 => "eyegaze",
+            _ => "misc",
+        };
+        ChannelKind::named(mne)
     }
 
     pub fn unit(&self) -> Unit {
         Unit::from_label(unit::label(self.unit))
     }
+}
+
+/// FIFF's coil types that tell channel types apart.
+mod coil {
+    pub const EEG_CSD: i32 = 6;
+    pub const EYETRACK_PUPIL: i32 = 401;
 }
 
 /// FIFF's unit codes.

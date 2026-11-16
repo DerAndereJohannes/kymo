@@ -25,15 +25,16 @@ use crate::render::{Frame, Scene};
 use crate::scale;
 use crate::scale_bar::{ScaleBar, scale_bars};
 use crate::stim_annotations::{StimAnnotations, Update};
+use crate::types::TypeSettings;
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{
     AnnotationPanel, DescriptionField, HeaderSource, description_field_id, header_panel,
     within_width,
 };
-use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
+use crate::ui::palette::{annotation_color, bad_color, type_color};
 use crate::ui::{elide_middle, readout, scrollbar, status};
-use crate::view::{Area, TypeSettings, ViewState};
+use crate::view::{Area, ViewState};
 
 /// Narrowest the sidebar can be dragged.
 const SIDEBAR_MIN_WIDTH: f32 = 200.0;
@@ -204,8 +205,8 @@ pub struct Viewer {
     scale_bars: Vec<(ScaleBar, Rect)>,
     /// Whether [`Action::AutoScale`] waits for a complete frame.
     auto_scale: bool,
-    /// Colors picked per channel type.
-    type_colors: TypeColors,
+    /// What was set per channel type (colors here; the view has the rest).
+    types: TypeSettings,
     /// Whether annotation mode is on: dragging creates annotations, clicking selects.
     editing: bool,
     /// The selected annotation, only in annotation mode; never a stim annotation or a
@@ -243,7 +244,7 @@ impl Viewer {
             .recording
             .channels()
             .iter()
-            .any(|c| c.kind == ChannelKind::Stim && c.events);
+            .any(|c| c.kind == ChannelKind::STIM && c.events);
         Viewer {
             stim: has_stim.then(|| StimAnnotations::new(stim)),
             summary: document.summary(),
@@ -269,7 +270,7 @@ impl Viewer {
             show_scale_bars: true,
             scale_bars: Vec::new(),
             auto_scale: false,
-            type_colors: TypeColors::default(),
+            types: TypeSettings::default(),
             editing: false,
             selected: None,
             outline: None,
@@ -505,11 +506,8 @@ impl Viewer {
     /// Which types DC removal centers and which are scaled each channel on its own, from now
     /// on.
     pub fn set_type_settings(&mut self, types: TypeSettings) {
-        self.view.set_type_settings(types);
-    }
-
-    pub fn set_type_colors(&mut self, colors: TypeColors) {
-        self.type_colors = colors;
+        self.view.set_type_settings(types.clone());
+        self.types = types;
     }
 
     /// Seconds [`Action::DefaultWindow`] shows from now on.
@@ -785,7 +783,7 @@ impl Viewer {
                                 recording: self.serial,
                                 document: &self.document,
                                 summary: &self.summary,
-                                type_colors: &self.type_colors,
+                                types: &self.types,
                                 platform: keymap.platform(),
                             },
                             &mut self.view,
@@ -887,7 +885,7 @@ impl Viewer {
                 let channel = self.hover.channel.map(|id| {
                     let info = rec.channel(id);
                     let view = self.view.tile_view(self.width_px.max(1));
-                    let (unit, factor) = readout::display_unit(info);
+                    let (unit, factor) = readout::display_unit(self.view.kind_of(id), &info.unit);
                     let reading = readout::read(rec, service.cache(), &view, id, time).map(|r| {
                         let r = r.relative_to(self.baseline(id)).scaled(factor);
                         status::reading_text(r, &unit)
@@ -1254,7 +1252,7 @@ impl Viewer {
             for piece in pieces {
                 painter.rect_filled(piece.expand(halo), 0.0, background);
             }
-            let color = type_color(bar.kind, &self.type_colors, visuals);
+            let color = type_color(&bar.kind, &self.types, visuals);
             for piece in pieces {
                 painter.rect_filled(piece, 0.0, color);
             }
@@ -1278,11 +1276,7 @@ impl Viewer {
         if self.view.is_bad(channel) {
             bad_color(visuals)
         } else {
-            type_color(
-                self.document.recording.channel(channel).kind,
-                &self.type_colors,
-                visuals,
-            )
+            type_color(self.view.kind_of(channel), &self.types, visuals)
         }
     }
 

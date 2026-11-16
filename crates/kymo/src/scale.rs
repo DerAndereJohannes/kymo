@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use kymo_core::tile::{Level, Query, Tile, TileData, samples_in};
-use kymo_core::{ChannelId, ChannelKind, Recording};
+use kymo_core::{ChannelId, Recording};
 
 use crate::view::{ScaleGroup, ViewState};
 
@@ -33,7 +33,7 @@ pub fn fit(
     let wanted: HashMap<ChannelId, ScaleGroup> = view
         .visible_channels()
         .iter()
-        .filter(|&&c| !view.is_bad(c) && view.kind_of(c) != ChannelKind::Stim)
+        .filter(|&&c| !view.is_bad(c) && !view.kind_of(c).is_stim())
         .map(|&c| (c, view.scale_group(c)))
         .collect();
     let time = view.time();

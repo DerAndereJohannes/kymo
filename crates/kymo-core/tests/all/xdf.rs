@@ -629,8 +629,8 @@ proptest! {
                 format!("{}_{i}", stream.name)
             };
             prop_assert_eq!(&channel.name, &name);
-            let kind = if spec.channels[c].trigger { ChannelKind::Stim } else { ChannelKind::Eeg };
-            prop_assert_eq!(channel.kind, if stream.described { kind } else { ChannelKind::Misc });
+            let kind = if spec.channels[c].trigger { ChannelKind::STIM } else { ChannelKind::EEG };
+            prop_assert_eq!(channel.kind.clone(), if stream.described { kind } else { ChannelKind::MISC });
         }
         let reads: Vec<(usize, Range<u64>)> = case
             .reads
@@ -648,7 +648,7 @@ proptest! {
 
 #[test]
 fn presets_open_with_their_channels() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     for (preset, warnings) in [
         ("xdf-float32", 0),
         ("xdf-mixed", 1),
@@ -705,7 +705,10 @@ fn presets_open_with_their_channels() {
         Some("\"BrainAmp Markers\" (Markers), 1 × string, irregular, 36 samples: annotations")
     );
     for channel in rec.channels() {
-        assert_eq!((channel.kind, channel.unit.to_si), (Eeg, Some(1e-6)));
+        assert_eq!(
+            (channel.kind.clone(), channel.unit.to_si),
+            (Eeg, Some(1e-6))
+        );
         assert_eq!(channel.unit.quantity(), Some(Quantity::Voltage));
     }
 
@@ -725,23 +728,23 @@ fn presets_open_with_their_channels() {
     let channels: Vec<(&str, ChannelKind, &str)> = rec
         .channels()
         .iter()
-        .map(|c| (c.name.as_str(), c.kind, c.unit.label.as_str()))
+        .map(|c| (c.name.as_str(), c.kind.clone(), c.unit.label.as_str()))
         .collect();
     assert_eq!(
         channels,
         [
             // Labels two streams of one name share get the stream type.
-            ("ACC X", Misc, "g"),
-            ("ACC Y", Misc, "g"),
-            ("GYRO X", Misc, "dps"),
-            ("GYRO Y", Misc, "dps"),
+            ("ACC X", ChannelKind::named("accelerometer"), "g"),
+            ("ACC Y", ChannelKind::named("accelerometer"), "g"),
+            ("GYRO X", ChannelKind::named("gyroscope"), "dps"),
+            ("GYRO Y", ChannelKind::named("gyroscope"), "dps"),
             ("Fz", Eeg, "microvolts"),
             ("Cz", Eeg, "microvolts"),
             ("Pz", Eeg, "\u{b5}V"),
             ("EOG", Eog, "mV"),
             ("EMG", Emg, "uV"),
             ("DC", Misc, "nV"),
-            ("Temp", Misc, "degrees celsius"),
+            ("Temp", ChannelKind::named("temperature"), "degrees celsius"),
             // An undescribed stream.
             ("Aux_0", Misc, ""),
             ("Aux_1", Misc, ""),
@@ -765,7 +768,7 @@ fn presets_open_with_their_channels() {
     assert_eq!(rec.channels()[10].offset, spec_first(&rec, 10));
 
     let rec = open(TempFile::preset("xdf-events").path());
-    let kinds: Vec<ChannelKind> = rec.channels().iter().map(|c| c.kind).collect();
+    let kinds: Vec<ChannelKind> = rec.channels().iter().map(|c| c.kind.clone()).collect();
     // A Trigger channel, the channel of a regular Markers stream, and the irregular
     // "Ints" and "Mouse" pairs, of types MNE doesn't have.
     assert_eq!(kinds, [Eeg, Eeg, Eeg, Stim, Stim, Misc, Misc, Misc]);
@@ -1239,7 +1242,7 @@ fn streams_start_at_their_first_timestamp() {
 
 #[test]
 fn labels_kinds_and_units() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     let described = |labels: &[(&str, &str, &str)]| -> Described {
         labels
             .iter()
@@ -1304,13 +1307,20 @@ fn labels_kinds_and_units() {
     let got: Vec<(&str, ChannelKind, &str, Option<f64>)> = rec
         .channels()
         .iter()
-        .map(|c| (c.name.as_str(), c.kind, c.unit.label.as_str(), c.unit.to_si))
+        .map(|c| {
+            (
+                c.name.as_str(),
+                c.kind.clone(),
+                c.unit.label.as_str(),
+                c.unit.to_si,
+            )
+        })
         .collect();
     assert_eq!(
         got,
         [
             // Streams 2 and 3 share its name, but not its type.
-            ("ACC X", Misc, "g", None),
+            ("ACC X", ChannelKind::named("accelerometer"), "g", None),
             ("Muse_1", Eeg, "microvolts", Some(1e-6)),
             // Streams 2 and 3 share name and type.
             ("stream 2 X", Misc, "dps", None),
@@ -1322,7 +1332,8 @@ fn labels_kinds_and_units() {
             ("C1", Stim, "uV", Some(1e-6)),
             ("C2", Stim, "", None),
             ("mm", Misc, "mm", None),
-            ("deg", Misc, "deg", None),
+            // A type as written.
+            ("deg", ChannelKind::named("bogus"), "deg", None),
             ("Few_0", Misc, "", None),
             ("Few_1", Misc, "", None),
         ]

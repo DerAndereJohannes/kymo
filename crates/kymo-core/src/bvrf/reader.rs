@@ -118,7 +118,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         .zip(&columns)
         .map(|(channel, &column)| {
             let decoder = Decoder::new(parsed.encoding, ByteOrder::Little);
-            if !decoder.uses_reference() || channel.kind == ChannelKind::Stim || samples == 0 {
+            if !decoder.uses_reference() || channel.kind == ChannelKind::STIM || samples == 0 {
                 return decoder;
             }
             let first = map.get(column..).unwrap_or_default();

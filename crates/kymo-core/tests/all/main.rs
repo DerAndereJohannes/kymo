@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 mod common;
+mod kinds;
 
 mod annotation_file;
 mod annotations;

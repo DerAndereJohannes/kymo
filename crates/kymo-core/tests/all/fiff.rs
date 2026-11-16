@@ -237,7 +237,7 @@ proptest! {
 
 #[test]
 fn presets_open_with_their_channels() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     for preset in [
         "fif-float32-meg",
         "fif-int16-skips",
@@ -312,7 +312,7 @@ fn presets_open_with_their_channels() {
         open(TempFile::preset(preset).path())
             .channels()
             .iter()
-            .map(|c| (c.kind, c.unit.label.clone()))
+            .map(|c| (c.kind.clone(), c.unit.label.clone()))
             .collect()
     };
     let k = |kind, unit: &str| (kind, unit.to_owned());
@@ -668,8 +668,42 @@ fn maxshield_and_continuous_data_blocks() {
 }
 
 #[test]
+fn coils_tell_types_of_one_kind_apart() {
+    // (FIFF kind, coil type) and the type, as MNE's `channel_type` gives it.
+    let cases = [
+        (2, 1, "eeg"),
+        (2, 6, "csd"),
+        (1100, 300, "hbo"),
+        (1100, 301, "hbr"),
+        (1100, 302, "fnirs_cw_amplitude"),
+        (1100, 303, "fnirs_od"),
+        (1100, 305, "fnirs_fd_phase"),
+        (1400, 400, "eyegaze"),
+        (1400, 401, "pupil"),
+    ];
+    let bytes = file(
+        |t| {
+            t.int(kind::NCHAN, cases.len() as i32)
+                .float(kind::SFREQ, 100.0);
+            for (k, &(kind, coil_type, _)) in cases.iter().enumerate() {
+                let ch = ChInfo {
+                    coil_type,
+                    ..ChInfo::new(format!("C{k}"), kind, 107, 1.0)
+                };
+                t.ch_info(&ch);
+            }
+        },
+        |_| {},
+    );
+    let rec = Built::new(&bytes).open();
+    let got: Vec<&str> = rec.channels().iter().map(|c| c.kind.key()).collect();
+    let expected: Vec<&str> = cases.iter().map(|&(_, _, key)| key).collect();
+    assert_eq!(got, expected);
+}
+
+#[test]
 fn channel_kinds_units_and_names() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     // (FIFF kind, unit, calibration) and the expected kind and unit.
     let cases = [
         (1, 112, 1.0, Mag, "T"),
@@ -689,11 +723,15 @@ fn channel_kinds_units_and_names() {
         (803, 107, 1.0, Dbs, "V"),
         (902, 107, 1.0, Ecog, "V"),
         (201, 112, 1.0, Misc, "T"),
-        (900, -1, 1.0, Misc, ""),
+        (900, -1, 1.0, ChannelKind::named("syst"), ""),
+        // fNIRS without a coil MNE knows.
         (1100, 114, 1.0, Misc, "\u{b0}C"),
         (502, 118, 1.0, Misc, "s\u{b2}"),
         // Eye tracking positions, in pixels.
-        (1400, 210, 1.0, Misc, "px"),
+        (1400, 210, 1.0, ChannelKind::named("eyegaze"), "px"),
+        (1200, 114, 1.0, ChannelKind::named("temperature"), "\u{b0}C"),
+        (1300, 110, 1.0, ChannelKind::named("gsr"), "S"),
+        (700, -1, 1.0, ChannelKind::named("chpi"), ""),
     ];
     let bytes = file(
         |t| {
@@ -708,11 +746,11 @@ fn channel_kinds_units_and_names() {
         |_| {},
     );
     let rec = Built::new(&bytes).open();
-    for (channel, &(_, _, cal, kind, unit)) in rec.channels().iter().zip(&cases) {
-        assert_eq!(channel.kind, kind, "{}", channel.name);
-        assert_eq!(channel.unit.label, unit, "{}", channel.name);
+    for (channel, (_, _, cal, kind, unit)) in rec.channels().iter().zip(&cases) {
+        assert_eq!(channel.kind, *kind, "{}", channel.name);
+        assert_eq!(channel.unit.label, *unit, "{}", channel.name);
         // The unit multiplier doesn't scale values, as in MNE.
-        assert_eq!(channel.gain, f64::from(cal), "{}", channel.name);
+        assert_eq!(channel.gain, f64::from(*cal), "{}", channel.name);
     }
 
     // Extended channel info replaces the struct's fields (long names); a count that
@@ -1234,22 +1272,22 @@ fn only_the_combined_stim_channel_has_events() {
             .open()
             .channels()
             .iter()
-            .map(|c| (c.kind, c.events, c.trigger_mask))
+            .map(|c| (c.kind.clone(), c.events, c.trigger_mask))
             .collect::<Vec<_>>()
     };
-    use ChannelKind::*;
-    let combined = (Stim, true, Some(0xffff));
-    let line = (Stim, false, None);
-    // STI101 wins over STI 014, which is then one more line it combines.
+    use crate::kinds::*;
+    let combined = || (Stim, true, Some(0xffff));
+    let line = || (Stim, false, None);
+    // STI101 wins over STI 014, which is then one more line() it combines.
     assert_eq!(
         stim(&[("STI001", 1.0), ("STI 014", 1.0), ("STI101", 1.0)]),
-        [line, line, combined]
+        [line(), line(), combined()]
     );
     assert_eq!(
         stim(&[("STI 001", 1.0), ("STI 014", 1.0)]),
-        [line, combined]
+        [line(), combined()]
     );
-    // Without a combined stim channel (here STI 014 in volts, a misc channel), every stim
+    // Without a combined() stim channel (here STI 014 in volts, a misc channel), every stim
     // channel has events, unmasked.
     assert_eq!(
         stim(&[("DIN1", 1.0), ("STI 014", 0.5)]),

@@ -67,7 +67,7 @@ fn native(spec: &Spec, c: usize, stim: bool) -> SampleType {
 }
 
 fn is_stim(rec: &Recording, c: usize) -> bool {
-    rec.channels()[c].kind == ChannelKind::Stim
+    rec.channels()[c].kind == ChannelKind::STIM
 }
 
 fn physical(rec: &Recording, grid: GridId, channels: &[ChannelId], range: Range<u64>) -> Vec<f32> {
@@ -263,7 +263,7 @@ proptest! {
 
 #[test]
 fn presets_open_with_their_channels_and_events() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     for preset in ["gdf1-float64", "gdf2-int32", "gdf2-mixed"] {
         let spec = Spec::preset(preset).unwrap();
         let file = TempFile::written(&spec);
@@ -336,7 +336,7 @@ fn presets_open_with_their_channels_and_events() {
         let channels: Vec<_> = rec
             .channels()
             .iter()
-            .map(|c| (c.kind, c.unit.label.clone(), c.prefilter.clone()))
+            .map(|c| (c.kind.clone(), c.unit.label.clone(), c.prefilter.clone()))
             .collect();
         (channels, rec)
     };
@@ -557,40 +557,40 @@ fn units_from_codes_and_texts() {
         (
             c.unit.label.clone(),
             c.unit.to_si,
-            c.kind,
+            c.kind.clone(),
             rec.warnings().to_vec(),
         )
     };
     assert_eq!(
         unit(4256 + 18, b""),
-        ("mV".into(), Some(1e-3), ChannelKind::Eeg, vec![])
+        ("mV".into(), Some(1e-3), ChannelKind::EEG, vec![])
     );
     assert_eq!(
         unit(4256, b""),
-        ("V".into(), Some(1.0), ChannelKind::Eeg, vec![])
+        ("V".into(), Some(1.0), ChannelKind::EEG, vec![])
     );
     assert_eq!(
         unit(4256 + 20, b""),
-        ("nV".into(), Some(1e-9), ChannelKind::Eeg, vec![])
+        ("nV".into(), Some(1e-9), ChannelKind::EEG, vec![])
     );
     // Teslas make a magnetometer.
     assert_eq!(
         unit(65504 + 22, b""),
-        ("fT".into(), Some(1e-15), ChannelKind::Mag, vec![])
+        ("fT".into(), Some(1e-15), ChannelKind::MAG, vec![])
     );
     assert_eq!(
         unit(512, b""),
-        (String::new(), None, ChannelKind::Eeg, vec![])
+        (String::new(), None, ChannelKind::EEG, vec![])
     );
-    assert_eq!(unit(544, b""), ("%".into(), None, ChannelKind::Eeg, vec![]));
+    assert_eq!(unit(544, b""), ("%".into(), None, ChannelKind::EEG, vec![]));
     assert_eq!(
         unit(6048, b""),
-        ("\u{b0}C".into(), None, ChannelKind::Eeg, vec![])
+        ("\u{b0}C".into(), None, ChannelKind::EEG, vec![])
     );
     // No code: the obsolete text field.
     assert_eq!(
         unit(0, b"uV"),
-        ("uV".into(), Some(1e-6), ChannelKind::Eeg, vec![])
+        ("uV".into(), Some(1e-6), ChannelKind::EEG, vec![])
     );
     // An unknown code or prefix: the text, with a warning.
     for code in [4256 + 11, 32, 512 + 18] {
@@ -670,7 +670,7 @@ fn status_channels_are_masked() {
 
 #[test]
 fn kinds_from_labels() {
-    use ChannelKind::*;
+    use crate::kinds::*;
     let labels = [
         ("EEG:C3", Eeg),
         ("EOG:ch01", Eog),
@@ -687,7 +687,7 @@ fn kinds_from_labels() {
         .collect();
     let spec = Spec::new(V2, channels, 1.0, 2);
     let rec = open(TempFile::written(&spec).path()).0;
-    let kinds: Vec<_> = rec.channels().iter().map(|c| c.kind).collect();
+    let kinds: Vec<_> = rec.channels().iter().map(|c| c.kind.clone()).collect();
     assert_eq!(kinds, labels.map(|(_, k)| k));
     // Names keep their labels.
     assert_eq!(rec.channels()[1].name, "EOG:ch01");
@@ -1048,7 +1048,7 @@ fn missing_samples_are_nan() {
     for (c, channel) in rec.channels().iter().enumerate() {
         let got = physical(&rec, channel.grid, &[ChannelId(c as u32)], 0..3);
         let s = spec.channels[c].stored.unwrap();
-        let stim = channel.kind == ChannelKind::Stim;
+        let stim = channel.kind == ChannelKind::STIM;
         // Unsigned values and stim codes have no missing value.
         assert_eq!(got[1].is_nan(), !stim && s != Stored::U16, "{s:?} {got:?}");
         assert!(!got[0].is_nan() && !got[2].is_nan(), "{s:?} {got:?}");

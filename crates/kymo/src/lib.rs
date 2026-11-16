@@ -24,6 +24,7 @@ pub mod scale_bar;
 pub mod settings;
 pub mod shortcuts;
 pub mod stim_annotations;
+pub mod types;
 pub mod ui;
 pub mod view;
 pub mod viewer;

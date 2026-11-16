@@ -258,11 +258,11 @@ fn presets_open_with_their_channels_and_events() {
         let channels: Vec<_> = rec
             .channels()
             .iter()
-            .map(|c| (c.kind, c.unit.label.clone(), c.gain))
+            .map(|c| (c.kind.clone(), c.unit.label.clone(), c.gain))
             .collect();
         (channels, rec.warnings().to_vec(), rec)
     };
-    use ChannelKind::*;
+    use crate::kinds::*;
     let uv = |kind| (kind, "\u{b5}V".to_owned(), 1.0);
     let (fdt, warnings, _) = channels("eeglab-fdt");
     assert_eq!(
@@ -276,14 +276,11 @@ fn presets_open_with_their_channels_and_events() {
             uv(Eog),
             uv(Ecg),
             uv(Resp),
-            // A type MNE doesn't have: from the name.
-            uv(Eeg),
+            // A type as written.
+            uv(ChannelKind::named("Light")),
         ]
     );
-    assert_eq!(
-        warnings,
-        ["channel types that aren't MNE's (\"LIGHT\") are read from the channel names"]
-    );
+    assert!(warnings.is_empty());
     let (single, warnings, _) = channels("eeglab-set-single");
     assert_eq!(single, [uv(Eeg), uv(Eeg), uv(Eog), uv(Emg)]);
     assert!(warnings.is_empty());
@@ -520,7 +517,7 @@ fn channels_from_chanlocs() {
         ("STI 014", "stim"),
         ("X1", "MISC"),
         ("EKG", ""),
-        // MNE's "meg" has no kind: the name decides.
+        // Types as written: one kymo doesn't know, one it knows (EDF+'s).
         ("MEG", "meg"),
         ("Light", "LIGHT"),
         // The type wins over the name.
@@ -539,9 +536,16 @@ fn channels_from_chanlocs() {
     let got: Vec<(&str, ChannelKind, &str, f64)> = rec
         .channels()
         .iter()
-        .map(|c| (c.name.as_str(), c.kind, c.unit.label.as_str(), c.gain))
+        .map(|c| {
+            (
+                c.name.as_str(),
+                c.kind.clone(),
+                c.unit.label.as_str(),
+                c.gain,
+            )
+        })
         .collect();
-    use ChannelKind::*;
+    use crate::kinds::*;
     let uv = "\u{b5}V";
     assert_eq!(
         got,
@@ -552,17 +556,16 @@ fn channels_from_chanlocs() {
             ("STI 014", Stim, "", 1.0),
             ("X1", Misc, uv, 1.0),
             ("EKG", Ecg, uv, 1.0),
-            ("MEG", Eeg, uv, 1.0),
-            ("Light", Eeg, uv, 1.0),
+            ("MEG", ChannelKind::named("meg"), uv, 1.0),
+            ("Light", ChannelKind::named("Light"), uv, 1.0),
             ("HEOG", Eeg, uv, 1.0),
             ("EEG 009", Eog, uv, 1.0),
             ("Pulse", Bio, uv, 1.0),
         ]
     );
-    assert_eq!(
-        rec.warnings(),
-        ["channel types that aren't MNE's (\"meg\", \"LIGHT\") are read from the channel names"]
-    );
+    assert_eq!(rec.channels()[6].kind.name(), "meg");
+    assert_eq!(rec.channels()[7].kind.name(), "Light");
+    assert!(rec.warnings().is_empty());
 
     // Without chanlocs, MNE's names.
     let (rec, _) = Written::new(with(vec![("chanlocs", Value::Empty)]))

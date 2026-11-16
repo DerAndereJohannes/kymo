@@ -286,7 +286,7 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
         };
 
         let mut decoder = Decoder::new(encoding, ByteOrder::Little);
-        if kind != ChannelKind::Stim {
+        if kind != ChannelKind::STIM {
             // Overflow detection, as biosig reads GDF: samples at or beyond the digital
             // minimum and maximum are missing (the spec's invalid values, and the saturated
             // ones; biosig writes NaN as the type's smallest value). Stim channels keep their
@@ -296,7 +296,7 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
         // A Status channel holds BioSemi's status word, as in BDF files converted to GDF:
         // trigger codes in the low 16 bits, the amplifier's own status above. Float samples
         // get no mask, since masking a float32 can lose bits.
-        let trigger_mask = (kind == ChannelKind::Stim
+        let trigger_mask = (kind == ChannelKind::STIM
             && label.eq_ignore_ascii_case("status")
             && decoder.native() != SampleType::F32)
             .then_some(0xffff);

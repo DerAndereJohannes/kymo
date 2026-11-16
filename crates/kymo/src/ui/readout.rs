@@ -5,7 +5,9 @@ use kymo_core::tile::{
     CHANNEL_BLOCK, ChannelBlock, Level, Tile, TileCache, TileData, TileKey, View, level_at,
     max_level,
 };
-use kymo_core::{Channel, ChannelId, ChannelKind, Grid, Quantity, Recording};
+use kymo_core::{ChannelId, ChannelKind, Grid, Quantity, Recording, Unit};
+
+use crate::types;
 
 /// What a channel shows at one time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,33 +46,26 @@ impl Reading {
 /// if the view draws samples, else the envelope of the bucket holding `time`. Read from
 /// the view's tile or, as the trace area does, its nearest cached coarser tile. `None` in
 /// gaps, for NaN, outside the recording, or when no tile is cached.
-/// The unit a channel's readings are shown in, and the factor from the channel's own unit
-/// to it. As MNE shows them: fT for magnetic fields, fT/cm for field gradients, mV for
-/// sEEG and µV for the other voltage types, whatever the file stores (teslas, volts, ...).
+/// The unit the readings of a channel of type `kind` in `unit` are shown in, and the factor
+/// from `unit` to it. As MNE shows them: fT for magnetic fields, fT/cm for field gradients,
+/// mV for sEEG and µV for the other types whose own quantity is voltage
+/// ([`types::start`]), whatever the file stores (teslas, volts, ...).
 /// Channels of other types and units the type has no unit for keep their own unit, as its
 /// symbol ("microvolts" as µV). Stim channels, whose values are codes, have none.
-pub fn display_unit(channel: &Channel) -> (String, f64) {
-    if channel.kind == ChannelKind::Stim {
+pub fn display_unit(kind: &ChannelKind, unit: &Unit) -> (String, f64) {
+    if kind.is_stim() {
         return (String::new(), 1.0);
     }
-    let own = (channel.unit.symbol(), 1.0);
-    let (Some(quantity), Some(to_si)) = (channel.unit.quantity(), channel.unit.to_si) else {
+    let own = (unit.symbol(), 1.0);
+    let (Some(quantity), Some(to_si)) = (unit.quantity(), unit.to_si) else {
         return own;
     };
-    let target = match (quantity, channel.kind) {
-        (Quantity::MagneticField, _) => ("fT", 1e-15),
-        (Quantity::FieldGradient, _) => ("fT/cm", 1e-13),
-        (Quantity::Voltage, ChannelKind::Seeg) => ("mV", 1e-3),
-        (
-            Quantity::Voltage,
-            ChannelKind::Eeg
-            | ChannelKind::Eog
-            | ChannelKind::Ecg
-            | ChannelKind::Emg
-            | ChannelKind::Ecog
-            | ChannelKind::Dbs
-            | ChannelKind::Bio,
-        ) => ("\u{b5}V", 1e-6),
+    let voltage_type = types::start(kind).quantity == Some(Quantity::Voltage);
+    let target = match quantity {
+        Quantity::MagneticField => ("fT", 1e-15),
+        Quantity::FieldGradient => ("fT/cm", 1e-13),
+        Quantity::Voltage if *kind == ChannelKind::SEEG => ("mV", 1e-3),
+        Quantity::Voltage if voltage_type => ("\u{b5}V", 1e-6),
         _ => return own,
     };
     (target.0.to_owned(), to_si / target.1)

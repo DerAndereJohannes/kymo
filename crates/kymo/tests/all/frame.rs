@@ -573,9 +573,9 @@ fn the_scene_follows_the_view() {
 fn stim_rows_clip_and_draw_codes() {
     let len = 60_000u64;
     let mut eeg = channel("A1", 0, 0.5, 100.0);
-    eeg.kind = ChannelKind::Eeg;
+    eeg.kind = ChannelKind::EEG;
     let mut stim = channel("Status", 0, 2.0, 1e6);
-    stim.kind = ChannelKind::Stim;
+    stim.kind = ChannelKind::STIM;
     stim.trigger_mask = Some(0xffff);
     let codes: Vec<f64> = (0..len).map(|i| ((i / 100) % 4 * 85) as f64).collect();
     let raw: Vec<f64> = codes.iter().map(|&c| f64::from(1 << 20) + c).collect();

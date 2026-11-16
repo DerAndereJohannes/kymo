@@ -91,8 +91,9 @@ EEGLAB, where Kymo deliberately differs from MNE:
 - Float64 samples are read relative to each channel's first sample (see "Readers" in
   docs/design.md), so their float32 precision follows their distance from it, not their
   size. Those channels may differ by float32 precision of that reference too.
-- Channel kinds are not compared: Kymo reads the kinds of channels without an MNE type
-  from their names, as for BrainVision (MNE makes them EEG), and the types mag, grad and
+- Channel kinds are not compared: Kymo keeps each channel's type as written (a type MNE
+  doesn't have is a type of its own, MNE makes it EEG), reads the types of channels without
+  one from their names, as for BrainVision (MNE makes them EEG), and the types mag, grad and
   ref_meg as such (MNE makes them EEG too).
 
 GDF, where Kymo deliberately differs from MNE:
@@ -530,25 +531,6 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
 
 
 XDF_EVENT_TYPES = {"marker", "markers", "event", "events", "trigger", "triggers", "stim"}
-# Kymo's kinds of MNE's channel types; MNE's other types are misc.
-KYMO_KINDS = {
-    "eeg": "Eeg",
-    "eog": "Eog",
-    "ecg": "Ecg",
-    "emg": "Emg",
-    "stim": "Stim",
-    "misc": "Misc",
-    "mag": "Mag",
-    "grad": "Grad",
-    "ref_meg": "RefMeg",
-    "seeg": "Seeg",
-    "ecog": "Ecog",
-    "dbs": "Dbs",
-    "resp": "Resp",
-    "bio": "Bio",
-}
-
-
 def xdf_field(info, key):
     value = info.get(key) or [None]
     return value[0] if value[0] is not None else ""
@@ -791,12 +773,14 @@ def compare_xdf(path, tmp, header, annotations, windows, annotation_files=False)
                 or (label and ch["name"].endswith(" " + label))
             ):
                 problems.append(f"stream {sid} channel {k}: name {ch['name']!r}, label {label!r}")
+            # The type as written; one Kymo knows by any of its spellings (header
+            # "known_kinds") as Kymo's; none as misc.
             kind = kind.strip().lower()
             if discrete or kind in ("stim", "trigger", "triggers"):
-                expected = "Stim"
+                expected = "stim"
             else:
-                expected = KYMO_KINDS.get(kind, "Misc")
-            if ch["kind"] != expected:
+                expected = header["known_kinds"].get(kind, kind or "misc")
+            if ch["key"] != expected:
                 problems.append(f"{ch['name']}: kind {ch['kind']}, expected {expected}")
             parsed = mnextend_xdf._parse_unit(unit)
             if isinstance(parsed, tuple) and parsed[1] in (

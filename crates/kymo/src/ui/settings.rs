@@ -7,14 +7,30 @@ use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, 
 use crate::ui::Overlay;
 use crate::ui::color::{Choice, swatch};
 use crate::ui::fonts::SYSTEM_FONT_NAME;
-use crate::ui::header::kind_name;
 use crate::ui::palette::type_color;
-use crate::view::{KINDS, kind_index};
+
+/// The types the channel types' table lists.
+const KINDS: [ChannelKind; 14] = [
+    ChannelKind::EEG,
+    ChannelKind::MAG,
+    ChannelKind::GRAD,
+    ChannelKind::REF_MEG,
+    ChannelKind::EOG,
+    ChannelKind::ECG,
+    ChannelKind::EMG,
+    ChannelKind::SEEG,
+    ChannelKind::ECOG,
+    ChannelKind::DBS,
+    ChannelKind::RESP,
+    ChannelKind::BIO,
+    ChannelKind::MISC,
+    ChannelKind::STIM,
+];
 
 /// The Settings window, while `open`. Returns whether a setting changed; the caller applies
 /// it at once.
 pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Settings) -> bool {
-    let before = *settings;
+    let before = settings.clone();
     egui::Window::new("Settings")
         .id(Overlay::Settings.id())
         .open(open)
@@ -131,7 +147,7 @@ pub fn settings_window(ctx: &egui::Context, open: &mut bool, settings: &mut Sett
                 *settings = Settings::default();
             }
         });
-    *settings = settings.clamped();
+    *settings = settings.clone().clamped();
     *settings != before
 }
 
@@ -166,7 +182,7 @@ fn color_cell(ctx: &egui::Context) -> egui::Vec2 {
     let side = ctx.fonts_mut(|f| f.row_height(&font));
     let widest = KINDS
         .iter()
-        .map(|&kind| text_width(ctx, kind_name(kind)))
+        .map(|kind| text_width(ctx, kind.name()))
         .fold(0.0, f32::max);
     egui::vec2(side + SWATCH_GAP + widest, side)
 }
@@ -232,7 +248,7 @@ fn type_table(ui: &mut Ui, settings: &mut Settings) {
                     if half == 1 {
                         ui.label("");
                     }
-                    if let Some(&kind) = KINDS.get(half * TYPE_ROWS + row) {
+                    if let Some(kind) = KINDS.get(half * TYPE_ROWS + row) {
                         type_row(ui, settings, kind, cell, columns);
                     }
                 }
@@ -246,42 +262,39 @@ fn type_table(ui: &mut Ui, settings: &mut Settings) {
 fn type_row(
     ui: &mut Ui,
     settings: &mut Settings,
-    kind: ChannelKind,
+    kind: &ChannelKind,
     cell: egui::Vec2,
     columns: [f32; 2],
 ) {
-    let i = kind_index(kind);
-    let name = kind_name(kind);
+    let name = kind.name();
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     ui.allocate_ui_with_layout(cell, layout, |ui| {
         ui.set_min_size(cell);
         ui.spacing_mut().item_spacing.x = SWATCH_GAP;
-        let color = type_color(kind, &settings.type_colors, ui.visuals());
-        let picked = settings.type_colors[i].is_some();
+        let color = type_color(kind, &settings.types, ui.visuals());
+        let picked = settings.types.color(kind).is_some();
         let size = egui::vec2(cell.y, cell.y);
         match swatch(ui, &format!("Color of {name}"), color, picked, size) {
-            Some(Choice::Picked(c)) => settings.type_colors[i] = Some(c),
-            Some(Choice::Reset) => settings.type_colors[i] = None,
+            Some(Choice::Picked(c)) => settings.types.set_color(kind, Some(c)),
+            Some(Choice::Reset) => settings.types.set_color(kind, None),
             None => {}
         }
         ui.label(name);
     });
-    if kind == ChannelKind::Stim {
+    if kind.is_stim() {
         ui.label("");
         ui.label("");
         return;
     }
-    let flags = [
-        (
-            &mut settings.types.remove_dc[i],
-            format!("Remove DC of {name}"),
-        ),
-        (
-            &mut settings.types.own_scale[i],
-            format!("Scale Each {name} Channel"),
-        ),
+    let mut flags = [
+        settings.types.remove_dc(kind),
+        settings.types.own_scale(kind),
     ];
-    for ((flag, label), width) in flags.into_iter().zip(columns) {
+    let labels = [
+        format!("Remove DC of {name}"),
+        format!("Scale Each {name} Channel"),
+    ];
+    for ((flag, label), width) in flags.iter_mut().zip(labels).zip(columns) {
         let layout = egui::Layout::top_down(egui::Align::Center);
         ui.allocate_ui_with_layout(egui::vec2(width, cell.y), layout, |ui| {
             ui.set_min_width(width);
@@ -289,6 +302,13 @@ fn type_row(
             ui.ctx()
                 .accesskit_node_builder(response.id, |node| node.set_label(label));
         });
+    }
+    let [remove_dc, own_scale] = flags;
+    if remove_dc != settings.types.remove_dc(kind) {
+        settings.types.set_remove_dc(kind, remove_dc);
+    }
+    if own_scale != settings.types.own_scale(kind) {
+        settings.types.set_own_scale(kind, own_scale);
     }
 }
 
