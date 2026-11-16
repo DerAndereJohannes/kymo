@@ -954,59 +954,17 @@ enum Fold {
     Kind(Group),
 }
 
-/// How a stream's channels sit under it in the channel list, grouped by stream.
-#[derive(Clone, Debug, PartialEq)]
-enum Typing {
-    /// Directly under it, all of this type, whose swatch the stream's row has.
-    One(ChannelKind),
-    /// Under their types' rows: several types, of two channels or more on average.
-    Rows,
-    /// Directly under it, each with its type on hover: so many types that they average
-    /// fewer than two channels (an XDF stream typing each channel by its coordinate).
-    Flat,
-}
-
-/// Per stream of `document`, how its channels sit under it, by their types in `view`
-/// (streams without channels as [`Typing::Flat`]).
-fn typings(document: &Document, view: &ViewState) -> Vec<Typing> {
-    document
-        .recording
-        .streams()
-        .iter()
-        .map(|s| match &s.content {
-            StreamContent::Channels(ids) if !ids.is_empty() => {
-                let mut kinds: Vec<&ChannelKind> = Vec::new();
-                for &c in ids {
-                    let kind = view.kind_of(c);
-                    if !kinds.contains(&kind) {
-                        kinds.push(kind);
-                    }
-                }
-                match kinds.len() {
-                    1 => Typing::One(kinds[0].clone()),
-                    n if ids.len() >= 2 * n => Typing::Rows,
-                    _ => Typing::Flat,
-                }
-            }
-            _ => Typing::Flat,
-        })
-        .collect()
-}
-
 /// The channel list's rows: the channels in the view's order, under their types, grouped
-/// by stream if `grouped`, where a stream's channels are under their types only if they are
-/// of several types with two channels each on average (see [`Typing`]); the rows of
-/// `closed` folds left out; then the streams that aren't shown.
+/// by stream if `grouped` (each stream's channels under their types in it, however many
+/// there are); the rows of `closed` folds left out; then the streams that aren't shown.
 fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[Fold]) -> Vec<Item> {
     let rec = &document.recording;
     let streams = rec.streams();
-    let typing = typings(document, view);
     let mut items = Vec::with_capacity(view.order().len() + 3 * streams.len());
     let (mut stream_now, mut group_now) = (None, None);
     for &c in view.order() {
         let group @ (stream, _) = view.group_of(c);
         let mut depth = 0;
-        let mut typed = true;
         if grouped && let Some(s) = stream {
             if stream_now != Some(s) {
                 stream_now = Some(s);
@@ -1016,18 +974,15 @@ fn list_items(document: &Document, view: &ViewState, grouped: bool, closed: &[Fo
                 continue;
             }
             depth = 1;
-            typed = typing[s] == Typing::Rows;
         }
-        if typed {
-            if group_now.as_ref() != Some(&group) {
-                group_now = Some(group.clone());
-                items.push(Item::Kind(group.clone(), depth));
-            }
-            if closed.contains(&Fold::Kind(group.clone())) {
-                continue;
-            }
+        if group_now.as_ref() != Some(&group) {
+            group_now = Some(group.clone());
+            items.push(Item::Kind(group.clone(), depth));
         }
-        items.push(Item::Channel(c, group, depth + usize::from(typed)));
+        if closed.contains(&Fold::Kind(group.clone())) {
+            continue;
+        }
+        items.push(Item::Channel(c, group, depth + 1));
     }
     items.extend(
         streams
@@ -1070,13 +1025,12 @@ fn stream_name(stream: &Stream) -> String {
 ///
 /// A recording with several streams of channels (XDF, BVRF's participants) groups them by
 /// stream: a row per stream (see [`stream_row`]) above its channels, which are under their
-/// types only in a stream of several types with two channels each on average, else
-/// directly under it, their type on hover (see [`Typing`]). Streams the file has but
-/// doesn't show are listed at the end, grayed, with the reason on hover. Nothing of streams
-/// shows for other recordings.
+/// types in it, as in a stream of one type, so the list always reads stream, type, channel.
+/// Streams the file has but doesn't show are listed at the end, grayed, with the reason on
+/// hover. Nothing of streams shows for other recordings.
 ///
-/// A type's row, or a stream's of one type, has the type's swatch, whose popup sets
-/// `types` (see [`type_swatch`]). Returns whether one asked for the Channel Types window.
+/// A type's row has the type's swatch, whose popup sets `types` (see [`type_swatch`]).
+/// Returns whether one asked for the Channel Types window.
 fn channel_list(
     ui: &mut Ui,
     recording: u64,
@@ -1095,7 +1049,6 @@ fn channel_list(
     let closed_key = ui.scope_id().with(("closed folds", recording));
     let mut closed: Vec<Fold> = ui.data(|d| d.get_temp(closed_key)).unwrap_or_default();
     let items = list_items(document, view, grouped, &closed);
-    let typing = typings(document, view);
     let mut toggled = None;
     let mut all_types = false;
     let columns = Columns::of(ui, document, view, grouped);
@@ -1169,16 +1122,9 @@ fn channel_list(
                 let (id, group, depth) = match items[i].clone() {
                     Item::Stream(s) => {
                         let open = !closed.contains(&Fold::Stream(s));
-                        let kind = match &typing[s] {
-                            Typing::One(kind) => Some(kind),
-                            _ => None,
-                        };
-                        let (fold, asked) =
-                            stream_row(ui, document, s, open, view, (kind, types), row_response);
-                        if fold {
+                        if stream_row(ui, document, s, open, view, row_response) {
                             toggled = Some(Fold::Stream(s));
                         }
-                        all_types |= asked;
                         continue;
                     }
                     Item::Kind(group, depth) => {
@@ -1224,16 +1170,14 @@ fn channel_list(
                 let short_unit = fit
                     .unit
                     .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
-                // The row's whole text where some of it is shortened or left out, its rate
-                // isn't its type's alone, or no row above gives its type.
+                // The row's whole text where some of it is shortened or left out, or its
+                // rate isn't its type's alone.
                 let mixed = mixed_rates.contains(&group);
-                let untyped = grouped && group.0.is_some_and(|s| typing[s] == Typing::Flat);
                 let full = (short_name.is_some()
                     || listed != name
                     || short_unit.is_some()
                     || fit.unit.is_none()
-                    || mixed
-                    || untyped)
+                    || mixed)
                     .then(|| {
                         let unit = if unit.is_empty() {
                             String::new()
@@ -1394,24 +1338,22 @@ fn chevron(painter: &egui::Painter, center: egui::Pos2, open: bool, color: Color
 
 /// A stream's row in the channel list: a disclosure arrow that shows or hides its channels'
 /// rows, a checkbox that shows or hides its channels in the traces (mixed while some are
-/// shown), the swatch of its channels' type if they are all of one (see [`type_swatch`]),
-/// its name (a click scrolls the traces to its first shown channel), its type, and at the
-/// right its number of channels and its rate. A narrow row leaves out the type, then the
-/// number and rate, then shortens the name; hovering shows it all. Returns whether the
-/// arrow was clicked, and whether the swatch's popup asked for the Channel Types window.
+/// shown), its name (a click scrolls the traces to its first shown channel), its type, and
+/// at the right its number of channels and its rate. A narrow row leaves out the type, then
+/// the number and rate, then shortens the name; hovering shows it all. Returns whether the
+/// arrow was clicked.
 fn stream_row(
     ui: &mut Ui,
     document: &Document,
     s: usize,
     open: bool,
     view: &mut ViewState,
-    (kind, types): (Option<&ChannelKind>, &mut TypeSettings),
     row: Response,
-) -> (bool, bool) {
+) -> bool {
     let rec = &document.recording;
     let stream = &rec.streams()[s];
     let StreamContent::Channels(ids) = &stream.content else {
-        return (false, false);
+        return false;
     };
     let name = stream_name(stream);
     let grid = rec.grid(rec.channel(ids[0]).grid);
@@ -1427,17 +1369,6 @@ fn stream_row(
     if response.changed() {
         view.set_stream_shown(s, checked);
     }
-    // The swatch's place stays without one, so streams' names line up.
-    let all_types = match kind {
-        Some(kind) => {
-            let label = kind_label(kind, Some(&name));
-            type_swatch(ui, kind, &label, types, swatch_size(ui))
-        }
-        None => {
-            ui.allocate_exact_size(swatch_size(ui), Sense::hover());
-            false
-        }
-    };
 
     let body = TextStyle::Body.resolve(ui.style());
     let width = |text: &str| {
@@ -1531,7 +1462,7 @@ fn stream_row(
     for cell in cells {
         cell.on_hover_text(&full);
     }
-    (clicked, all_types)
+    clicked
 }
 
 /// The size of a type's swatch in the channel list, as the legend's descriptions' are.
@@ -1683,8 +1614,7 @@ fn kind_row(
     (clicked, all_types)
 }
 
-/// A stream the file has but kymo doesn't show, grayed, in line with the streams' names
-/// (past where their chevrons, checkboxes and swatches are);
+/// A stream the file has but kymo doesn't show, grayed, in line with the streams' names;
 /// hovering it says why.
 fn not_shown_row(ui: &mut Ui, stream: &Stream, row: Response) {
     let StreamContent::NotShown(reason) = &stream.content else {
@@ -1695,7 +1625,6 @@ fn not_shown_row(ui: &mut Ui, stream: &Stream, row: Response) {
     // Where a stream's chevron and checkbox are.
     ui.allocate_exact_size(vec2(CHEVRON_WIDTH, height), Sense::hover());
     ui.add_visible(false, Checkbox::without_text(&mut false));
-    ui.allocate_exact_size(swatch_size(ui), Sense::hover());
     let hover = format!("{name} isn't shown: {reason}");
     let weak = |text: &str| {
         Label::new(RichText::new(text).weak())

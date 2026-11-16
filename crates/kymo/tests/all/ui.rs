@@ -1292,9 +1292,8 @@ fn types_rows_give_their_rates() {
 }
 
 /// An XDF file as eye tracking recordings come: EEG in "microvolts", AUX channels (a type
-/// MNE doesn't have), two in microvolts and one with a long name in a long unit (so the
-/// stream's two types average two channels, and get rows), and an irregular 50 Hz stream
-/// with a long name.
+/// MNE doesn't have), one in microvolts and one with a long name in a long unit, and an
+/// irregular 50 Hz stream with a long name.
 fn long_names_xdf() -> TempFile {
     use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStamps, XdfStream};
     let f = kymo_testgen::Format::Xdf;
@@ -1308,7 +1307,6 @@ fn long_names_xdf() -> TempFile {
             100,
             XdfFormat::F32,
         ),
-        ChannelSpec::xdf("AUX2", "AUX", "microvolts", 100, XdfFormat::F32),
         ChannelSpec::xdf(
             "IPD - Interpupillary distance, both eyes",
             "Gaze",
@@ -1319,11 +1317,11 @@ fn long_names_xdf() -> TempFile {
     ];
     let mut spec = Spec::new(f, channels, 1.0, 30);
     spec.xdf.streams = vec![
-        XdfStream::new(1, "Amp", "EEG", vec![0, 1, 2, 3]),
+        XdfStream::new(1, "Amp", "EEG", vec![0, 1, 2]),
         XdfStream {
             stamps: XdfStamps::All,
             irregular: true,
-            ..XdfStream::new(2, "Tracker", "Gaze", vec![4])
+            ..XdfStream::new(2, "Tracker", "Gaze", vec![3])
         },
     ];
     TempFile::written(&spec)
@@ -1376,7 +1374,7 @@ fn the_channel_list_fits_its_width() {
     // The rates are in the streams' rows.
     let por = row_of(&harness, "POR X - (Point of regard), left eye");
     assert!(!in_row(&harness, por, "100 Hz"));
-    harness.get_by_role_and_label(Role::Label, "4 \u{b7} 100 Hz");
+    harness.get_by_role_and_label(Role::Label, "3 \u{b7} 100 Hz");
     // The long unit and names in full.
     let full = |h: &Harness<'_, KymoApp>, label: &str| {
         let rect = h.get_by_role_and_label(Role::Label, label).rect();
@@ -5630,9 +5628,11 @@ fn several_streams_group_the_channel_list() {
     harness.get_by_label("1 \u{b7} 4 Hz");
     assert!(harness.query_by_label("10 Hz").is_none());
     assert_eq!(toggled(&harness, Role::CheckBox, "Show Amp"), Toggled::True);
-    // The channels' boxes are a level in.
+    // Its type's box a level in, the channels' another.
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    let level = left(&harness, "Show Fz") - left(&harness, "Show Amp");
+    let level = left(&harness, "Show EEG channels in Amp") - left(&harness, "Show Amp");
+    assert!((level - LEVEL).abs() <= 0.5, "{level}");
+    let level = left(&harness, "Show Fz") - left(&harness, "Show EEG channels in Amp");
     assert!((level - LEVEL).abs() <= 0.5, "{level}");
     assert!(left(&harness, "Collapse Amp") < left(&harness, "Show Amp"));
 
@@ -5687,14 +5687,13 @@ fn several_streams_group_the_channel_list() {
     ));
 }
 
-/// Grouped by stream, a stream's channels are under their types where it has several: each
-/// type a row in it, a level in, that shows and hides and folds its channels; a stream of
-/// one type has none. The columns after the names line up
-/// whatever the rows' levels.
+/// Grouped by stream, a stream's channels are under their types: each type a row in it, a
+/// level in, that shows and hides and folds its channels, also in a stream of one type. The
+/// columns after the names line up whatever the rows' levels.
 #[test]
 fn streams_of_several_types_group_their_channels_by_type() {
     use egui::accesskit::Role;
-    // Amp: Fz (EEG), AUX1, POR X and AUX2 (AUX); Tracker: IPD (Gaze).
+    // Amp: Fz (EEG), AUX1 and POR X (AUX); Tracker: IPD (Gaze).
     let file = long_names_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -5704,7 +5703,8 @@ fn streams_of_several_types_group_their_channels_by_type() {
             "Collapse Amp",
             "Collapse EEG channels in Amp",
             "Collapse AUX channels in Amp",
-            "Collapse Tracker"
+            "Collapse Tracker",
+            "Collapse Gaze channels in Tracker"
         ]
     );
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
@@ -5724,13 +5724,14 @@ fn streams_of_several_types_group_their_channels_by_type() {
         .filter(|n| (n.rect().center().y - row).abs() < 1.0)
         .filter_map(|n| n.accesskit_node().value())
         .collect();
-    assert_eq!(in_row, ["AUX", "3"]);
-    harness.get_by_label("4 \u{b7} 100 Hz");
+    assert_eq!(in_row, ["AUX", "2"]);
+    harness.get_by_label("3 \u{b7} 100 Hz");
     let tracker = left(&harness, "Show Tracker");
     let ipd = "IPD - Interpupillary distance, both eyes";
+    // Under its stream's one type.
     assert!(near(
         left(&harness, &format!("Show {ipd}")) - tracker,
-        level
+        2.0 * level
     ));
     // Units line up across the levels.
     sidebar_to(&mut harness, 600.0);
@@ -5741,9 +5742,9 @@ fn streams_of_several_types_group_their_channels_by_type() {
 
     // Its box shows and hides only its channels in this stream.
     click_in_list(&mut harness, Role::CheckBox, "Show AUX channels in Amp");
-    assert_eq!(shown(&harness), [0, 4]);
+    assert_eq!(shown(&harness), [0, 3]);
     click_in_list(&mut harness, Role::CheckBox, "Show AUX channels in Amp");
-    assert_eq!(shown(&harness), [0, 1, 2, 3, 4]);
+    assert_eq!(shown(&harness), [0, 1, 2, 3]);
     // Its arrow folds them.
     harness.get_by_label("Collapse AUX channels in Amp").click();
     harness.run_steps(2);
@@ -5776,39 +5777,34 @@ fn joystick_xdf() -> TempFile {
     TempFile::written(&spec)
 }
 
-/// Grouped by stream, a stream of one type has the type's swatch in its row, and no type
-/// row; a stream whose types average fewer than two channels has neither, its channels a
-/// level in, each with its type on hover. The streams' names line up either way.
+/// Grouped by stream, every stream's channels are under their types' rows, whether the
+/// stream has one type or one per channel (a joystick typing each axis), each type row with
+/// its swatch; the channels two levels in.
 #[test]
-fn streams_of_one_type_or_of_many_have_no_type_rows() {
-    use egui::accesskit::Role;
+fn every_stream_has_type_rows() {
     let file = joystick_xdf();
     let mut harness = window(file.path());
     ready(&mut harness);
-    assert_eq!(folds(&harness), ["Collapse Amp", "Collapse Joystick"]);
-    harness.get_by_label("Options for EEG channels in Amp");
-    assert!(harness.query_by_label_contains("Options for").is_some());
-    assert!(harness.query_by_label_contains("in Joystick").is_none());
-    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
-    assert!((left(&harness, "Show X") - left(&harness, "Show Joystick") - LEVEL).abs() <= 0.5);
-    assert!((left(&harness, "Show Fz") - left(&harness, "Show Amp") - LEVEL).abs() <= 0.5);
-    let name =
-        |h: &Harness<'_, KymoApp>, label: &str| h.get_by_role_and_label(Role::Label, label).rect();
     assert_eq!(
-        name(&harness, "Joystick").left(),
-        name(&harness, "Amp").left()
+        folds(&harness),
+        [
+            "Collapse Amp",
+            "Collapse EEG channels in Amp",
+            "Collapse Joystick",
+            "Collapse PositionX channels in Joystick",
+            "Collapse PositionY channels in Joystick",
+            "Collapse Button channels in Joystick",
+        ]
     );
-    // Fz's type is its stream's, in the swatch's popup; X's is on hover.
-    let x = name(&harness, "X").center();
-    hover(&mut harness, x);
-    assert!(tooltip(
-        &mut harness,
-        "X\nPositionX \u{b7} normalized \u{b7} 100 Hz"
-    ));
-    let fz = name(&harness, "Fz").center();
-    hover(&mut harness, fz);
-    assert!(tooltip(&mut harness, "Show in Traces"));
-    assert!(harness.query_by_label_contains("Fz\nEEG").is_none());
+    for kind in ["EEG channels in Amp", "Button channels in Joystick"] {
+        harness.get_by_label(&format!("Options for {kind}"));
+    }
+    let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
+    for (channel, stream) in [("Fz", "Amp"), ("X", "Joystick")] {
+        let level =
+            left(&harness, &format!("Show {channel}")) - left(&harness, &format!("Show {stream}"));
+        assert!((level - 2.0 * LEVEL).abs() <= 0.5, "{channel}: {level}");
+    }
 }
 
 /// A type's popup in the sidebar: its Remove DC and Scale Each Channel as they are, which
@@ -6036,7 +6032,7 @@ fn folding_all_reaches_streams_and_their_types() {
     assert_eq!(folds(&harness), Vec::<String>::new());
     harness.get_by_label("Expand All Channels").click();
     harness.run_steps(2);
-    assert_eq!(folds(&harness).len(), 4);
+    assert_eq!(folds(&harness).len(), 5);
 }
 
 /// A grouped legend folds all its streams at once, by the button on its top edge while the
