@@ -1555,7 +1555,11 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     kinds.dedup();
     let rounded = harness.query_all_by_label_contains("500.01 Hz").count();
     assert_eq!(rounded, kinds.len() + 1);
-    let exact = format!("{rate} Hz: {} channels, ", spec.channels.len());
+    let exact = format!(
+        "{}: {} channels, ",
+        kymo::document::exact_rate(rate),
+        spec.channels.len()
+    );
     assert!(harness.query_by_label_contains(&exact).is_none());
     let sampling = harness
         .query_all_by_role_and_label(Role::Label, "500.01 Hz")
@@ -1569,6 +1573,19 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
         harness.step();
     }
     harness.get_by_label_contains(&exact);
+}
+
+/// Hovering the summary's format shows the format's own header fields.
+#[test]
+fn the_format_shows_its_fields_on_hover() {
+    let file = TempFile::preset("bv-int16-multiplexed");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let fields = "orientation: multiplexed\nbinary format: INT_16";
+    assert!(harness.query_by_label_contains(fields).is_none());
+    let format = harness.get_by_label("BrainVision").rect();
+    hover(&mut harness, format.center());
+    assert!(tooltip(&mut harness, fields));
 }
 
 /// The shortcut overview's scroll bar is painted at the window's right border, a gap after

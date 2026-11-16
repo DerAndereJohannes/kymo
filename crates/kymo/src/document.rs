@@ -36,6 +36,12 @@ impl Document {
         let rec = &self.recording;
         Summary {
             format: rec.format(),
+            fields: rec
+                .extra()
+                .iter()
+                .map(|(key, value)| (one_line(key), one_line(value)))
+                .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+                .collect(),
             start: rec.start_time(),
             duration: rec.duration(),
             channels: rec.channels().len(),
@@ -84,6 +90,9 @@ pub fn file_name(path: &Path) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
     pub format: &'static str,
+    /// The format's own header fields (version, layout, patient, streams, ...), key and
+    /// value, each on one line; empty ones left out.
+    pub fields: Vec<(String, String)>,
     /// Wall-clock start, if the file has one.
     pub start: Option<jiff::civil::DateTime>,
     /// Seconds.
@@ -112,7 +121,8 @@ pub struct GridSummary {
 
 impl GridSummary {
     /// One line without the channel names, e.g. "512 Hz, 30720 samples, 5 channels", with
-    /// the exact rate ("≈299.98 Hz, ..." for the average rate of an irregular time base).
+    /// the exact rate ([`exact_rate`]; "≈299.983742 Hz, ..." for the average rate of an
+    /// irregular time base).
     pub fn describe(&self) -> String {
         let n = self.channels.len();
         let rate = exact_rate_text(self.rate, self.irregular);
@@ -144,8 +154,18 @@ impl Summary {
             }
             None => SidebarRow::new("Start", "unknown".into()),
         };
+        // The format's own fields on hover, a line each.
+        let fields = self
+            .fields
+            .iter()
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect::<Vec<_>>();
+        let format = SidebarRow {
+            hover: (!fields.is_empty()).then(|| fields.join("\n")),
+            ..SidebarRow::new("Format", self.format.to_owned())
+        };
         let mut rows = vec![
-            SidebarRow::new("Format", self.format.to_owned()),
+            format,
             start,
             SidebarRow::new("Duration", format_duration(self.duration)),
             SidebarRow::new("Channels", self.channels.to_string()),
@@ -211,6 +231,9 @@ impl Summary {
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "format       {}", self.format)?;
+        for (key, value) in &self.fields {
+            writeln!(f, "             {key}: {value}")?;
+        }
         let start = self.start.map(|t| format_start(t, false));
         writeln!(f, "start        {}", start.as_deref().unwrap_or("unknown"))?;
         writeln!(f, "duration     {}", format_duration(self.duration))?;
@@ -256,8 +279,9 @@ pub fn format_start(time: jiff::civil::DateTime, rounded: bool) -> String {
 pub struct SidebarRow {
     pub key: String,
     pub value: String,
-    /// What hovering the value shows: the exact rates, channels and samples for Sampling,
-    /// the start with every digit where it has more than three decimals.
+    /// What hovering the value shows: the format's own fields for Format, the exact rates,
+    /// channels and samples for Sampling, the start with every digit where it has more than
+    /// three decimals.
     pub hover: Option<String>,
 }
 
@@ -292,7 +316,7 @@ pub fn rate_text(rate: f64, irregular: bool) -> String {
     }
 }
 
-/// A grid's rate with every digit it has, "≈299.98374 Hz" for the average rate of an
+/// A grid's rate as [`exact_rate`] gives it, "≈299.983742 Hz" for the average rate of an
 /// irregular time base.
 fn exact_rate_text(rate: f64, irregular: bool) -> String {
     if irregular {
@@ -307,9 +331,30 @@ pub fn grid_rate(grid: &kymo_core::Grid) -> String {
     rate_text(grid.rate(), grid.times().is_some())
 }
 
-/// A rate with every digit it has ("500.00649253529946 Hz").
-fn exact_rate(rate: f64) -> String {
-    format!("{rate} Hz")
+/// A rate to the microhertz (six decimals, trailing zeros dropped: "500.006493 Hz", "256
+/// Hz"), or to six significant digits below 1 Hz ("0.0333333 Hz"). Rates computed from
+/// time stamps (XDF's effective rates) have more digits than they mean.
+pub fn exact_rate(rate: f64) -> String {
+    if !rate.is_finite() {
+        return format!("{rate} Hz");
+    }
+    let decimals = if rate > 0.0 && rate < 1.0 {
+        (5 - rate.log10().floor() as i32) as usize
+    } else {
+        6
+    };
+    let text = format!("{rate:.decimals$}");
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        &text
+    };
+    format!("{text} Hz")
+}
+
+/// `text` with line breaks and tabs as spaces, trimmed.
+fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n', '\t'], " ").trim().to_owned()
 }
 
 /// Seconds on the clock the time axis would use for them (see [`Clock::for_end`]), to the
@@ -521,6 +566,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exact_rates_are_to_the_microhertz() {
+        let cases = [
+            (512.0, "512 Hz"),
+            (500.006_492_535_299_46, "500.006493 Hz"),
+            // XDF's effective rate of a nominal 500 Hz stream.
+            (499.999_999_999_992_95, "500 Hz"),
+            (2048.0, "2048 Hz"),
+            (128.5, "128.5 Hz"),
+            (1.0 / 30.0, "0.0333333 Hz"),
+            (0.982_792_961_274_260_4, "0.982793 Hz"),
+            (0.001_234_567_89, "0.00123457 Hz"),
+        ];
+        for (rate, text) in cases {
+            assert_eq!(exact_rate(rate), text, "{rate}");
+        }
+    }
+
+    /// The format's own fields show on hovering the Format row and under `--info`'s format
+    /// line, a line each, each on one line.
+    #[test]
+    fn format_fields_show_on_hover_and_in_info() {
+        let file = TempFile::preset("bv-int16-multiplexed");
+        let summary = open(file.path()).unwrap().summary();
+        let rows = summary.sidebar_rows();
+        let format = rows.iter().find(|r| r.key == "Format").unwrap();
+        assert_eq!(format.value, "BrainVision");
+        let hover = format.hover.as_deref().unwrap();
+        assert!(hover.contains("\norientation: multiplexed\n"), "{hover}");
+        assert!(
+            hover.ends_with("binary format: INT_16\ncodepage: UTF-8"),
+            "{hover}"
+        );
+        let info = summary.to_string();
+        assert!(
+            info.starts_with(
+                "format       BrainVision\n             version: 1.0\n             created: "
+            ),
+            "{info}"
+        );
+        assert!(
+            info.contains("\n             binary format: INT_16\n"),
+            "{info}"
+        );
+
+        let mut spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+        spec.patient = "X Y".into();
+        let file = TempFile::written(&spec);
+        let summary = open(file.path()).unwrap().summary();
+        assert_eq!(summary.fields[0], ("patient".to_owned(), "X Y".to_owned()));
+        assert_eq!(one_line(" a\r\nb\tc "), "a  b c");
+    }
+
     /// The sidebar shows the start to the millisecond at most, trailing zeros dropped, and
     /// every digit on hover where there are more; `--info` has every digit.
     #[test]
@@ -550,6 +648,7 @@ mod tests {
         for (time, shown, hover) in cases {
             let summary = Summary {
                 format: "EDF+C",
+                fields: Vec::new(),
                 start: Some(at(time)),
                 duration: 2.0,
                 channels: 1,
@@ -583,6 +682,7 @@ mod tests {
     fn several_streams_are_counted() {
         let summary = |streams: (usize, usize)| Summary {
             format: "XDF",
+            fields: Vec::new(),
             start: None,
             duration: 2.0,
             channels: 2,
@@ -618,7 +718,7 @@ mod tests {
     }
 
     /// The sidebar rounds a rate and shows the exact one on hover, with channels and samples;
-    /// `--info` prints it exactly.
+    /// `--info` prints it exactly (to the microhertz).
     #[test]
     fn rounded_rates_keep_the_exact_one() {
         let grid = |rate: f64| GridSummary {
@@ -630,6 +730,7 @@ mod tests {
         };
         let summary = |grids: Vec<GridSummary>| Summary {
             format: "BrainVision",
+            fields: Vec::new(),
             start: None,
             duration: 2.0,
             channels: 2,
@@ -645,7 +746,7 @@ mod tests {
         assert_eq!(sampling.value, "500.01 Hz");
         assert_eq!(
             sampling.hover.as_deref(),
-            Some("500.00649253529946 Hz: 2 channels, 1000 samples")
+            Some("500.006493 Hz: 2 channels, 1000 samples")
         );
         assert!(
             rows.iter()
@@ -654,7 +755,7 @@ mod tests {
         );
         assert!(
             one.to_string()
-                .contains("500.00649253529946 Hz, 1000 samples, 2 channels"),
+                .contains("500.006493 Hz, 1000 samples, 2 channels"),
             "{one}"
         );
 
@@ -668,7 +769,7 @@ mod tests {
         assert_eq!(
             sampling.hover.as_deref(),
             Some(
-                "500.00649253529946 Hz: 2 channels, 1000 samples\n\
+                "500.006493 Hz: 2 channels, 1000 samples\n\
                  250 Hz: 2 channels, 1000 samples"
             )
         );
@@ -680,7 +781,7 @@ mod tests {
         assert_eq!(sampling.value, "500.01 Hz");
         assert_eq!(
             sampling.hover.as_deref(),
-            Some("500.00649253529946 Hz: 4 channels, 1000 samples")
+            Some("500.006493 Hz: 4 channels, 1000 samples")
         );
 
         // An irregular grid shows its average rate as such, apart from a regular grid of
