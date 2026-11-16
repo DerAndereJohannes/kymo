@@ -53,8 +53,8 @@ fn brute_sum(rec: &Recording, channel: ChannelId, range: Range<u64>) -> BlockSum
         if !is_present(grid.segments(), i) {
             continue;
         }
-        if x.is_nan() {
-            sum.nan += 1;
+        if !x.is_finite() {
+            sum.missing += 1;
         } else {
             sum.sum += x;
         }
@@ -150,7 +150,7 @@ fn check_pyramid(rec: &Recording, id: GridId, pyramid: &Pyramid) -> Result<(), T
     for block in 0..len.div_ceil(TILE_LEN) {
         let samples = block * TILE_LEN..((block + 1) * TILE_LEN).min(len);
         for &channel in ids {
-            // NaN samples are left out and counted.
+            // Missing samples (NaN, infinite) are left out and counted.
             let want = brute_sum(rec, channel, samples.clone());
             let got = pyramid.block_sum(channel, block);
             prop_assert_eq!(got, Some(want), "block {}", block);

@@ -118,9 +118,11 @@ pub(crate) trait NativeSample: Sample {
     /// The value as a stim code.
     fn code(self) -> i32;
     /// `acc` plus the sum of `xs`, which lie inside one block. Exact for integers; for
-    /// floats the samples are added one by one, in order, NaN left out and counted.
+    /// floats the samples are added one by one, in order, missing ones (NaN or infinite)
+    /// left out and counted.
     fn sum(xs: &[Self], acc: BlockSum) -> BlockSum;
-    /// `(min, max)` extended by `xs`. NaN never becomes a min or max.
+    /// `(min, max)` extended by `xs`. A missing value (NaN or infinite) never becomes a min or
+    /// max.
     fn min_max(xs: &[Self], min: Self, max: Self) -> (Self, Self);
 }
 
@@ -143,7 +145,7 @@ impl NativeSample for i16 {
         // At most 4096 · 2^15 = 2^27 in magnitude: exact in i32, then exact in f64.
         BlockSum {
             sum: acc.sum + f64::from(xs.iter().map(|&x| i32::from(x)).sum::<i32>()),
-            nan: acc.nan,
+            missing: acc.missing,
         }
     }
 
@@ -172,7 +174,7 @@ impl NativeSample for i32 {
         // At most 4096 · 2^31 = 2^43 in magnitude: exact in i64 and in f64.
         BlockSum {
             sum: acc.sum + xs.iter().map(|&x| i64::from(x)).sum::<i64>() as f64,
-            nan: acc.nan,
+            missing: acc.missing,
         }
     }
 
@@ -188,30 +190,31 @@ impl NativeSample for f32 {
         TileData::F32(values)
     }
 
-    /// Truncated toward zero and saturated as an integer first; NaN stays NaN.
+    /// Truncated toward zero and saturated as an integer first; a missing value (NaN or
+    /// infinite) stays as it is.
     fn masked(self, mask: u32) -> Self {
-        if self.is_nan() {
-            self
-        } else {
+        if self.is_finite() {
             (self as i32 & mask as i32) as f32
+        } else {
+            self
         }
     }
 
-    /// Truncated toward zero and saturated; NaN is 0.
+    /// Truncated toward zero and saturated; a missing value (NaN or infinite) is 0.
     fn code(self) -> i32 {
-        self as i32
+        if self.is_finite() { self as i32 } else { 0 }
     }
 
     fn sum(xs: &[f32], acc: BlockSum) -> BlockSum {
         xs.iter().fold(acc, |acc, &x| {
-            if x.is_nan() {
+            if x.is_finite() {
                 BlockSum {
-                    nan: acc.nan + 1,
+                    sum: acc.sum + f64::from(x),
                     ..acc
                 }
             } else {
                 BlockSum {
-                    sum: acc.sum + f64::from(x),
+                    missing: acc.missing + 1,
                     ..acc
                 }
             }
@@ -219,9 +222,27 @@ impl NativeSample for f32 {
     }
 
     fn min_max(xs: &[f32], min: f32, max: f32) -> (f32, f32) {
-        // NaN compares false either way and never replaces the bound.
-        xs.iter().fold((min, max), |(lo, hi), &x| {
+        // NaN compares false either way and never replaces a bound. Infinities (values beyond
+        // float32's range, missing as NaN is) would, and an infinite bound would hide the
+        // bucket's finite samples, as the renderer skips it. They are rare, so the plain fold
+        // (which vectorizes) runs first, and only a bucket it finds infinite is folded again
+        // without them. The bounds passed in are finite or the empty sentinels (+∞, −∞), so
+        // only a sample makes the minimum −∞ or the maximum +∞.
+        let (lo, hi) = xs.iter().fold((min, max), |(lo, hi), &x| {
             (if x < lo { x } else { lo }, if x > hi { x } else { hi })
+        });
+        if lo > f32::NEG_INFINITY && hi < f32::INFINITY {
+            return (lo, hi);
+        }
+        xs.iter().fold((min, max), |(lo, hi), &x| {
+            (
+                if x < lo && x > f32::NEG_INFINITY {
+                    x
+                } else {
+                    lo
+                },
+                if x > hi && x < f32::INFINITY { x } else { hi },
+            )
         })
     }
 }

@@ -7,9 +7,10 @@
 //! together, so one read serves a whole screen of channels.
 //!
 //! Beside the levels sits one sum of native values per channel and block of [`TILE_LEN`]
-//! samples (a level-0 tile span), over the block's present samples ([`BlockSum`]): NaN
-//! samples (a float channel's missing ones) are left out and counted, so a window mean is
-//! over the samples that are there. NaN samples never change a minimum or maximum either.
+//! samples (a level-0 tile span), over the block's present samples ([`BlockSum`]): a float
+//! channel's missing samples (NaN, and infinities, values beyond float32's range) are left
+//! out and counted, so a window mean is over the samples that are there. Missing samples
+//! never change a minimum or maximum either, as the renderer skips them.
 //!
 //! The same pass records the value changes of the grid's stim channels ([`crate::stim`]).
 //!
@@ -71,13 +72,14 @@ pub trait PyramidStorage: Send + Sync {
 }
 
 /// A channel's native values summed over the present samples of a block (for DC removal),
-/// NaN left out and counted: a float channel's missing samples (GDF's, XDF's) are NaN.
+/// missing ones left out and counted: a float channel's missing samples (GDF's, XDF's) are
+/// NaN, and values beyond float32's range are infinite, which the renderer skips as well.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BlockSum {
-    /// The sum of the values that aren't NaN.
+    /// The sum of the finite values.
     pub sum: f64,
-    /// How many of the values are NaN.
-    pub nan: u64,
+    /// How many of the values are missing (NaN or infinite).
+    pub missing: u64,
 }
 
 impl BlockSum {
@@ -85,7 +87,7 @@ impl BlockSum {
     pub fn plus(self, other: BlockSum) -> BlockSum {
         BlockSum {
             sum: self.sum + other.sum,
-            nan: self.nan + other.nan,
+            missing: self.missing + other.missing,
         }
     }
 }
@@ -286,7 +288,7 @@ impl Pyramid {
     }
 
     /// Sum of the native values of `channel` over the present samples of block `block`
-    /// (samples `block · TILE_LEN ..`), NaN left out and counted, or `None` if the channel is
+    /// (samples `block · TILE_LEN ..`), missing ones left out and counted, or `None` if the channel is
     /// not in this grid or the block is not built yet.
     pub fn block_sum(&self, channel: ChannelId, block: u64) -> Option<BlockSum> {
         let row = self.grid.channels().iter().position(|&c| c == channel)?;

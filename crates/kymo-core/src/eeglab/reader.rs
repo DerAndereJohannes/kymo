@@ -8,7 +8,7 @@ use memmap2::Mmap;
 
 use super::EeglabError;
 use super::dataset::{self, Data};
-use crate::decode::{ByteOrder, Decoder, Encoding, frames};
+use crate::decode::{ByteOrder, Decoder, Encoding, frames, strided};
 use crate::mapped::{self, map_read_only};
 use crate::open::companion;
 use crate::{
@@ -97,7 +97,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 return decoder;
             }
             let first = map.get(start + c * size..).unwrap_or_default();
-            let decoder = decoder.with_reference(decoder.reference_from(first));
+            let values = strided(first, n * size, samples as usize);
+            let decoder = decoder.with_reference(decoder.reference_among(values));
             channel.offset += decoder.reference() * channel.gain;
             decoder
         })

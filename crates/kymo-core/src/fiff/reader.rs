@@ -10,7 +10,7 @@ use memmap2::Mmap;
 use super::info::{self, Info};
 use super::tag::{self, Node, Tag, block, kind, types};
 use super::{FiffError, annotations};
-use crate::decode::{ByteOrder, Decoder, Encoding, frames_into};
+use crate::decode::{ByteOrder, Decoder, Encoding, frames_into, strided};
 use crate::mapped::{self, map_read_only};
 use crate::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, OpenError, Opened,
@@ -153,18 +153,21 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     }
     stim(&mut channels);
     let maps: Vec<&[u8]> = parts.iter().map(|l| &l.map[..]).collect();
-    let float64 = buffers
-        .iter()
-        .find(|b| b.encoding == Encoding::F64)
-        .copied();
+    let float64 = buffers.iter().any(|b| b.encoding == Encoding::F64);
     let reference = |c: usize, channel: &Channel| -> f64 {
-        let Some(b) = float64 else { return 0.0 };
-        if channel.kind == ChannelKind::Stim {
+        if !float64 || channel.kind == ChannelKind::Stim {
             return 0.0;
         }
-        let decoder = Decoder::new(Encoding::F64, ByteOrder::Big).with_reference(0.0);
-        let bytes = maps[b.part].get(b.offset + c * 8..).unwrap_or_default();
-        decoder.reference_from(bytes)
+        // The channel's first finite value in the float64 buffers, in order.
+        let decoder = Decoder::new(Encoding::F64, ByteOrder::Big);
+        let values = buffers
+            .iter()
+            .filter(|b| b.encoding == Encoding::F64)
+            .flat_map(|b| {
+                let bytes = maps[b.part].get(b.offset + c * 8..).unwrap_or_default();
+                strided(bytes, n * 8, b.len as usize)
+            });
+        decoder.reference_among(values)
     };
     let references: Vec<f64> = channels
         .iter()

@@ -1,6 +1,6 @@
 //! Decoding stored samples into native types, against a plain conversion of each value.
 
-use kymo_core::decode::{ByteOrder, Decoder, Encoding};
+use kymo_core::decode::{ByteOrder, Decoder, Encoding, REFERENCE_SEARCH, strided};
 use kymo_core::{ReadError, Sample, SampleType};
 use proptest::prelude::*;
 
@@ -230,6 +230,21 @@ fn the_reference_is_the_first_finite_value() {
     assert_eq!(f64s.reference_from(&[0, 1]), 0.0);
     let u32s = Decoder::new(Encoding::U32, ByteOrder::Little);
     assert_eq!(u32s.reference_from(&4_000_000_000u32.to_le_bytes()), 4e9);
+    // Further samples: the first finite one within float32's range, within the first 4096.
+    let bytes: Vec<[u8; 8]> = [f64::NAN, 1.3e212, f64::INFINITY, 7.5, 9.0]
+        .map(f64::to_be_bytes)
+        .to_vec();
+    assert_eq!(f64s.reference_among(bytes.iter().map(|b| &b[..])), 7.5);
+    let all = [f64::NAN.to_be_bytes(); 2];
+    assert_eq!(f64s.reference_among(all.iter().map(|b| &b[..])), 0.0);
+    let late: Vec<[u8; 8]> = (0..=REFERENCE_SEARCH)
+        .map(|i| if i < REFERENCE_SEARCH { f64::NAN } else { 1.0 }.to_be_bytes())
+        .collect();
+    assert_eq!(f64s.reference_among(late.iter().map(|b| &b[..])), 0.0);
+    // GDF's missing int32 is passed over too.
+    let i32s = Decoder::new(Encoding::I32, ByteOrder::Little).with_nan_minimum();
+    let bytes = [i32::MIN, 40_000_000].map(i32::to_le_bytes).concat();
+    assert_eq!(i32s.reference_among(strided(&bytes, 4, 2)), 4e7);
     // Exact encodings never subtract one.
     let i16s = Decoder::new(Encoding::I16, ByteOrder::Little);
     assert_eq!(i16s.reference_from(&1000i16.to_le_bytes()), 0.0);
@@ -251,4 +266,40 @@ fn a_reference_keeps_precision_far_from_zero() {
         assert_eq!(f64::from(*got) + decoder.reference(), want);
     }
     assert_ne!(f64::from(base as f32 + 0.25), base + 0.25);
+}
+
+/// 64-bit integers beyond 2^53 keep their difference to the reference exact before it is
+/// rounded to f32: a nanosecond clock near 2^60 ticks in steps of 1, not of f64's 256.
+#[test]
+fn int64_differences_round_once() {
+    let base = 1i64 << 60;
+    for (encoding, values) in [
+        (
+            Encoding::I64,
+            [base + 1, base + 3, base + 300].map(|v| v.to_le_bytes()),
+        ),
+        (
+            Encoding::U64,
+            [base + 1, base + 3, base + 300].map(|v| (v as u64).to_le_bytes()),
+        ),
+    ] {
+        let d = Decoder::new(encoding, ByteOrder::Little);
+        let bytes = values.concat();
+        let d = d.with_reference(d.reference_from(&bytes));
+        let mut out = [0f32; 3];
+        d.decode(&bytes, 8, &mut out).unwrap();
+        // Differences to the first value, each exact in f32.
+        let first = out[0];
+        assert_eq!(
+            [out[1] - first, out[2] - first],
+            [2.0, 299.0],
+            "{encoding:?}"
+        );
+    }
+    // GDF's missing int64 is exactly i64::MIN; its neighbor is a value.
+    let d = Decoder::new(Encoding::I64, ByteOrder::Little).with_nan_minimum();
+    assert_eq!(
+        d.value(&(i64::MIN + 1).to_le_bytes()),
+        Some(i64::MIN as f64)
+    );
 }

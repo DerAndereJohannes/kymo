@@ -11,7 +11,8 @@ use crate::{ChannelKind, Header, OpenError, Opened};
 
 /// Opens a GDF 1 or 2 file. The file is memory-mapped, never loaded; only the header and
 /// the event table after the data records are read at open, plus each channel's first
-/// sample where it serves as the reference of 64-bit, unsigned 32-bit and float samples.
+/// finite sample where it serves as the reference of 64-bit, unsigned 32-bit and float
+/// samples.
 pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let io = |source| OpenError::Io {
         path: path.to_owned(),
@@ -26,17 +27,22 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let mut warnings = Vec::new();
     let mut parsed = header::parse(&map, &mut warnings).map_err(error)?;
 
-    // References from the first record.
+    // References from the first finite samples, record by record.
     if parsed.n_records > 0 {
         for (channel, block) in parsed.channels.iter_mut().zip(&mut parsed.blocks) {
-            if channel.kind == ChannelKind::Stim {
+            if channel.kind == ChannelKind::Stim || block.samples == 0 {
                 continue;
             }
-            let at = (parsed.header_bytes + block.offset) as usize;
-            let first = map.get(at..).unwrap_or_default();
+            let size = block.decoder.encoding().size() as u64;
+            let values = (0..parsed.n_records)
+                .flat_map(|r| (0..block.samples).map(move |i| (r, i)))
+                .map_while(|(r, i)| {
+                    let at = parsed.header_bytes + r * parsed.record_bytes + block.offset;
+                    map.get(usize::try_from(at + i * size).ok()?..)
+                });
             block.decoder = block
                 .decoder
-                .with_reference(block.decoder.reference_from(first));
+                .with_reference(block.decoder.reference_among(values));
             channel.offset += block.decoder.reference() * channel.gain;
         }
     }

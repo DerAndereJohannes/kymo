@@ -1732,3 +1732,48 @@ fn streams_that_can_drop_samples_and_stamps_that_are_not_numbers() {
         assert!((grid.time_of(i) - i as f64 / 10.0).abs() < 1e-9);
     }
 }
+
+/// A double64 channel far from zero that starts with missing samples keeps its variation:
+/// its reference is its first finite value (here in the second chunk, after values beyond
+/// float32's range), not 0.
+#[test]
+fn the_reference_passes_over_missing_first_values() {
+    let mut c = Chunks::new(None);
+    let channels = [("Clock".to_owned(), "Misc".to_owned(), String::new())];
+    c.stream_header(
+        1,
+        &header_xml("Device", "Misc", 1, 10.0, "double64", Some(&channels)),
+    );
+    let value = |i: u64| 1e9 + 0.25 * i as f64;
+    let first: Vec<(Option<f64>, Vec<f64>)> = (0..4)
+        .map(|i| {
+            let v = if i == 2 { 1e212 } else { f64::NAN };
+            ((i == 0).then_some(5.0), vec![v])
+        })
+        .collect();
+    let second: Vec<(Option<f64>, Vec<f64>)> = (4..10)
+        .map(|i| {
+            (
+                (i % 3 == 0).then_some(5.0 + i as f64 / 10.0),
+                vec![value(i)],
+            )
+        })
+        .collect();
+    c.numeric(1, XdfFormat::F64, &first);
+    c.numeric(1, XdfFormat::F64, &second);
+    c.footer(1, "<info/>");
+    let rec = Built::new(&c.bytes).open();
+    let channel = rec.channel(ChannelId(0));
+    assert_eq!(channel.offset, value(4));
+    let mut native = vec![0f32; 10];
+    rec.read_native(
+        channel.grid,
+        &[ChannelId(0)],
+        0..10,
+        kymo_core::SamplesMut::F32(&mut native),
+    )
+    .unwrap();
+    assert!(native[..4].iter().all(|v| !v.is_finite()), "{native:?}");
+    let steps: Vec<f32> = (4..10).map(|i| 0.25 * (i - 4) as f32).collect();
+    assert_eq!(native[4..], steps);
+}

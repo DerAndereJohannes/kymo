@@ -59,8 +59,8 @@ impl PyramidStorage for OddSumsLost {
     }
 }
 
-/// Brute-force physical mean over the present samples that aren't NaN, and a scale for the
-/// tolerance.
+/// Brute-force physical mean over the present samples that are finite (NaN and infinities are
+/// missing), and a scale for the tolerance.
 fn brute_mean(
     physical: impl Fn(u64) -> f64,
     segments: &[Range<u64>],
@@ -69,7 +69,7 @@ fn brute_mean(
     let (mut sum, mut n, mut scale) = (0.0, 0u64, 0.0f64);
     for i in range.filter(|&i| is_present(segments, i)) {
         let x = physical(i);
-        if x.is_nan() {
+        if !x.is_finite() {
             continue;
         }
         sum += x;

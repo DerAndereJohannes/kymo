@@ -160,7 +160,8 @@ fn copy_rows<T: Copy>(data: &[Vec<T>], rows: &[usize], samples: Range<usize>, ou
 /// channel with a [`trigger_mask`](crate::Channel::trigger_mask), of the masked codes (the
 /// two's-complement bits of the native integer, or of a float truncated toward zero).
 ///
-/// NaN samples are skipped. `None` if no sample in `range` is present (or all are NaN).
+/// NaN and infinite samples (missing) are skipped. `None` if no sample in `range` is present
+/// (or none is finite).
 ///
 /// # Panics
 /// If `channel` is not in the recording.
@@ -178,7 +179,7 @@ pub fn brute_minmax(
     };
     let mask = recording.channel(channel).trigger_mask;
     let code = |x: f64| match mask {
-        Some(m) if !x.is_nan() => match grid.sample_type() {
+        Some(m) if x.is_finite() => match grid.sample_type() {
             SampleType::I16 => f64::from(x as i16 & m as i16),
             _ => f64::from(x as i32 & m as i32),
         },
@@ -187,7 +188,8 @@ pub fn brute_minmax(
     let mut minmax: Option<(f64, f64)> = None;
     for (i, x) in range.zip(values.into_iter().map(code)) {
         // Checked per sample against the segments, independent of `Grid::present_in`.
-        if x.is_nan() || !grid.segments().iter().any(|s| s.contains(&i)) {
+        // NaN and infinities (values beyond float32's range) are missing samples.
+        if !x.is_finite() || !grid.segments().iter().any(|s| s.contains(&i)) {
             continue;
         }
         minmax = Some(match minmax {

@@ -8,7 +8,7 @@ use memmap2::Mmap;
 
 use super::participants::Participants;
 use super::{BvrfError, header, markers};
-use crate::decode::{ByteOrder, Decoder, frames};
+use crate::decode::{ByteOrder, Decoder, frames, strided};
 use crate::mapped::{self, map_read_only};
 use crate::{
     BlockReader, ChannelId, ChannelKind, Grid, GridId, Header, OpenError, Opened, ReadError,
@@ -122,7 +122,8 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
                 return decoder;
             }
             let first = map.get(column..).unwrap_or_default();
-            let decoder = decoder.with_reference(decoder.reference_from(first));
+            let values = strided(first, frame, samples as usize);
+            let decoder = decoder.with_reference(decoder.reference_among(values));
             channel.offset += decoder.reference() * channel.gain;
             decoder
         })

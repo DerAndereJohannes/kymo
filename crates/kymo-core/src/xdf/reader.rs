@@ -233,9 +233,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             let reference = if channel.kind == ChannelKind::Stim {
                 0.0
             } else {
-                reader
-                    .first_value(&map, c)
-                    .map_or(0.0, |bytes| decoder.reference_from(bytes))
+                decoder.reference_among(reader.values(&map, c))
             };
             let decoder = decoder.with_reference(reference);
             channel.offset = decoder.reference();
@@ -919,12 +917,19 @@ impl GridStream {
         chunk.offset as u64 + k * self.frame as u64 + 8 * self.stamped_before(chunk, k)
     }
 
-    /// The bytes of channel `c`'s first value, if the stream has samples.
-    fn first_value<'a>(&self, map: &'a [u8], c: usize) -> Option<&'a [u8]> {
-        let chunk = self.chunks.first()?;
-        let stamped = self.stamped_before(chunk, 1) == 1;
-        let at = chunk.offset + if stamped { 9 } else { 1 } + c * self.size;
-        map.get(at..at + self.size)
+    /// The bytes of channel `c`'s values, from the first on, chunk by chunk (as far as the
+    /// file reaches).
+    fn values<'a>(&'a self, map: &'a [u8], c: usize) -> impl Iterator<Item = &'a [u8]> + 'a {
+        self.chunks
+            .iter()
+            .flat_map(move |chunk| (0..chunk.len).map(move |k| (chunk, k)))
+            .map_while(move |(chunk, k)| {
+                let at = usize::try_from(self.byte_of(chunk, k)).ok()?;
+                // The sample's timestamp flag: 8 bytes of timestamp follow, or none.
+                let stamped = self.stamped_before(chunk, k + 1) > self.stamped_before(chunk, k);
+                let at = at + if stamped { 9 } else { 1 } + c * self.size;
+                map.get(at..at + self.size)
+            })
     }
 
     /// Calls `f` with the runs that make up `range` of `chunk`, in order.

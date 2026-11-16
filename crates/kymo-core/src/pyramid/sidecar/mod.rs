@@ -4,8 +4,8 @@
 //! modification time and first and last MiB, plus this format's version. It holds a header (magic,
 //! version, that key, the layout of every grid and a completion flag), then per grid each
 //! level's tiles in time order (all channels, channel-major, little-endian (min, max)
-//! pairs) and the block sums (per channel and block, the little-endian f64 sum of the values
-//! that aren't NaN and the u64 count of those that are; see [`BlockSum`]). A trailer after
+//! pairs) and the block sums (per channel and block, the little-endian f64 sum of the finite
+//! values and the u64 count of the others; see [`BlockSum`]). A trailer after
 //! them, written when the build finishes, holds the value changes of the stim channels
 //! (see [`crate::stim`]), which have no size known in advance.
 //!
@@ -41,8 +41,8 @@ use crate::{Grid, GridId, ReadError, Recording, SampleType, lock};
 const MAGIC: &[u8; 8] = b"KYMOPYR\0";
 /// Bump whenever the layout or the meaning of the contents changes: it is part of the file
 /// name, so a sidecar of another version is never opened, just rebuilt.
-const VERSION: u32 = 4;
-/// Bytes per stored block sum: the sum (f64) and the count of NaN samples (u64).
+const VERSION: u32 = 5;
+/// Bytes per stored block sum: the sum (f64) and the count of missing samples (u64).
 const SUM: usize = 16;
 const TRAILER_MAGIC: &[u8; 8] = b"KYMOSTIM";
 /// Bytes per stored change: sample (u64), value (i32), padding.
@@ -649,7 +649,12 @@ impl PyramidStorage for GridStorage {
         }
         let bytes: Vec<u8> = sums
             .iter()
-            .flat_map(|s| s.sum.to_le_bytes().into_iter().chain(s.nan.to_le_bytes()))
+            .flat_map(|s| {
+                s.sum
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(s.missing.to_le_bytes())
+            })
             .collect();
         self.write(&place, &bytes);
     }
@@ -688,10 +693,10 @@ impl PyramidStorage for GridStorage {
             return None;
         }
         let bytes = self.read(&place, row * SUM, SUM)?;
-        let (sum, nan) = bytes.split_at(8);
+        let (sum, missing) = bytes.split_at(8);
         Some(BlockSum {
             sum: f64::from_le_bytes(sum.try_into().ok()?),
-            nan: u64::from_le_bytes(nan.try_into().ok()?),
+            missing: u64::from_le_bytes(missing.try_into().ok()?),
         })
     }
 

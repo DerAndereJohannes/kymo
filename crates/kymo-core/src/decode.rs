@@ -8,10 +8,10 @@
 //! | int8, uint8, int16 | `I16` | exact |
 //! | uint16, int24, uint24, int32 | `I32` | exact |
 //! | float32 | `F32` | exact |
-//! | uint32, int64, uint64, float64 | `F32` | `value − reference`, rounded to f32 |
+//! | uint32, int64, uint64, float64 | `F32` | `value − reference`, rounded once to f32 |
 //!
 //! The reference of the last row is a per-channel value the reader picks (the channel's
-//! first sample, see [`Decoder::reference_from`]) and folds into the channel's offset:
+//! first finite sample, see [`Decoder::reference_among`]) and folds into the channel's offset:
 //! `physical = (native + reference) × gain + offset`, so the offset becomes
 //! `offset + reference × gain`. A recording whose values sit far from zero then keeps their
 //! variation at full f32 precision, as the renderer keeps EDF/BDF's huge offsets. Stim
@@ -23,6 +23,15 @@
 //! int32 and int64 relative to a reference.
 
 use crate::{ReadError, Sample, SampleType, SamplesMut};
+
+/// How many of a channel's first samples [`Decoder::reference_among`] looks at.
+pub const REFERENCE_SEARCH: usize = 4096;
+
+/// The slices starting at each of `count` samples, one every `stride` bytes from `bytes[0]`,
+/// as far as `bytes` reaches.
+pub fn strided(bytes: &[u8], stride: usize, count: usize) -> impl Iterator<Item = &[u8]> {
+    (0..count).map_while(move |i| bytes.get(i.checked_mul(stride)?..))
+}
 
 /// Byte order of stored samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -182,12 +191,27 @@ impl Decoder {
     /// The reference to use for a channel whose first stored sample is `first`: its value,
     /// if the decoder uses a reference and the value is finite (not missing) and within
     /// float32's range; 0 otherwise. (Relative to a value beyond float32's range, every
-    /// other value would read as infinite.)
+    /// other value would read as infinite.) [`reference_among`](Self::reference_among)
+    /// looks further.
     pub fn reference_from(&self, first: &[u8]) -> f64 {
-        match self.value(first) {
-            Some(v) if self.uses_reference() && v.abs() <= f64::from(f32::MAX) => v,
-            _ => 0.0,
+        self.reference_among([first])
+    }
+
+    /// The reference to use for a channel whose first stored samples are `samples` (each
+    /// slice starting at one): the first of up to [`REFERENCE_SEARCH`] of them whose value
+    /// is finite and within float32's range, if the decoder uses a reference; 0 otherwise.
+    /// Missing values (NaN) and values beyond float32's range, which read as infinite, are
+    /// passed over, so a channel starting with them still keeps its variation.
+    pub fn reference_among<'a>(&self, samples: impl IntoIterator<Item = &'a [u8]>) -> f64 {
+        if !self.uses_reference() {
+            return 0.0;
         }
+        samples
+            .into_iter()
+            .take(REFERENCE_SEARCH)
+            .filter_map(|bytes| self.value(bytes))
+            .find(|v| v.abs() <= f64::from(f32::MAX))
+            .unwrap_or(0.0)
     }
 
     pub fn encoding(&self) -> Encoding {
@@ -215,19 +239,33 @@ impl Decoder {
     /// integers beyond 2^53), NaN for a missing one; `None` if `bytes` is too short.
     pub fn value(&self, bytes: &[u8]) -> Option<f64> {
         let value = self.stored(bytes)?;
-        let minimum = match self.encoding {
-            Encoding::I8 => f64::from(i8::MIN),
-            Encoding::I16 => f64::from(i16::MIN),
-            Encoding::I24 => -8_388_608.0,
-            Encoding::I32 => f64::from(i32::MIN),
-            Encoding::I64 => i64::MIN as f64,
-            _ => return Some(value),
-        };
-        Some(if self.nan_minimum && value == minimum {
+        Some(if self.nan_minimum && self.is_minimum(bytes) {
             f64::NAN
         } else {
             value
         })
+    }
+
+    /// Whether the sample at the start of `bytes` (long enough) is its signed integer
+    /// encoding's smallest value, compared as an integer (in f64, int64's neighbors of the
+    /// minimum would round to it): in two's complement, a top byte of 0x80 and zeros below.
+    fn is_minimum(&self, bytes: &[u8]) -> bool {
+        let n = match self.encoding {
+            Encoding::I8 => 1,
+            Encoding::I16 => 2,
+            Encoding::I24 => 3,
+            Encoding::I32 => 4,
+            Encoding::I64 => 8,
+            _ => return false,
+        };
+        let Some(b) = bytes.get(..n) else {
+            return false;
+        };
+        let (top, rest) = match self.order {
+            ByteOrder::Little => (b[n - 1], &b[..n - 1]),
+            ByteOrder::Big => (b[0], &b[1..]),
+        };
+        top == 0x80 && rest.iter().all(|&x| x == 0)
     }
 
     /// The stored value at the start of `bytes`, never NaN for integers.
@@ -301,6 +339,10 @@ impl Decoder {
         let src = &src[..stride * (n - 1) + size];
         let little = self.order == ByteOrder::Little;
         let r = self.reference;
+        // 64-bit integers subtract an integer reference exactly, then round once: in f64 they
+        // would round before the subtraction (by up to 2^(e-53)). The reference is an integer
+        // (a stored value), so the cast is exact.
+        let ri = r as i128;
         match T::as_samples_mut(dst) {
             SamplesMut::I16(d) => match self.encoding {
                 Encoding::I8 => each!(src, stride, d, 1, |[a]: [u8; 1]| i16::from(a as i8)),
@@ -351,10 +393,14 @@ impl Decoder {
                         })
                     }),
                     Encoding::I64 if little => each!(src, stride, d, 8, |a| {
-                        or_nan(i64::from_le_bytes(a), i64::MIN, |v| (v as f64 - r) as f32)
+                        or_nan(i64::from_le_bytes(a), i64::MIN, |v| {
+                            (i128::from(v) - ri) as f32
+                        })
                     }),
                     Encoding::I64 => each!(src, stride, d, 8, |a| {
-                        or_nan(i64::from_be_bytes(a), i64::MIN, |v| (v as f64 - r) as f32)
+                        or_nan(i64::from_be_bytes(a), i64::MIN, |v| {
+                            (i128::from(v) - ri) as f32
+                        })
                     }),
                     _ => unreachable!("only signed integers have a NaN minimum"),
                 }
@@ -381,20 +427,40 @@ impl Decoder {
                     )
                 }
                 Encoding::I64 if little => {
-                    each!(src, stride, d, 8, |a| (i64::from_le_bytes(a) as f64 - r)
-                        as f32)
+                    each!(
+                        src,
+                        stride,
+                        d,
+                        8,
+                        |a| (i128::from(i64::from_le_bytes(a)) - ri) as f32
+                    )
                 }
                 Encoding::I64 => {
-                    each!(src, stride, d, 8, |a| (i64::from_be_bytes(a) as f64 - r)
-                        as f32)
+                    each!(
+                        src,
+                        stride,
+                        d,
+                        8,
+                        |a| (i128::from(i64::from_be_bytes(a)) - ri) as f32
+                    )
                 }
                 Encoding::U64 if little => {
-                    each!(src, stride, d, 8, |a| (u64::from_le_bytes(a) as f64 - r)
-                        as f32)
+                    each!(
+                        src,
+                        stride,
+                        d,
+                        8,
+                        |a| (i128::from(u64::from_le_bytes(a)) - ri) as f32
+                    )
                 }
                 Encoding::U64 => {
-                    each!(src, stride, d, 8, |a| (u64::from_be_bytes(a) as f64 - r)
-                        as f32)
+                    each!(
+                        src,
+                        stride,
+                        d,
+                        8,
+                        |a| (i128::from(u64::from_be_bytes(a)) - ri) as f32
+                    )
                 }
                 Encoding::F64 if little => {
                     each!(src, stride, d, 8, |a| (f64::from_le_bytes(a) - r) as f32)

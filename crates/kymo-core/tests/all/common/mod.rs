@@ -61,8 +61,9 @@ pub fn mem_data(sample_type: SampleType, n: usize, len: u64, seed: u64) -> MemDa
     }
 }
 
-/// `data` with NaN in its float rows, as a float channel's missing samples are: about a
-/// sixteenth of the samples, and a run of up to three blocks, which can cover whole blocks.
+/// `data` with missing samples in its float rows: NaN, as a float channel's missing samples
+/// are, in about a sixteenth of the samples and a run of up to three blocks, which can cover
+/// whole blocks; and infinities (values beyond float32's range) in about a sixtyfourth.
 /// Integer data stays as it is.
 pub fn with_nan(data: MemData, seed: u64) -> MemData {
     let MemData::F32(mut rows) = data else {
@@ -71,8 +72,11 @@ pub fn with_nan(data: MemData, seed: u64) -> MemData {
     for (c, row) in rows.iter_mut().enumerate() {
         let len = row.len() as u64;
         for (i, x) in row.iter_mut().enumerate() {
-            if value(seed ^ 0x6e61_6e00, c, i as u64).rem_euclid(16) == 0 {
-                *x = f32::NAN;
+            match value(seed ^ 0x6e61_6e00, c, i as u64).rem_euclid(128) {
+                0..8 => *x = f32::NAN,
+                8 => *x = f32::INFINITY,
+                9 => *x = f32::NEG_INFINITY,
+                _ => {}
             }
         }
         if len > 0 {

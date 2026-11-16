@@ -7,8 +7,8 @@ use crate::tile::TILE_LEN;
 use crate::{ChannelId, Grid, GridId, ReadError, Recording, Sample, SampleType};
 
 impl Pyramid {
-    /// Mean of `channel` over the present samples of `range` that aren't NaN, in physical
-    /// units, or `None` if there are none.
+    /// Mean of `channel` over the present samples of `range` that hold a value (aren't NaN or
+    /// infinite), in physical units, or `None` if there are none.
     ///
     /// Whole blocks inside `range` come from the block sums; the partial blocks at the two
     /// edges (and any block whose sum is not stored) are decoded from `recording`, which must
@@ -71,7 +71,7 @@ impl Pyramid {
                 last * TILE_LEN..range.end,
             )?)
         };
-        let count = present - sum.nan;
+        let count = present - sum.missing;
         if count == 0 {
             return Ok(None);
         }
@@ -100,8 +100,8 @@ impl Pyramid {
     }
 }
 
-/// Sum of the native values of `channel` over the present samples of `range`, NaN left out
-/// and counted.
+/// Sum of the native values of `channel` over the present samples of `range`, missing ones
+/// (NaN or infinite) left out and counted.
 fn raw_sum(
     recording: &Recording,
     id: GridId,
@@ -132,8 +132,8 @@ fn typed_sum<T: Sample>(
         recording.read_native(id, &[channel], part, T::as_samples_mut(&mut buf))?;
         for &x in &buf {
             let x = x.to_f64();
-            if x.is_nan() {
-                sum.nan += 1;
+            if !x.is_finite() {
+                sum.missing += 1;
             } else {
                 sum.sum += x;
             }
