@@ -168,6 +168,20 @@ pub struct StatusLine {
     pub widest_range: String,
 }
 
+/// What [`Viewer::show`]'s controls asked of the app.
+#[derive(Debug, Default)]
+pub struct Shown {
+    /// An action the app performs, as it changes a setting: the DC chip's
+    /// [`Action::ToggleDc`], the range's [`Action::GoToTime`], the format's
+    /// [`Action::RecordingInfo`].
+    pub action: Option<Action>,
+    /// Whether a type's popup asked for the Channel Types window.
+    pub channel_types: bool,
+    /// The type settings, if a type's popup changed them (they apply to the viewer at
+    /// once; the app keeps them).
+    pub types: Option<TypeSettings>,
+}
+
 pub struct Viewer {
     document: Document,
     summary: Summary,
@@ -722,9 +736,8 @@ impl Viewer {
     }
 
     /// Shows the recording in `ui`, with the sidebar if `sidebar`, its annotations in the
-    /// colors picked in `annotation_colors` (which the legend changes). Returns an action
-    /// one of its controls asked for that the app performs, as it changes a setting: the
-    /// DC chip's [`Action::ToggleDc`].
+    /// colors picked in `annotation_colors` (which the legend changes). Returns what its
+    /// controls asked of the app (see [`Shown`]).
     #[must_use]
     pub fn show(
         &mut self,
@@ -733,7 +746,7 @@ impl Viewer {
         keymap: &Keymap,
         sidebar: bool,
         annotation_colors: &mut AnnotationColors,
-    ) -> Option<Action> {
+    ) -> Shown {
         self.sync_stim(ui.ctx());
         self.legend.apply_colors(annotation_colors);
         if let Some(id) = self.selected
@@ -745,6 +758,8 @@ impl Viewer {
         let mut toggle_dc = false;
         let mut go_to = false;
         let mut info = false;
+        let mut channel_types = false;
+        let types_before = self.types.clone();
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(color) = self.status.swatch {
@@ -783,10 +798,10 @@ impl Viewer {
                                 recording: self.serial,
                                 document: &self.document,
                                 summary: &self.summary,
-                                types: &self.types,
                                 platform: keymap.platform(),
                             },
                             &mut self.view,
+                            &mut self.types,
                             AnnotationPanel {
                                 legend: &mut self.legend,
                                 colors: annotation_colors,
@@ -805,6 +820,7 @@ impl Viewer {
                     });
                     relabel = header.relabel;
                     info = header.info;
+                    channel_types = header.all_types;
                 });
             if let Some(description) = relabel
                 && let Some(id) = self.selected
@@ -822,12 +838,21 @@ impl Viewer {
             self.status = status;
             ui.ctx().request_repaint();
         }
-        if go_to {
+        let action = if go_to {
             Some(Action::GoToTime)
         } else if info {
             Some(Action::RecordingInfo)
         } else {
             toggle_dc.then_some(Action::ToggleDc)
+        };
+        let types = (self.types != types_before).then(|| {
+            self.view.set_type_settings(self.types.clone());
+            self.types.clone()
+        });
+        Shown {
+            action,
+            channel_types,
+            types,
         }
     }
 

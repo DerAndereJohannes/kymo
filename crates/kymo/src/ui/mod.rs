@@ -15,6 +15,7 @@ pub mod readout;
 pub mod scrollbar;
 pub mod settings;
 pub mod status;
+pub mod types;
 
 use eframe::egui::{Button, Color32, Context, FontId, IntoAtoms, Label, RichText};
 
@@ -97,15 +98,17 @@ pub enum Overlay {
     About,
     GoToTime,
     RecordingInfo,
+    ChannelTypes,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 5] = [
+    pub const ALL: [Overlay; 6] = [
         Overlay::Settings,
         Overlay::Shortcuts,
         Overlay::About,
         Overlay::GoToTime,
         Overlay::RecordingInfo,
+        Overlay::ChannelTypes,
     ];
 
     /// The window's id, which also names its layer, so the one in front can be found.

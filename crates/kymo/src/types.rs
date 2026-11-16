@@ -151,6 +151,34 @@ impl TypeSettings {
         self.update(kind, |s| s.color = color);
     }
 
+    /// Whether anything set for `kind` differs from its start (its color, DC removal or
+    /// scaling).
+    pub fn changed(&self, kind: &ChannelKind) -> bool {
+        self.get(kind)
+            .is_some_and(|s| s.color.is_some() || s.remove_dc.is_some() || s.own_scale.is_some())
+    }
+
+    /// Whether `kind` has an entry: a known type that something differs for, or a type kymo
+    /// doesn't know that something was ever set for (until it is forgotten).
+    pub fn stored(&self, kind: &ChannelKind) -> bool {
+        self.get(kind).is_some()
+    }
+
+    /// Returns `kind` to its start and default color. A type kymo doesn't know keeps its
+    /// entry (see [`forget`](Self::forget)).
+    pub fn reset(&mut self, kind: &ChannelKind) {
+        self.update(kind, |s| {
+            s.color = None;
+            s.remove_dc = None;
+            s.own_scale = None;
+        });
+    }
+
+    /// Removes `kind`'s entry, which returns it to its start.
+    pub fn forget(&mut self, kind: &ChannelKind) {
+        self.set.remove(kind.key());
+    }
+
     /// The types something was set for, by key, with what was set.
     pub fn entries(&self) -> impl Iterator<Item = &TypeSet> {
         self.set.values()

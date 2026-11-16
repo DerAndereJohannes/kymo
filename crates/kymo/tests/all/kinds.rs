@@ -19,7 +19,7 @@ pub const Dbs: ChannelKind = ChannelKind::DBS;
 pub const Resp: ChannelKind = ChannelKind::RESP;
 pub const Bio: ChannelKind = ChannelKind::BIO;
 
-/// The types kymo had before types were names, as Settings' channel types table lists them.
+/// The types kymo had before types were names, as step 1's table in Settings listed them.
 pub const KINDS: [ChannelKind; 14] = [
     Eeg, Mag, Grad, RefMeg, Eog, Ecg, Emg, Seeg, Ecog, Dbs, Resp, Bio, Misc, Stim,
 ];

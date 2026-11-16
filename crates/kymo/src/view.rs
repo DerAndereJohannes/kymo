@@ -323,6 +323,18 @@ impl ViewState {
             .unwrap_or(&ChannelKind::MISC)
     }
 
+    /// The recording's channel types, each once, in the order.
+    pub fn kinds(&self) -> Vec<ChannelKind> {
+        let mut kinds: Vec<ChannelKind> = Vec::new();
+        for &c in &self.order {
+            let kind = self.kind_of(c);
+            if !kinds.contains(kind) {
+                kinds.push(kind.clone());
+            }
+        }
+        kinds
+    }
+
     pub fn dc_removed(&self) -> bool {
         self.dc
     }

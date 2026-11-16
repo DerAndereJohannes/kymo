@@ -28,6 +28,7 @@ use crate::ui::header;
 use crate::ui::info::info_window;
 use crate::ui::menus::{MenuState, about_window, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
+use crate::ui::types::channel_types_window;
 use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
@@ -87,6 +88,9 @@ pub struct KymoApp {
     settings_open: bool,
     /// Whether the Recording Info window is open.
     info_open: bool,
+    /// Whether the Channel Types window is open, and what its filter holds.
+    channel_types_open: bool,
+    channel_types_filter: String,
     /// Go to Time…, and what its field holds.
     go_to_open: bool,
     go_to: GoToField,
@@ -172,6 +176,8 @@ impl KymoApp {
             about_open: false,
             settings_open: false,
             info_open: false,
+            channel_types_open: false,
+            channel_types_filter: String::new(),
             go_to_open: false,
             go_to: GoToField::default(),
             pick_file: path.is_none(),
@@ -232,6 +238,11 @@ impl KymoApp {
     /// Whether the Recording Info window is open.
     pub fn info_open(&self) -> bool {
         self.info_open
+    }
+
+    /// Whether the Channel Types window is open.
+    pub fn channel_types_open(&self) -> bool {
+        self.channel_types_open
     }
 
     pub fn settings(&self) -> &Settings {
@@ -342,6 +353,7 @@ impl KymoApp {
                 Overlay::About => self.about_open,
                 Overlay::GoToTime => self.go_to_open,
                 Overlay::RecordingInfo => self.info_open,
+                Overlay::ChannelTypes => self.channel_types_open,
             })
             .collect()
     }
@@ -353,6 +365,7 @@ impl KymoApp {
             Overlay::About => &mut self.about_open,
             Overlay::GoToTime => &mut self.go_to_open,
             Overlay::RecordingInfo => &mut self.info_open,
+            Overlay::ChannelTypes => &mut self.channel_types_open,
         }
     }
 
@@ -484,9 +497,25 @@ impl KymoApp {
             viewer.go_to(seconds);
         }
         let mut settings = self.options.settings.clone();
-        if settings_window(&ctx, &mut self.settings_open, &mut settings) {
+        if settings_window(
+            &ctx,
+            &mut self.settings_open,
+            &mut settings,
+            &mut self.channel_types_open,
+        ) {
             self.set_settings(settings);
             self.apply_theme(&ctx);
+        }
+        let mut settings = self.options.settings.clone();
+        let recording_types = self.viewer().map(|v| v.view().kinds()).unwrap_or_default();
+        if channel_types_window(
+            &ctx,
+            &mut self.channel_types_open,
+            &mut settings.types,
+            &recording_types,
+            &mut self.channel_types_filter,
+        ) {
+            self.set_settings(settings);
         }
         let system_font = self.options.settings.system_font;
         if system_font != self.fonts_applied {
@@ -505,13 +534,20 @@ impl KymoApp {
         let mut asked = None;
         match &mut self.state {
             State::Ready(viewer) => {
-                asked = viewer.show(
+                let shown = viewer.show(
                     ui,
                     &self.gpu,
                     &self.keymap,
                     self.show_sidebar,
                     &mut self.options.annotation_colors,
                 );
+                asked = shown.action;
+                if shown.channel_types {
+                    self.channel_types_open = true;
+                }
+                if let Some(types) = shown.types {
+                    self.options.settings.types = types;
+                }
             }
             State::Empty => {
                 egui::CentralPanel::default().show(ui, |ui| {
