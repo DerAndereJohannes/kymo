@@ -1,6 +1,7 @@
 //! Scale bars: one per scale group on screen (a channel type's channels whose units measure
 //! the same, or a channel scaled on its own; see [`ScaleGroup`]), as long as a round
-//! amplitude (1, 2 or 5 times a power of ten) in the unit its readings are shown in. Each
+//! amplitude (1, 2 or 5 times a power of ten) in the unit its readings are shown in, with
+//! the prefix that suits the value ("2 mV" rather than 2000 µV; see [`fitted`]). Each
 //! keeps to the top of the visible part of its group's first block of rows, as a list's
 //! section header does: scrolling within the block leaves it where it is, and the block's
 //! end pushes it out.
@@ -23,7 +24,8 @@ pub struct ScaleBar {
     /// How much it stands for, in `unit`: the largest round value up to the rows'
     /// amplitude span (±amplitude spans a row).
     pub value: f64,
-    /// The unit its readings are shown in ("µV", "fT"); empty if the channel has none.
+    /// The unit its readings are shown in ("µV", "fT"), with another prefix where that suits
+    /// the value better (see [`fitted`]); empty if the channel has none.
     pub unit: String,
     /// Its length as a fraction of the row height, in (0.4, 1].
     pub fraction: f64,
@@ -79,6 +81,7 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         if middle < fraction / 2.0 || middle + fraction / 2.0 > rows {
             continue;
         }
+        let (value, unit) = fitted(value, &unit);
         bars.push(ScaleBar {
             kind: kind.clone(),
             group,
@@ -104,6 +107,57 @@ pub fn round_below(limit: f64) -> Option<f64> {
         .into_iter()
         .map(|step| step * power)
         .find(|&v| v <= limit * (1.0 + 1e-12))
+}
+
+/// SI prefixes a scale bar's unit may take, largest first.
+const PREFIXES: [(&str, f64); 6] = [
+    ("", 1.0),
+    ("m", 1e-3),
+    ("\u{b5}", 1e-6),
+    ("n", 1e-9),
+    ("p", 1e-12),
+    ("f", 1e-15),
+];
+
+/// `value` in `unit`, with the unit's SI prefix the largest one that keeps the value at
+/// least 1 ("2000 µV" as 2 mV, "0.5 mV" as 500 µV, "5000 fT/cm" as 5 pT/cm): volts and
+/// siemens from nano to none, teslas (also per length) from femto to none; with none of
+/// them (less than 1 nV, or 1000 V and more), the nearest. Other units stay as they are.
+pub fn fitted(value: f64, unit: &str) -> (f64, String) {
+    let (numerator, per) = match unit.split_once('/') {
+        Some((n, d)) => (n, format!("/{d}")),
+        None => (unit, String::new()),
+    };
+    let Some(base) = numerator.chars().last() else {
+        return (value, unit.to_owned());
+    };
+    let prefix = &numerator[..numerator.len() - base.len_utf8()];
+    let smallest = match base {
+        'V' | 'S' if per.is_empty() => 1e-9,
+        'T' => 1e-15,
+        _ => return (value, unit.to_owned()),
+    };
+    let Some(&(_, factor)) = PREFIXES.iter().find(|(p, _)| *p == prefix) else {
+        return (value, unit.to_owned());
+    };
+    let si = value * factor;
+    let allowed: Vec<(&str, f64)> = PREFIXES
+        .into_iter()
+        .filter(|(_, f)| *f >= smallest * (1.0 - 1e-9))
+        .collect();
+    let (prefix, factor) = allowed
+        .iter()
+        .find(|(_, f)| si / f >= 1.0 - 1e-9)
+        .or(allowed.last())
+        .copied()
+        .expect("volts and teslas allow a prefix");
+    // Round values stay round (2000 µV as exactly 2 mV).
+    let scaled = si / factor;
+    let digits = 10f64.powi(9 - scaled.abs().log10().floor() as i32);
+    (
+        (scaled * digits).round() / digits,
+        format!("{prefix}{base}{per}"),
+    )
 }
 
 /// `value`, a round value as [`round_below`] gives, with the decimals it needs and no

@@ -4,7 +4,8 @@
 use std::ops::Range;
 
 use kymo::action::Action;
-use kymo::scale_bar::{ScaleBar, round_below, scale_bars};
+use kymo::scale_bar::{ScaleBar, fitted, round_below, scale_bars};
+use kymo::view::UnitKey;
 use kymo::view::{ScaleGroup, ViewState};
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
@@ -198,6 +199,51 @@ fn the_value_follows_the_scale() {
         assert_eq!(Some(bar.value), round_below(span));
         assert!((bar.fraction - bar.value / span).abs() < 1e-12);
     }
+}
+
+/// A bar's unit takes the prefix that keeps its value at least 1 and below 1000.
+#[test]
+fn units_take_the_prefix_that_suits_the_value() {
+    let cases = [
+        ((2000.0, "\u{b5}V"), (2.0, "mV")),
+        ((0.5, "mV"), (500.0, "\u{b5}V")),
+        ((20.0, "\u{b5}V"), (20.0, "\u{b5}V")),
+        ((0.002, "V"), (2.0, "mV")),
+        ((5e6, "\u{b5}V"), (5.0, "V")),
+        ((5000.0, "V"), (5000.0, "V")),
+        ((0.5, "nV"), (0.5, "nV")),
+        ((1000.0, "fT"), (1.0, "pT")),
+        ((5000.0, "fT/cm"), (5.0, "pT/cm")),
+        ((0.2, "fT/cm"), (0.2, "fT/cm")),
+        ((2000.0, "\u{b5}S"), (2.0, "mS")),
+        // Units without these prefixes stay as they are.
+        ((2000.0, "\u{b0}C"), (2000.0, "\u{b0}C")),
+        ((2000.0, "mm"), (2000.0, "mm")),
+        ((2000.0, "kV"), (2000.0, "kV")),
+        ((2000.0, "V/m"), (2000.0, "V/m")),
+        ((5.0, ""), (5.0, "")),
+    ];
+    for ((value, unit), (want, want_unit)) in cases {
+        assert_eq!(
+            fitted(value, unit),
+            (want, want_unit.to_owned()),
+            "{value} {unit}"
+        );
+    }
+}
+
+/// An EEG group fitted to millivolts shows its bar in millivolts.
+#[test]
+fn a_bar_of_millivolts_says_so() {
+    let rec = recording(3, 60);
+    let mut view = ViewState::new(&rec);
+    let volts = UnitKey::Quantity(kymo_core::Quantity::Voltage);
+    let eeg = ScaleGroup::Shared(ChannelKind::EEG, volts);
+    view.set_amplitudes([(eeg, 2e-3)].into_iter().collect());
+    let bar = scale_bars(&rec, &view).into_iter().next().unwrap();
+    assert_eq!((bar.value, bar.unit.as_str()), (2.0, "mV"));
+    assert_eq!(bar.label(), "2 mV");
+    assert!((bar.fraction - 0.5).abs() < 1e-12);
 }
 
 #[test]
