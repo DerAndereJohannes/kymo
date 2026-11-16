@@ -17,7 +17,7 @@ use kymo::keymap::Platform;
 use kymo::settings::{Settings, Theme, load_annotation_colors};
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
-use kymo::view::{KINDS, kind_index};
+use kymo::view::{KINDS, TypeSettings, kind_index};
 use kymo::viewer::Viewer;
 use kymo_core::ChannelKind;
 use kymo_testgen::{TempDir, TempFile};
@@ -1592,6 +1592,75 @@ fn the_format_shows_its_fields_on_hover() {
     ));
 }
 
+/// The channel named `name`.
+fn channel_named(harness: &Harness<'_, KymoApp>, name: &str) -> kymo_core::ChannelId {
+    let rec = &viewer(harness).document().recording;
+    let i = rec.channels().iter().position(|c| c.name == name).unwrap();
+    kymo_core::ChannelId(i as u32)
+}
+
+/// DC removal centers the types ticked in Settings' channel types table (EEG by default,
+/// not misc), the next frame after a box changes; the master switch over them all.
+#[test]
+fn dc_removal_centers_only_the_types_ticked() {
+    let file = TempFile::preset("bvrf-int16");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let (fz, temp) = (
+        channel_named(&harness, "Fz"),
+        channel_named(&harness, "Temp"),
+    );
+    step_until(&mut harness, "Fz's mean", |app| {
+        app.viewer().unwrap().baseline(fz) != 0.0
+    });
+    assert_eq!(viewer(&harness).baseline(temp), 0.0);
+
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(3);
+    harness.get_by_label("Remove DC of EEG").click();
+    harness.run_steps(2);
+    let eeg = kind_index(ChannelKind::Eeg);
+    assert!(!harness.state().settings().types.remove_dc[eeg]);
+    assert_eq!(viewer(&harness).baseline(fz), 0.0);
+    harness.get_by_label("Remove DC of Misc").click();
+    step_until(&mut harness, "Temp's mean", |app| {
+        app.viewer().unwrap().baseline(temp) != 0.0
+    });
+    // Temp's offset, 25 °C or so.
+    assert!(viewer(&harness).baseline(temp) > 10.0);
+
+    // Off, none.
+    harness.key_press_modifiers(command(), Key::D);
+    harness.run_steps(2);
+    assert_eq!(viewer(&harness).baseline(temp), 0.0);
+}
+
+/// Each channel of a type scaled each channel on its own has a scale bar (misc's photo
+/// sensor in mV and temperature in °C by default, the EEG channels once ticked), and
+/// Restore Defaults puts the channel types' table back.
+#[test]
+fn channels_scaled_on_their_own_each_have_a_scale_bar() {
+    let file = TempFile::preset("bvrf-int16");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let bars = |harness: &Harness<'_, KymoApp>, kind| {
+        let bars = viewer(harness).scale_bars();
+        bars.iter().filter(|(b, _)| b.kind == kind).count()
+    };
+    assert_eq!(bars(&harness, ChannelKind::Misc), 2);
+    assert_eq!(bars(&harness, ChannelKind::Eeg), 1);
+
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(3);
+    harness.get_by_label("Scale Each EEG Channel").click();
+    harness.run_steps(2);
+    assert_eq!(bars(&harness, ChannelKind::Eeg), 5);
+    harness.get_by_label("Restore Defaults").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().settings().types, TypeSettings::default());
+    assert_eq!(bars(&harness, ChannelKind::Eeg), 1);
+}
+
 /// File → Recording Info…, ⌘I, the ⓘ button after the format's name and the name itself
 /// open the Recording Info window; ⌘I and Esc close it.
 #[test]
@@ -2500,7 +2569,11 @@ fn auto_scale_fits_the_window_from_the_menu_keys_and_setting() {
 
     // The Settings checkbox shows and changes it.
     harness.key_press_modifiers(command(), Key::Comma);
-    harness.step();
+    harness.run_steps(3);
+    // Below the fold in a window this small; scrolled to once the window has its size,
+    // and clicked once the scroll's animation ends.
+    harness.get_by_label("Automatic on Opening").scroll_to_me();
+    harness.run_steps(10);
     harness.get_by_label("Automatic on Opening").click();
     harness.run_steps(2);
     assert!(!harness.state().settings().auto_scale_on_open);
@@ -3587,8 +3660,9 @@ fn the_theme_follows_the_setting_and_the_system() {
     use egui::accesskit::Role;
     use egui::{SystemTheme, Theme as Look};
     let file = without_triggers("edf+d-mixed");
-    // Tall enough for legend rows below the Settings window.
-    let size = egui::vec2(SIZE.x, 900.0);
+    // Tall enough for legend rows below the Settings window (about 790 points with the
+    // channel types' table).
+    let size = egui::vec2(SIZE.x, 1100.0);
     let mut harness = screenshot_window_sized(file.path(), size);
     harness.input_mut().system_theme = Some(Look::Light);
     ready(&mut harness);
@@ -5046,21 +5120,23 @@ fn every_channel_type_has_a_row_a_color_and_a_swatch() {
         .iter()
         .map(|name| harness.get_by_label(&format!("Color of {name}")).rect())
         .collect();
+    // Down the table's left half, then down its right half.
     for (i, pair) in swatches.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
-        if (i + 1) % 3 == 0 {
+        if i + 1 == KINDS.len() / 2 {
             assert!(
-                b.top() > a.bottom() && b.left() < a.left(),
-                "row break after {i}"
+                b.left() > a.right() && b.top() < a.top(),
+                "the right half after {i}"
             );
         } else {
             assert!(
-                b.left() > a.right() && b.top() == a.top(),
+                b.top() > a.bottom() && b.left() == a.left(),
                 "{i} and {}",
                 i + 1
             );
         }
     }
+    assert_eq!(swatches[0].top(), swatches[KINDS.len() / 2].top());
 }
 
 /// Settings lists how it looks first, then how a recording opens, then memory.
@@ -5074,7 +5150,7 @@ fn settings_put_appearance_first_and_memory_last() {
     harness.run_steps(2);
     let tops: Vec<f32> = [
         "Theme",
-        "Colors",
+        "Channel Types",
         "Traces",
         "Default Window",
         "Scale",
@@ -5339,8 +5415,8 @@ fn go_to_time_moves_the_window_there() {
     assert_eq!(viewer(&harness).view().start(), 40.0);
 }
 
-/// Each label in Settings sits level with its setting's first line, the multi-line colors
-/// included, rather than centered on all of them.
+/// Each label in Settings sits level with its setting's first line, the channel types'
+/// table's header row included, rather than centered on all of them.
 #[test]
 fn settings_labels_are_level_with_their_first_control() {
     let file = TempFile::preset("bdf+c-small");
@@ -5349,10 +5425,19 @@ fn settings_labels_are_level_with_their_first_control() {
     let ctx = harness.ctx.clone();
     harness.state_mut().perform(&ctx, Action::Settings);
     harness.run_steps(3);
-    let center = |label: &str| harness.get_by_label(label).rect().center().y;
+    let center = |label: &str| {
+        // The channel types' column headers come twice; the left one.
+        let all = harness.get_all_by_label(label).collect::<Vec<_>>();
+        all.iter()
+            .map(|n| n.rect())
+            .min_by(|a, b| a.left().total_cmp(&b.left()))
+            .unwrap()
+            .center()
+            .y
+    };
     for (label, control) in [
         ("Theme", "System"),
-        ("Colors", "MEG Mag"),
+        ("Channel Types", "Per Channel"),
         ("Traces", "Anti-Aliased"),
         ("Scale", "Automatic on Opening"),
     ] {

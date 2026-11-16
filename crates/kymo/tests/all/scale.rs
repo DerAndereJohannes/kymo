@@ -1,14 +1,18 @@
 //! The automatic amplitude scale: against brute force over the samples, and what it
 //! follows (the signal's amplitude) and ignores (artifacts, offsets, sign, bad channels).
 
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::sync::OnceLock;
 
 use crate::common::{Fixture, Rng, channel, f32_rows, grid, i16_rows, walk};
+use kymo::action::Action;
 use kymo::scale::{PERCENTILE, fit};
-use kymo::view::{KINDS, ViewState, kind_index};
+use kymo::view::{
+    SCALE_STEP, ScaleGroup, TypeSettings, UnitKey, ViewState, kind_index, own_quantity,
+};
 use kymo_core::tile::{Level, query, samples_in, tiles_for_view};
-use kymo_core::{Channel, ChannelId, ChannelKind, SampleType, Unit};
+use kymo_core::{Channel, ChannelId, ChannelKind, Quantity, SampleType, Unit};
 use proptest::prelude::*;
 
 fn typed(mut ch: Channel, kind: ChannelKind, unit: &str, to_si: Option<f64>) -> Channel {
@@ -21,7 +25,7 @@ fn typed(mut ch: Channel, kind: ChannelKind, unit: &str, to_si: Option<f64>) -> 
 }
 
 /// What `view` fits in a trace area `width` pixels wide, with every tile it wants cached.
-fn fitted(fx: &Fixture, view: &ViewState, width: u32) -> [Option<f64>; KINDS.len()] {
+fn fitted(fx: &Fixture, view: &ViewState, width: u32) -> HashMap<ScaleGroup, f64> {
     let tiles = view.tile_view(width);
     let cache = fx.cache(tiles_for_view(&fx.recording, &tiles));
     fit(
@@ -104,11 +108,11 @@ fn quantile(mut values: Vec<f64>, q: f64) -> Option<f64> {
 /// The scale from the samples: per good, non-stim channel on screen, what its level draws
 /// in the window (samples, or the extremes of each bucket with a present sample), gathered
 /// into the pixel columns they start in; its center (the median of the columns'
-/// midpoints), and each column's farther end from it; per type, the [`PERCENTILE`] of all
-/// of them, flat channels left out.
-fn brute(fx: &Fixture, view: &ViewState, width: u32) -> [Option<f64>; KINDS.len()] {
+/// midpoints), and each column's farther end from it; per scale group, the [`PERCENTILE`]
+/// of all of them, flat channels left out.
+fn brute(fx: &Fixture, view: &ViewState, width: u32) -> HashMap<ScaleGroup, f64> {
     let tiles = view.tile_view(width);
-    let mut deviations: [Vec<f64>; KINDS.len()] = Default::default();
+    let mut deviations: HashMap<ScaleGroup, Vec<f64>> = HashMap::new();
     for &id in view.visible_channels() {
         if view.is_bad(id) || view.kind_of(id) == ChannelKind::Stim {
             continue;
@@ -158,10 +162,16 @@ fn brute(fx: &Fixture, view: &ViewState, width: u32) -> [Option<f64>; KINDS.len(
             .map(|&(lo, hi)| (hi - center).max(center - lo))
             .collect();
         if own.iter().any(|&d| d != 0.0) {
-            deviations[kind_index(view.kind_of(id))].extend(own);
+            deviations
+                .entry(view.scale_group(id))
+                .or_default()
+                .extend(own);
         }
     }
-    deviations.map(|d| quantile(d, PERCENTILE).filter(|&a| a > 0.0))
+    deviations
+        .into_iter()
+        .filter_map(|(group, d)| Some((group, quantile(d, PERCENTILE).filter(|&a| a > 0.0)?)))
+        .collect()
 }
 
 proptest! {
@@ -287,8 +297,11 @@ fn view_of(fx: &Fixture) -> ViewState {
     view
 }
 
-fn amplitude(fitted: &[Option<f64>; KINDS.len()], kind: ChannelKind) -> Option<f64> {
-    fitted[kind_index(kind)]
+/// What `fitted` has for the channels of `kind` in its own quantity (for a type without one,
+/// those without a unit).
+fn amplitude(fitted: &HashMap<ScaleGroup, f64>, kind: ChannelKind) -> Option<f64> {
+    let unit = own_quantity(kind).map_or(UnitKey::Label(String::new()), UnitKey::Quantity);
+    fitted.get(&ScaleGroup::Shared(kind, unit)).copied()
 }
 
 #[test]
@@ -384,4 +397,117 @@ fn meg_types_fit_in_their_si_units() {
         assert!((got - expected).abs() <= 0.05 * expected, "{kind:?}: {got}");
     }
     assert_eq!(amplitude(&fitted, ChannelKind::Eeg), None);
+}
+
+/// Channels share an amplitude only within a type and a quantity: an EEG channel in bpm
+/// fits apart from the EEG channels in µV and mV, and misc channels in °C and in mV fit
+/// apart, each on its own while misc is scaled each channel on its own (the default), by
+/// unit otherwise. EEG scaled each channel on its own fits its channels apart too.
+#[test]
+fn only_channels_of_a_type_and_quantity_share_an_amplitude() {
+    // Native amplitudes: 40 and 80 (20 and 40 µV), 60 (0.06 mV), 70 bpm, 300 (3 °C), 500
+    // (0.5 mV).
+    let rows = [40.0, 80.0, 60.0, 70.0, 300.0, 500.0]
+        .map(|a| sine(a, 30))
+        .to_vec();
+    let channels = vec![
+        typed(
+            channel("Fz", 0, 0.5, 0.0),
+            ChannelKind::Eeg,
+            "uV",
+            Some(1e-6),
+        ),
+        typed(
+            channel("Cz", 0, 0.5, 0.0),
+            ChannelKind::Eeg,
+            "uV",
+            Some(1e-6),
+        ),
+        typed(
+            channel("Pz", 0, 0.001, 0.0),
+            ChannelKind::Eeg,
+            "mV",
+            Some(1e-3),
+        ),
+        typed(channel("HR", 0, 1.0, 0.0), ChannelKind::Eeg, "bpm", None),
+        typed(channel("Temp", 0, 0.01, 0.0), ChannelKind::Misc, "°C", None),
+        typed(
+            channel("Photo", 0, 0.001, 0.0),
+            ChannelKind::Misc,
+            "mV",
+            Some(1e-3),
+        ),
+    ];
+    let fx = Fixture::new(
+        channels,
+        vec![grid(1000.0, 30_000, vec![0..30_000], SampleType::I16, 0..6)],
+        vec![i16_rows(rows)],
+    );
+    let near = |got: Option<&f64>, expected: f64| {
+        got.is_some_and(|&a| (a - expected).abs() <= 0.05 * expected)
+    };
+    let mut view = ViewState::new(&fx.recording);
+    // At first EEG's 20 µV for its channels in volts (0.02 mV for Pz); 1 in their units
+    // for the others: an EEG channel in bpm isn't drawn as microvolts.
+    let starts = (0..6).map(|c| view.channel_amplitude(ChannelId(c)));
+    let starts: Vec<f64> = starts.collect();
+    assert_eq!(starts.len(), 6);
+    for (got, want) in starts.iter().zip([20.0, 20.0, 0.02, 1.0, 1.0, 1e3]) {
+        assert!((got - want).abs() <= 1e-9 * want, "{starts:?}");
+    }
+    let got = fitted(&fx, &view, 1000);
+    // Scaling up and back to the defaults applies to every group, fitted or not.
+    let mut scaled = view.clone();
+    scaled.set_amplitudes(got.clone());
+    let fitted_hr = scaled.channel_amplitude(ChannelId(3));
+    assert!((fitted_hr - 70.0).abs() <= 0.05 * 70.0, "{fitted_hr}");
+    scaled.apply(Action::ScaleUp);
+    for c in 0..6 {
+        let before = {
+            let mut v = view.clone();
+            v.set_amplitudes(got.clone());
+            v.channel_amplitude(ChannelId(c))
+        };
+        let after = scaled.channel_amplitude(ChannelId(c));
+        assert!(
+            (after * SCALE_STEP - before).abs() <= 1e-9 * before,
+            "channel {c}"
+        );
+    }
+    scaled.apply(Action::DefaultScale);
+    for c in 0..6 {
+        assert_eq!(scaled.channel_amplitude(ChannelId(c)), starts[c as usize]);
+    }
+    let eeg = ScaleGroup::Shared(ChannelKind::Eeg, UnitKey::Quantity(Quantity::Voltage));
+    // The EEG channels in volts together, µV and mV alike: their deviations' 99th
+    // percentile, Pz's.
+    assert!(near(got.get(&eeg), 60e-6), "{got:?}");
+    let bpm = ScaleGroup::Shared(ChannelKind::Eeg, UnitKey::Label("bpm".into()));
+    assert!(near(got.get(&bpm), 70.0), "{got:?}");
+    assert!(
+        near(got.get(&ScaleGroup::Channel(ChannelId(4))), 3.0),
+        "{got:?}"
+    );
+    assert!(
+        near(got.get(&ScaleGroup::Channel(ChannelId(5))), 0.5e-3),
+        "{got:?}"
+    );
+    assert_eq!(got.len(), 4, "{got:?}");
+
+    let misc = kind_index(ChannelKind::Misc);
+    let eeg_index = kind_index(ChannelKind::Eeg);
+    let mut types = TypeSettings::default();
+    types.own_scale[misc] = false;
+    types.own_scale[eeg_index] = true;
+    view.set_type_settings(types);
+    let got = fitted(&fx, &view, 1000);
+    let celsius = ScaleGroup::Shared(ChannelKind::Misc, UnitKey::Label("°C".into()));
+    let volts = ScaleGroup::Shared(ChannelKind::Misc, UnitKey::Quantity(Quantity::Voltage));
+    assert!(near(got.get(&celsius), 3.0), "{got:?}");
+    assert!(near(got.get(&volts), 0.5e-3), "{got:?}");
+    for (c, expected) in [(0, 20e-6), (1, 40e-6), (2, 60e-6), (3, 70.0)] {
+        let got = got.get(&ScaleGroup::Channel(ChannelId(c)));
+        assert!(near(got, expected), "channel {c}: {got:?}");
+    }
+    assert_eq!(got.len(), 6, "{got:?}");
 }

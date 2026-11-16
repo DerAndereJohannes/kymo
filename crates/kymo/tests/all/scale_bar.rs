@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use kymo::action::Action;
 use kymo::scale_bar::{ScaleBar, round_below, scale_bars};
-use kymo::view::ViewState;
+use kymo::view::{ScaleGroup, ViewState};
 use kymo_core::{
     BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
     Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
@@ -197,6 +197,7 @@ fn labels_have_the_decimals_they_need() {
     let label = |value: f64, unit: &str| {
         ScaleBar {
             kind: ChannelKind::Eeg,
+            group: ScaleGroup::Channel(ChannelId(0)),
             channel: ChannelId(0),
             middle: 0.5,
             value,

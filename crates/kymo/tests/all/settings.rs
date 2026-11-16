@@ -8,7 +8,7 @@ use kymo::annotations::AnnotationColors;
 use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use kymo::settings::{load_annotation_colors, save_annotation_colors};
 use kymo::ui::palette::TypeColors;
-use kymo::view::{KINDS, kind_index};
+use kymo::view::{KINDS, TypeSettings, kind_index};
 use kymo_core::ChannelKind;
 use proptest::prelude::*;
 
@@ -47,6 +47,20 @@ fn defaults_without_storage_or_values() {
 }
 
 /// Type colors with `picked` set and the others default.
+/// The default per-type settings with DC removal off for `no_dc` and scaling each channel
+/// on its own flipped for `flipped`.
+fn types(no_dc: &[ChannelKind], flipped: &[ChannelKind]) -> TypeSettings {
+    let mut types = TypeSettings::default();
+    for &kind in no_dc {
+        types.remove_dc[kind_index(kind)] = false;
+    }
+    for &kind in flipped {
+        let own = &mut types.own_scale[kind_index(kind)];
+        *own = !*own;
+    }
+    types
+}
+
 fn colors(picked: &[(ChannelKind, Color32)]) -> TypeColors {
     let mut colors = [None; KINDS.len()];
     for &(kind, color) in picked {
@@ -64,6 +78,10 @@ fn saved_settings_read_back() {
         antialias: true,
         scale_bars: false,
         remove_dc: false,
+        types: types(
+            &[ChannelKind::Eeg, ChannelKind::Grad],
+            &[ChannelKind::Misc, ChannelKind::Ecg],
+        ),
         auto_scale_on_open: true,
         type_colors: colors(&[
             (ChannelKind::Eog, Color32::from_rgb(10, 200, 30)),
@@ -77,7 +95,13 @@ fn saved_settings_read_back() {
     settings.save(&mut storage);
     assert_eq!(Settings::load(Some(&storage)), settings);
     // Keyed by MNE's names of the types.
-    for key in ["kymo.color.eog", "kymo.color.misc", "kymo.color.ref_meg"] {
+    for key in [
+        "kymo.color.eog",
+        "kymo.color.misc",
+        "kymo.color.ref_meg",
+        "kymo.remove_dc.eeg",
+        "kymo.own_scale.ref_meg",
+    ] {
         assert!(storage.0.contains_key(key), "{key}");
     }
     for theme in Theme::ALL {
@@ -97,6 +121,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         antialias: true,
         scale_bars: false,
         remove_dc: false,
+        types: types(&[ChannelKind::Eeg], &[ChannelKind::Misc]),
         auto_scale_on_open: true,
         type_colors: colors(&[(ChannelKind::Grad, Color32::from_rgb(255, 0, 128))]),
         theme: Theme::Light,
@@ -154,6 +179,20 @@ fn unreadable_values_are_defaults_and_others_kept() {
             },
         ),
         (
+            "kymo.remove_dc.eeg",
+            Settings {
+                types: types(&[], &[ChannelKind::Misc]),
+                ..saved
+            },
+        ),
+        (
+            "kymo.own_scale.misc",
+            Settings {
+                types: types(&[ChannelKind::Eeg], &[]),
+                ..saved
+            },
+        ),
+        (
             "kymo.color.grad",
             Settings {
                 type_colors: defaults.type_colors,
@@ -197,6 +236,7 @@ fn values_out_of_range_are_clamped() {
         antialias: false,
         scale_bars: true,
         remove_dc: true,
+        types: TypeSettings::default(),
         auto_scale_on_open: false,
         type_colors: [None; KINDS.len()],
         theme: Theme::System,
@@ -331,4 +371,26 @@ fn recent_recordings_are_kept_in_storage() {
     assert_eq!(Recent::load(None), Recent::default());
     storage.set_string("kymo.recent", "\n/x.edf\n/x.edf\n".into());
     assert_eq!(Recent::load(Some(&storage)).paths().len(), 1);
+}
+
+/// DC removal centers every type but misc and other biological signals (and stim, which it
+/// never centers); misc, other biological signals and respiration are scaled each channel
+/// on its own.
+#[test]
+fn per_type_defaults() {
+    use ChannelKind::*;
+    let types = Settings::default().types;
+    for kind in KINDS {
+        let i = kind_index(kind);
+        assert_eq!(
+            types.remove_dc[i],
+            !matches!(kind, Misc | Bio | Stim),
+            "{kind:?}"
+        );
+        assert_eq!(
+            types.own_scale[i],
+            matches!(kind, Misc | Bio | Resp),
+            "{kind:?}"
+        );
+    }
 }

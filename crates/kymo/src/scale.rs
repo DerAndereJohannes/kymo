@@ -1,11 +1,12 @@
-//! Automatic amplitude scale: per channel type, the amplitude at which what the window
-//! draws fits the rows.
+//! Automatic amplitude scale: per scale group (a channel type's channels whose units measure
+//! the same, or a channel on its own; see [`ScaleGroup`]), the amplitude at which what the
+//! window draws fits the rows.
 //!
 //! What a channel draws in a pixel column spans the lowest to the highest of its samples
 //! there (or of its buckets, when zoomed out), each counted in the column it starts in.
 //! The channel's center is the median of its columns' midpoints, so a DC offset doesn't
 //! matter, DC removal on or off. Every column deviates from it by its farther end, above
-//! or below alike. A type's amplitude is the [`PERCENTILE`] of the deviations over its
+//! or below alike. A group's amplitude is the [`PERCENTILE`] of the deviations over its
 //! good channels on screen: as ±amplitude spans a row, that much of what they draw stays
 //! in their rows, and a single artifact doesn't shrink the rest. Working per column keeps
 //! the cost to the screen's rows times its width, however many samples a column holds.
@@ -15,26 +16,25 @@ use std::collections::HashMap;
 use kymo_core::tile::{Level, Query, Tile, TileData, samples_in};
 use kymo_core::{ChannelId, ChannelKind, Recording};
 
-use crate::view::{KINDS, ViewState, kind_index};
+use crate::view::{ScaleGroup, ViewState};
 
 /// The share of a type's deviations that stays within the rows.
 pub const PERCENTILE: f64 = 0.99;
 
-/// Per type in [`KINDS`] order, the amplitude per channel spacing (SI units) that fits what
-/// `query` draws of the window of `view` in a trace area `width_px` pixels wide; `None`
-/// for a type without a good, non-flat channel on screen, and always for stim channels,
-/// whose codes keep their scale.
+/// Per scale group with a good, non-flat channel on screen, the amplitude per channel
+/// spacing (SI units) that fits what `query` draws of the window of `view` in a trace area
+/// `width_px` pixels wide; none for stim channels, whose codes keep their scale.
 pub fn fit(
     recording: &Recording,
     view: &ViewState,
     query: &Query,
     width_px: u32,
-) -> [Option<f64>; KINDS.len()] {
-    let wanted: HashMap<ChannelId, usize> = view
+) -> HashMap<ScaleGroup, f64> {
+    let wanted: HashMap<ChannelId, ScaleGroup> = view
         .visible_channels()
         .iter()
         .filter(|&&c| !view.is_bad(c) && view.kind_of(c) != ChannelKind::Stim)
-        .map(|&c| (c, kind_index(view.kind_of(c))))
+        .map(|&c| (c, view.scale_group(c)))
         .collect();
     let time = view.time();
     let width = width_px.max(1) as usize;
@@ -84,7 +84,7 @@ pub fn fit(
         }
     }
 
-    let mut deviations: [Vec<f64>; KINDS.len()] = Default::default();
+    let mut deviations: HashMap<ScaleGroup, Vec<f64>> = HashMap::new();
     for (channel, mut items) in drawn {
         items.retain(|&(lo, hi)| lo <= hi);
         let mut midpoints: Vec<f64> = items.iter().map(|&(lo, hi)| (lo + hi) / 2.0).collect();
@@ -92,15 +92,21 @@ pub fn fit(
             continue;
         };
         let own = items.iter().map(|&(lo, hi)| (hi - center).max(center - lo));
-        let start = deviations[wanted[&channel]].len();
-        let all = &mut deviations[wanted[&channel]];
+        let all = deviations.entry(wanted[&channel].clone()).or_default();
+        let start = all.len();
         all.extend(own);
         // A flat channel says nothing about the scale.
         if all[start..].iter().all(|&d| d == 0.0) {
             all.truncate(start);
         }
     }
-    deviations.map(|mut d| quantile(&mut d, PERCENTILE).filter(|a| a.is_finite() && *a > 0.0))
+    deviations
+        .into_iter()
+        .filter_map(|(group, mut d)| {
+            let amplitude = quantile(&mut d, PERCENTILE)?;
+            (amplitude.is_finite() && amplitude > 0.0).then_some((group, amplitude))
+        })
+        .collect()
 }
 
 /// The low and high end of item `item` of row `row` in native units: a sample twice at

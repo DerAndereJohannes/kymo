@@ -3,11 +3,11 @@
 //! Times are seconds from the recording start and positions are points (logical pixels)
 //! within the trace area, all in f64. Every change is clamped to the recording.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
 use kymo_core::tile::{Direction, SignalVersion, TileKey, View, prefetch, samples_in};
-use kymo_core::{ChannelId, ChannelKind, Recording, StreamContent};
+use kymo_core::{ChannelId, ChannelKind, Quantity, Recording, StreamContent, Unit};
 
 use crate::action::{Action, Gesture};
 
@@ -43,6 +43,82 @@ fn default_amplitude(kind: ChannelKind) -> f64 {
         ChannelKind::Seeg | ChannelKind::Ecog | ChannelKind::Dbs => 1e-4,
         ChannelKind::Bio => 1e-6,
         _ => 1.0,
+    }
+}
+
+/// The quantity a channel type's amplitudes are in (volts for EEG); `None` for types of
+/// any quantity (stim, misc, respiration).
+pub fn own_quantity(kind: ChannelKind) -> Option<Quantity> {
+    match kind {
+        ChannelKind::Mag | ChannelKind::RefMeg => Some(Quantity::MagneticField),
+        ChannelKind::Grad => Some(Quantity::FieldGradient),
+        ChannelKind::Eeg
+        | ChannelKind::Eog
+        | ChannelKind::Ecg
+        | ChannelKind::Emg
+        | ChannelKind::Seeg
+        | ChannelKind::Ecog
+        | ChannelKind::Dbs
+        | ChannelKind::Bio => Some(Quantity::Voltage),
+        _ => None,
+    }
+}
+
+/// What a channel's unit measures, as far as sharing an amplitude goes: a quantity kymo
+/// scales (µV and mV alike are volts), or else the label itself ("°C", "bpm", "").
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UnitKey {
+    Quantity(Quantity),
+    Label(String),
+}
+
+impl UnitKey {
+    pub fn of(unit: &Unit) -> UnitKey {
+        match unit.quantity() {
+            Some(quantity) => UnitKey::Quantity(quantity),
+            None => UnitKey::Label(unit.label.trim().to_owned()),
+        }
+    }
+}
+
+/// Channels that share an amplitude per channel spacing: those of one type whose units
+/// share a [`UnitKey`], or one channel of a type scaled each channel on its own.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ScaleGroup {
+    Shared(ChannelKind, UnitKey),
+    Channel(ChannelId),
+}
+
+/// The amplitude channels of `kind` in units of `unit` start at, SI units: the type's
+/// default ([`default_amplitude`]) in its own quantity, or for a type without one; 1
+/// otherwise (an EEG channel in °C, or in a unit kymo doesn't know, isn't drawn as microvolts).
+fn group_default(kind: ChannelKind, unit: &UnitKey) -> f64 {
+    match (own_quantity(kind), unit) {
+        (None, _) => default_amplitude(kind),
+        (Some(own), UnitKey::Quantity(q)) if own == *q => default_amplitude(kind),
+        _ => 1.0,
+    }
+}
+
+/// Per channel type in [`KINDS`] order: which DC removal centers (when it is on) and which
+/// are scaled each channel on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeSettings {
+    pub remove_dc: [bool; KINDS.len()],
+    pub own_scale: [bool; KINDS.len()],
+}
+
+impl Default for TypeSettings {
+    /// DC removal for every type but misc and other biological signals, whose level means
+    /// something (temperature, oxygen saturation); each channel on its own for misc, other
+    /// biological signals and respiration, whose channels measure different things.
+    fn default() -> Self {
+        let off = [ChannelKind::Misc, ChannelKind::Bio, ChannelKind::Stim];
+        let own = [ChannelKind::Misc, ChannelKind::Bio, ChannelKind::Resp];
+        TypeSettings {
+            remove_dc: KINDS.map(|k| !off.contains(&k)),
+            own_scale: KINDS.map(|k| own.contains(&k)),
+        }
     }
 }
 
@@ -104,9 +180,10 @@ pub struct ViewState {
     rows_order: Vec<ChannelId>,
     /// Per channel (by id): whether it is hidden.
     hidden: Vec<bool>,
-    /// Per channel (by id): its type and its unit's factor to SI.
+    /// Per channel (by id): its type, its unit's factor to SI and what its unit measures.
     kinds: Vec<ChannelKind>,
     to_si: Vec<Option<f64>>,
+    units: Vec<UnitKey>,
     start: f64,
     span: f64,
     /// Seconds shown at first and after [`Action::DefaultWindow`].
@@ -115,9 +192,13 @@ pub struct ViewState {
     top: f64,
     /// Rows on screen as last chosen; fewer while fewer channels are shown.
     rows: usize,
-    /// Amplitude per channel spacing, SI units, per [`KINDS`].
-    amplitudes: [f64; KINDS.len()],
+    /// Amplitude per channel spacing (SI units) of the scale groups Auto Scale fitted, before
+    /// `scale`; the others have their defaults ([`group_default`]).
+    fitted: HashMap<ScaleGroup, f64>,
+    /// The factor on every amplitude from scaling up and down.
+    scale: f64,
     dc: bool,
+    types: TypeSettings,
     bad: BTreeSet<ChannelId>,
     direction: Direction,
     generation: u64,
@@ -165,13 +246,16 @@ impl ViewState {
             hidden: vec![false; channels.len()],
             kinds: channels.iter().map(|c| c.kind).collect(),
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
+            units: channels.iter().map(|c| UnitKey::of(&c.unit)).collect(),
             start: 0.0,
             span: DEFAULT_SPAN,
             default_span: DEFAULT_SPAN,
             top: 0.0,
             rows: DEFAULT_ROWS,
-            amplitudes: KINDS.map(default_amplitude),
+            fitted: HashMap::new(),
+            scale: 1.0,
             dc: true,
+            types: TypeSettings::default(),
             bad: recording.bad_channels().iter().copied().collect(),
             direction: Direction::Forward,
             generation: 0,
@@ -246,15 +330,50 @@ impl ViewState {
         &self.rows_order[self.visible_rows()]
     }
 
-    /// Amplitude per channel spacing for a channel type, in SI units (V for EEG).
+    /// Amplitude per channel spacing for a channel type's channels in its own quantity, in
+    /// SI units (V for EEG), unless the type is scaled each channel on its own; for a type
+    /// without a quantity of its own, of its channels without a unit.
     pub fn amplitude(&self, kind: ChannelKind) -> f64 {
-        self.amplitudes[kind_index(kind)]
+        let unit = match own_quantity(kind) {
+            Some(quantity) => UnitKey::Quantity(quantity),
+            None => UnitKey::Label(String::new()),
+        };
+        self.group_amplitude(&ScaleGroup::Shared(kind, unit))
+    }
+
+    /// Amplitude per channel spacing for a scale group, in SI units.
+    pub fn group_amplitude(&self, group: &ScaleGroup) -> f64 {
+        let base = self
+            .fitted
+            .get(group)
+            .copied()
+            .unwrap_or_else(|| match group {
+                ScaleGroup::Shared(kind, unit) => group_default(*kind, unit),
+                ScaleGroup::Channel(c) => group_default(self.kind_of(*c), self.unit_of(*c)),
+            });
+        base * self.scale
     }
 
     /// Amplitude per channel spacing for one channel, in its own physical unit. A unit
     /// without a known SI factor counts as SI.
     pub fn channel_amplitude(&self, channel: ChannelId) -> f64 {
-        self.amplitude(self.kind_of(channel)) / self.to_si(channel)
+        self.group_amplitude(&self.scale_group(channel)) / self.to_si(channel)
+    }
+
+    /// The channels `channel` shares its amplitude with: its own group if its type is scaled
+    /// each channel on its own, else those of its type whose units measure the same.
+    pub fn scale_group(&self, channel: ChannelId) -> ScaleGroup {
+        let kind = self.kind_of(channel);
+        if self.types.own_scale[kind_index(kind)] && kind != ChannelKind::Stim {
+            ScaleGroup::Channel(channel)
+        } else {
+            ScaleGroup::Shared(kind, self.unit_of(channel).clone())
+        }
+    }
+
+    fn unit_of(&self, channel: ChannelId) -> &UnitKey {
+        const NONE: &UnitKey = &UnitKey::Label(String::new());
+        self.units.get(channel.0 as usize).unwrap_or(NONE)
     }
 
     /// The factor from a channel's physical unit to SI; 1 for a unit without a known one.
@@ -263,12 +382,12 @@ impl ViewState {
         self.to_si.get(i).copied().flatten().unwrap_or(1.0)
     }
 
-    /// Sets the amplitude per channel spacing of each type in [`KINDS`] order that has one
-    /// (SI units); the others, and values that aren't positive and finite, stay as they are.
-    pub fn set_amplitudes(&mut self, amplitudes: [Option<f64>; KINDS.len()]) {
-        for (amplitude, new) in self.amplitudes.iter_mut().zip(amplitudes) {
-            if let Some(new) = new.filter(|a| a.is_finite() && *a > 0.0) {
-                *amplitude = new;
+    /// Sets the amplitude per channel spacing (SI units) of each scale group given; the
+    /// others, and values that aren't positive and finite, stay as they are.
+    pub fn set_amplitudes(&mut self, amplitudes: HashMap<ScaleGroup, f64>) {
+        for (group, amplitude) in amplitudes {
+            if amplitude.is_finite() && amplitude > 0.0 {
+                self.fitted.insert(group, amplitude / self.scale);
             }
         }
     }
@@ -289,6 +408,23 @@ impl ViewState {
     /// changes the setting, not the view.
     pub fn set_dc_removed(&mut self, on: bool) {
         self.dc = on;
+    }
+
+    /// Whether DC removal centers `channel`: it is on, the channel's type is one it
+    /// centers, and the channel isn't a stim channel.
+    pub fn dc_applies(&self, channel: ChannelId) -> bool {
+        let kind = self.kind_of(channel);
+        self.dc && kind != ChannelKind::Stim && self.types.remove_dc[kind_index(kind)]
+    }
+
+    pub fn type_settings(&self) -> TypeSettings {
+        self.types
+    }
+
+    /// The per-type settings from now on (the app's settings decide). Amplitudes fitted to
+    /// groups that no longer exist stay, for when they come back.
+    pub fn set_type_settings(&mut self, types: TypeSettings) {
+        self.types = types;
     }
 
     pub fn is_bad(&self, channel: ChannelId) -> bool {
@@ -362,7 +498,10 @@ impl ViewState {
             }
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
-            Action::DefaultScale => self.amplitudes = KINDS.map(default_amplitude),
+            Action::DefaultScale => {
+                self.fitted.clear();
+                self.scale = 1.0;
+            }
             Action::ToggleDc
             | Action::Open
             | Action::GoToTime
@@ -455,9 +594,7 @@ impl ViewState {
     /// Makes traces `factor` times taller.
     pub fn scale(&mut self, factor: f64) {
         if factor.is_finite() && factor > 0.0 {
-            for amplitude in &mut self.amplitudes {
-                *amplitude /= factor;
-            }
+            self.scale /= factor;
         }
     }
 
@@ -624,7 +761,7 @@ impl ViewState {
         let windows: Vec<_> = self
             .visible_channels()
             .iter()
-            .filter(|&&c| self.kind_of(c) != ChannelKind::Stim)
+            .filter(|&&c| self.dc_applies(c))
             .map(|&c| {
                 let grid = recording.grid(recording.channel(c).grid);
                 (c, samples_in(grid, &time))

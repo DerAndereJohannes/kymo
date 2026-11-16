@@ -33,7 +33,7 @@ use crate::ui::header::{
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{elide_middle, readout, scrollbar, status};
-use crate::view::{Area, ViewState};
+use crate::view::{Area, TypeSettings, ViewState};
 
 /// Narrowest the sidebar can be dragged.
 const SIDEBAR_MIN_WIDTH: f32 = 200.0;
@@ -502,6 +502,12 @@ impl Viewer {
     }
 
     /// Draws channel types in the colors picked for them, the others in their defaults.
+    /// Which types DC removal centers and which are scaled each channel on its own, from now
+    /// on.
+    pub fn set_type_settings(&mut self, types: TypeSettings) {
+        self.view.set_type_settings(types);
+    }
+
     pub fn set_type_colors(&mut self, colors: TypeColors) {
         self.type_colors = colors;
     }
@@ -516,10 +522,10 @@ impl Viewer {
     }
 
     /// The physical value drawn at the middle of `channel`'s row: its mean over the window
-    /// with DC removal on (the last one computed, 0 until there is one), otherwise 0. Always
-    /// 0 for stim channels: DC removal asks for no means of them.
+    /// where DC removal centers it (the last one computed, 0 until there is one; see
+    /// [`ViewState::dc_applies`]), otherwise 0. Always 0 for stim channels.
     pub fn baseline(&self, channel: ChannelId) -> f64 {
-        if !self.view.dc_removed() {
+        if !self.view.dc_applies(channel) {
             return 0.0;
         }
         self.service().mean(channel).map_or(0.0, |m| m.value)

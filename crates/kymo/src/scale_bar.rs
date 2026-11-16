@@ -1,17 +1,20 @@
-//! Scale bars: one per channel type on screen, as long as a round amplitude (1, 2 or 5
-//! times a power of ten) in the unit its readings are shown in. Each keeps to the top of
-//! the visible part of its type's first block of rows, as a list's section header does:
-//! scrolling within the block leaves it where it is, and the block's end pushes it out.
+//! Scale bars: one per scale group on screen (a channel type's channels whose units measure
+//! the same, or a channel scaled on its own; see [`ScaleGroup`]), as long as a round
+//! amplitude (1, 2 or 5 times a power of ten) in the unit its readings are shown in. Each
+//! keeps to the top of the visible part of its group's first block of rows, as a list's
+//! section header does: scrolling within the block leaves it where it is, and the block's
+//! end pushes it out.
 
 use kymo_core::{ChannelId, ChannelKind, Recording};
 
 use crate::ui::readout::display_unit;
-use crate::view::ViewState;
+use crate::view::{ScaleGroup, ViewState};
 
-/// A channel type's scale bar.
+/// A scale group's scale bar.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScaleBar {
     pub kind: ChannelKind,
+    pub group: ScaleGroup,
     /// The first channel on screen of its block, whose unit it is in.
     pub channel: ChannelId,
     /// Where its middle is, in rows from the top of the trace area (0.5 is the middle of
@@ -39,12 +42,12 @@ impl ScaleBar {
     }
 }
 
-/// The scale bars of the rows `view` shows, one for each channel type but stim (whose rows
-/// hold codes, not amplitudes). A type's bar stands beside the first block of consecutive
-/// rows of that type on screen where it fits whole: in the middle of the block's top row
+/// The scale bars of the rows `view` shows, one for each scale group but stim channels'
+/// (whose rows hold codes, not amplitudes). A group's bar stands beside the first block of
+/// consecutive rows of that group on screen where it fits whole: in the middle of the block's top row
 /// on screen, or of its top row slot while the block goes on above the screen, and no
 /// lower in the block than the middle of its last row, so a block leaving at the top takes
-/// the bar along. A type without such a block, or without a usable amplitude, gets none.
+/// the bar along. A group without such a block, or without a usable amplitude, gets none.
 pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
     let top = view.top();
     let rows = view.rows() as f64;
@@ -53,16 +56,17 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
     let mut bars: Vec<ScaleBar> = Vec::new();
     let mut start = 0;
     while start < channels.len() {
-        let kind = view.kind_of(channels[start]);
+        let group = view.scale_group(channels[start]);
         let end = start
             + channels[start..]
                 .iter()
-                .take_while(|&&c| view.kind_of(c) == kind)
+                .take_while(|&&c| view.scale_group(c) == group)
                 .count();
         let block = ((first + start) as f64, (first + end) as f64);
         let channel = channels[start];
+        let kind = view.kind_of(channel);
         start = end;
-        if kind == ChannelKind::Stim || bars.iter().any(|b| b.kind == kind) {
+        if kind == ChannelKind::Stim || bars.iter().any(|b| b.group == group) {
             continue;
         }
         let (unit, factor) = display_unit(recording.channel(channel));
@@ -77,6 +81,7 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         }
         bars.push(ScaleBar {
             kind,
+            group,
             channel,
             middle,
             value,

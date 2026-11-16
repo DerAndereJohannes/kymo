@@ -10,7 +10,7 @@ use kymo_core::tile::DEFAULT_BUDGET;
 use crate::annotations::{AnnotationColors, Rgb};
 use crate::render::DEFAULT_GPU_BUDGET;
 use crate::ui::palette::TypeColors;
-use crate::view::{DEFAULT_SPAN, KINDS};
+use crate::view::{DEFAULT_SPAN, KINDS, TypeSettings};
 
 /// Megabytes the tile cache may take.
 pub const TILE_CACHE_MB: RangeInclusive<u32> = 64..=65_536;
@@ -34,6 +34,16 @@ const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
 /// `kymo.color.ref_meg`.
 fn type_color_key(kind: ChannelKind) -> String {
     format!("kymo.color.{}", kind.mne_name())
+}
+
+/// The keys of a channel type's DC removal and scaling each channel on its own, as
+/// [`type_color_key`]'s: `kymo.remove_dc.eeg`, `kymo.own_scale.misc`.
+fn remove_dc_key(kind: ChannelKind) -> String {
+    format!("kymo.remove_dc.{}", kind.mne_name())
+}
+
+fn own_scale_key(kind: ChannelKind) -> String {
+    format!("kymo.own_scale.{}", kind.mne_name())
 }
 
 /// Light or dark: the system's choice, or one of them whatever the system uses. On
@@ -102,8 +112,11 @@ pub struct Settings {
     pub antialias: bool,
     /// Whether each channel type on screen shows a scale bar.
     pub scale_bars: bool,
-    /// Whether each trace is centered on its mean over the window (DC removal).
+    /// Whether each trace is centered on its mean over the window (DC removal), of the types
+    /// `types` has it for.
     pub remove_dc: bool,
+    /// Per channel type: DC removal, and scaling each channel on its own.
+    pub types: TypeSettings,
     /// Whether a recording opens with Auto Scale instead of the default amplitudes.
     pub auto_scale_on_open: bool,
     /// Colors picked per channel type; the others keep their defaults.
@@ -123,6 +136,7 @@ impl Default for Settings {
             antialias: false,
             scale_bars: true,
             remove_dc: true,
+            types: TypeSettings::default(),
             auto_scale_on_open: true,
             type_colors: [None; KINDS.len()],
             theme: Theme::System,
@@ -156,6 +170,21 @@ impl Settings {
             remove_dc: get(REMOVE_DC_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.remove_dc),
+            types: {
+                let flags = |key: fn(ChannelKind) -> String, defaults: [bool; KINDS.len()]| {
+                    let mut flags = defaults;
+                    for (flag, kind) in flags.iter_mut().zip(KINDS) {
+                        if let Some(v) = get(&key(kind)).and_then(|v| v.trim().parse().ok()) {
+                            *flag = v;
+                        }
+                    }
+                    flags
+                };
+                TypeSettings {
+                    remove_dc: flags(remove_dc_key, defaults.types.remove_dc),
+                    own_scale: flags(own_scale_key, defaults.types.own_scale),
+                }
+            },
             auto_scale_on_open: get(AUTO_SCALE_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.auto_scale_on_open),
@@ -182,6 +211,10 @@ impl Settings {
         storage.set_string(ANTIALIAS_KEY, self.antialias.to_string());
         storage.set_string(SCALE_BARS_KEY, self.scale_bars.to_string());
         storage.set_string(REMOVE_DC_KEY, self.remove_dc.to_string());
+        for (i, kind) in KINDS.into_iter().enumerate() {
+            storage.set_string(&remove_dc_key(kind), self.types.remove_dc[i].to_string());
+            storage.set_string(&own_scale_key(kind), self.types.own_scale[i].to_string());
+        }
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
         storage.set_string(THEME_KEY, self.theme.key().to_owned());
         storage.set_string(SYSTEM_FONT_KEY, self.system_font.to_string());
@@ -209,6 +242,7 @@ impl Settings {
             antialias: self.antialias,
             scale_bars: self.scale_bars,
             remove_dc: self.remove_dc,
+            types: self.types,
             auto_scale_on_open: self.auto_scale_on_open,
             type_colors: self.type_colors,
             theme: self.theme,

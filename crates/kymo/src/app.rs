@@ -256,6 +256,7 @@ impl KymoApp {
             viewer.set_antialias(settings.antialias);
             viewer.set_scale_bars(settings.scale_bars);
             viewer.set_remove_dc(settings.remove_dc);
+            viewer.set_type_settings(settings.types);
             viewer.set_type_colors(settings.type_colors);
         }
     }
@@ -1040,6 +1041,7 @@ impl KymoApp {
                 viewer.set_antialias(self.options.settings.antialias);
                 viewer.set_scale_bars(self.options.settings.scale_bars);
                 viewer.set_remove_dc(self.options.settings.remove_dc);
+                viewer.set_type_settings(self.options.settings.types);
                 viewer.set_type_colors(self.options.settings.type_colors);
                 if self.options.settings.auto_scale_on_open {
                     viewer.apply(Action::AutoScale);

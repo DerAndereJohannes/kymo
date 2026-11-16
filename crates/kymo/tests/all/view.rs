@@ -3,11 +3,11 @@
 use std::ops::Range;
 
 use kymo::action::{Action, Gesture};
-use kymo::view::{Area, DEFAULT_ROWS, KINDS, ViewState, kind_index};
+use kymo::view::{Area, DEFAULT_ROWS, KINDS, ScaleGroup, UnitKey, ViewState, kind_index};
 use kymo_core::tile::{Direction, prefetch, tiles_for_view};
 use kymo_core::{
-    BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, ReadError,
-    Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
+    BlockReader, Channel, ChannelId, ChannelKind, Grid, GridId, Header, Opened, Quantity,
+    ReadError, Recording, SampleType, SamplesMut, Stream, StreamContent, Timebase, Unit,
 };
 use proptest::prelude::*;
 
@@ -884,6 +884,17 @@ fn dc_windows_follow_the_view_while_dc_removal_is_on() {
     assert_eq!(view.dc_request(&rec), None);
     view.set_dc_removed(true);
     assert_eq!(view.dc_request(&rec).unwrap(), expected(&view));
+    // EOG unticked: its channel is left out too.
+    let mut types = view.type_settings();
+    types.remove_dc[kind_index(ChannelKind::Eog)] = false;
+    view.set_type_settings(types);
+    let windows = view.dc_request(&rec).unwrap();
+    let eog = windows
+        .iter()
+        .filter(|&&(c, _)| rec.channel(c).kind == ChannelKind::Eog);
+    assert_eq!(eog.count(), 0);
+    assert_eq!(windows.len(), view.visible_channels().len() - 2);
+    assert!(!view.dc_applies(status));
 }
 
 #[test]
@@ -891,20 +902,29 @@ fn set_amplitudes_takes_only_positive_finite_ones() {
     let rec = recording(4, 60);
     let mut view = ViewState::new(&rec);
     let before = KINDS.map(|k| view.amplitude(k));
-    let mut amplitudes = [None; KINDS.len()];
-    amplitudes[..5].copy_from_slice(&[
-        Some(0.0),
-        Some(-1.0),
-        Some(f64::NAN),
-        Some(f64::INFINITY),
-        None,
-    ]);
-    amplitudes[5] = Some(3e-6);
-    view.set_amplitudes(amplitudes);
-    let after = KINDS.map(|k| view.amplitude(k));
-    assert_eq!(after[..5], before[..5]);
-    assert_eq!(after[5], 3e-6);
-    assert_eq!(after[6..], before[6..]);
+    let volts = || UnitKey::Quantity(Quantity::Voltage);
+    let amplitudes = [
+        (ChannelKind::Eeg, 0.0),
+        (ChannelKind::Eog, -1.0),
+        (ChannelKind::Ecg, f64::NAN),
+        (ChannelKind::Emg, f64::INFINITY),
+        (ChannelKind::Seeg, 3e-6),
+    ]
+    .map(|(kind, amplitude)| (ScaleGroup::Shared(kind, volts()), amplitude));
+    view.set_amplitudes(amplitudes.into_iter().collect());
+    for (i, kind) in KINDS.into_iter().enumerate() {
+        let want = if kind == ChannelKind::Seeg {
+            3e-6
+        } else {
+            before[i]
+        };
+        assert_eq!(view.amplitude(kind), want, "{kind:?}");
+    }
+    // Scaled up or down first, a fitted amplitude is still the one given.
+    view.apply(Action::ScaleUp);
+    let fitted = [(ScaleGroup::Shared(ChannelKind::Eeg, volts()), 4e-6)];
+    view.set_amplitudes(fitted.into_iter().collect());
+    assert!((view.amplitude(ChannelKind::Eeg) - 4e-6).abs() < 1e-18);
 }
 
 #[test]
