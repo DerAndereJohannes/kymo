@@ -81,7 +81,7 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
     }
     for (i, grid) in summary.grids.iter().enumerate() {
         ui.add_space(6.0);
-        grid_table(ui, i, grid);
+        grid_table(ui, path, i, grid);
     }
 }
 
@@ -98,17 +98,21 @@ pub const COLUMNS: [&str; 7] = [
 ];
 
 /// Grid `index`'s channels as the file describes them, under a header that unfolds them
-/// (folded at first; "Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording
-/// has several): the grid's rate, samples and channels, then a striped table, a row per
-/// channel ([`COLUMNS`]), which scrolls sideways where it is wider than the window.
-fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
+/// ("Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording has several): the
+/// grid's rate, samples and channels, then a striped table, a row per channel
+/// ([`COLUMNS`]), which scrolls sideways where it is wider than the window. Folded whenever
+/// the recording at `path` is first shown in a session: whether it is unfolded is kept
+/// while kymo runs, and not in egui's memory, which kymo saves.
+fn grid_table(ui: &mut egui::Ui, path: &Path, index: usize, grid: &GridSummary) {
+    let unfolded = egui::Id::unique(("kymo info grid unfolded", path, index));
+    let open = ui.data(|d| d.get_temp::<bool>(unfolded)).unwrap_or(false);
     let mut title = format!("Grid {}", index + 1);
     if let Some(stream) = &grid.stream {
         title += &format!(" \u{b7} {stream}");
     }
-    egui::CollapsingHeader::new(RichText::new(title).strong())
+    let response = egui::CollapsingHeader::new(RichText::new(title).strong())
         .id_salt(("kymo info grid", index))
-        .default_open(false)
+        .open(Some(open))
         .show(ui, |ui| {
             ui.add(Label::new(RichText::new(unbroken(&grid.describe())).weak()).wrap());
             let range = grid.channels.iter().any(|c| c.range.is_some());
@@ -147,6 +151,9 @@ fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
                         });
                 });
         });
+    if response.header_response.clicked() {
+        ui.data_mut(|d| d.insert_temp(unfolded, !open));
+    }
 }
 
 /// `value` as written, or in scientific notation where that is long (a float format's

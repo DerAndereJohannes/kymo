@@ -2070,6 +2070,7 @@ dependencies = [
  "pollster 1.0.1",
  "proptest",
  "rfd",
+ "ron",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
  "zbus",

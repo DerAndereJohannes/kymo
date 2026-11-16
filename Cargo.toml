@@ -24,6 +24,8 @@ dirs = "7"
 eframe = { version = "0.37", features = ["persistence"] }
 # Headless UI tests.
 egui_kittest = { version = "0.37", features = ["eframe", "wgpu"] }
+# Tests only, already pulled in by eframe; saves egui's memory as eframe does.
+ron = "0.12"
 # The system font fallback eframe installs, for the same glyphs in headless UI tests.
 egui_system_font_provider = "0.37"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
