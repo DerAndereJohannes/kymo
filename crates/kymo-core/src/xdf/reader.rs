@@ -163,7 +163,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let mut channels = Vec::new();
     let mut grids = Vec::new();
     let mut readers = Vec::new();
-    let mut unknown_units: Vec<String> = Vec::new();
     // Each stream's channels, by its place in `streams`.
     let mut stream_channels: Vec<Option<Vec<ChannelId>>> = vec![None; streams.len()];
     for (g, &(stream, timing, clock)) in shown.iter().enumerate() {
@@ -220,14 +219,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             let unit = described.map_or("", |d| d.unit.trim());
             if !unit.is_empty() && unit != "NA" {
                 channel.unit = Unit::from_label(unit);
-                // Stim channels show codes, without a unit.
-                if channel.unit.to_si.is_none()
-                    && channel.kind != ChannelKind::STIM
-                    && !unscaled_unit(unit)
-                    && !unknown_units.iter().any(|u| u == unit)
-                {
-                    unknown_units.push(unit.to_owned());
-                }
             }
             let decoder = Decoder::new(encoding, ByteOrder::Little);
             let reference = if channel.kind == ChannelKind::STIM {
@@ -260,12 +251,6 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             stim,
             ..reader
         });
-    }
-    if !unknown_units.is_empty() {
-        warnings.push(format!(
-            "units not recognized, so their channels are not scaled: {}",
-            unknown_units.join(", ")
-        ));
     }
 
     // Annotations at their synchronized times (irregular streams aren't dejittered).
@@ -849,53 +834,6 @@ fn qualifier(shown: &[&Stream], g: usize) -> String {
     format!("stream {}", shown[g].id)
 }
 
-/// Units mnextend recognizes that have no quantity in kymo (lengths, angles, temperatures,
-/// times, frequencies, pixels): their channels keep their values without a warning.
-fn unscaled_unit(unit: &str) -> bool {
-    let unit = unit.trim().replace('\u{3bc}', "\u{b5}");
-    const SYMBOLS: [&str; 9] = ["m", "rad", "\u{b0}C", "K", "s", "Hz", "deg", "\u{b0}", "px"];
-    const PREFIXABLE: [&str; 6] = ["m", "rad", "\u{b0}C", "K", "s", "Hz"];
-    const PREFIXES: [char; 8] = ['f', 'p', 'n', '\u{b5}', 'u', 'm', 'c', 'k'];
-    const WORDS: [&str; 23] = [
-        "meter",
-        "meters",
-        "metre",
-        "metres",
-        "centimeter",
-        "centimeters",
-        "centimetre",
-        "centimetres",
-        "millimeter",
-        "millimeters",
-        "millimetre",
-        "millimetres",
-        "radian",
-        "radians",
-        "degree",
-        "degrees",
-        "celsius",
-        "degrees celsius",
-        "kelvin",
-        "second",
-        "seconds",
-        "hertz",
-        "pixels",
-    ];
-    if SYMBOLS.contains(&unit.as_str()) {
-        return true;
-    }
-    let mut chars = unit.chars();
-    if let Some(p) = chars.next()
-        && PREFIXES.contains(&p)
-        && PREFIXABLE.contains(&chars.as_str())
-    {
-        return true;
-    }
-    let lower = unit.to_lowercase();
-    WORDS.contains(&lower.as_str())
-        || matches!(lower.as_str(), "millisecond" | "milliseconds" | "pixel")
-}
-
 /// The file header's `datetime` (`2021-12-15T10:46:02+0100`, the offset as `+HH:MM`,
 /// `+HHMM` or `Z`, or none) as the start time in the file's local time, with its time zone
 /// in `extra`, and its offset from UTC where it has one: mnextend reads `datetime` as a
@@ -1220,25 +1158,5 @@ impl BlockReader for XdfReader {
             );
         }
         mapped::prefetch(&self.file, self.map.len() as u64, ranges);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn units_mnextend_scales_but_kymo_has_no_quantity_for() {
-        for unit in [
-            "mm", "cm", "rad", "deg", "°", "°C", "K", "ms", "Hz", "kHz", "px",
-        ] {
-            assert!(unscaled_unit(unit), "{unit}");
-        }
-        for unit in ["Meters", "degrees Celsius", "pixel", "Milliseconds"] {
-            assert!(unscaled_unit(unit), "{unit}");
-        }
-        for unit in ["kiloohm", "bpm", "%", "pxx", "kpx", "integer"] {
-            assert!(!unscaled_unit(unit), "{unit}");
-        }
     }
 }

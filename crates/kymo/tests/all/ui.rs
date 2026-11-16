@@ -1793,7 +1793,7 @@ fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
 /// names, the streams, every grid with its exact rate and channels, and the warnings.
 #[test]
 fn recording_info_shows_fields_grids_and_warnings() {
-    let presets: [(&str, &[&str]); 2] = [
+    let presets: [(&str, &[&str]); 3] = [
         (
             "bvrf-int16",
             &[
@@ -1813,7 +1813,13 @@ fn recording_info_shows_fields_grids_and_warnings() {
                  256.000000 Hz, 1 segment",
                 "Grid 6",
                 "Aux_0, Aux_1",
-                "units not recognized, so their channels are not scaled: g, dps",
+            ],
+        ),
+        (
+            "bvrf-float64",
+            &[
+                "channel \"GSR\": its coefficients aren't linear, so it shows the sensor \
+                 output in mV rather than \u{b5}S",
             ],
         ),
     ];

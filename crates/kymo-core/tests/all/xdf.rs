@@ -651,7 +651,7 @@ fn presets_open_with_their_channels() {
     use crate::kinds::*;
     for (preset, warnings) in [
         ("xdf-float32", 0),
-        ("xdf-mixed", 1),
+        ("xdf-mixed", 0),
         ("xdf-events", 0),
         ("xdf-clocks", 0),
         ("xdf-irregular", 0),
@@ -761,7 +761,6 @@ fn presets_open_with_their_channels() {
     want.extend([None; 7]);
     want.extend([Some("0"), Some("1")]);
     assert_eq!(in_stream, want);
-    assert!(rec.warnings()[0].contains("g, dps"), "{:?}", rec.warnings());
     // The int64 DC channel is read relative to its first sample, folded into the offset.
     let dc = &rec.channels()[9];
     assert!((dc.offset - 1e9).abs() < 1e3, "{}", dc.offset);
@@ -1364,13 +1363,10 @@ fn labels_kinds_and_units() {
     );
     assert!(has_warning(
         &rec,
-        "units not recognized, so their channels are not scaled: g, dps, kiloohm"
-    ));
-    assert!(has_warning(
-        &rec,
         "describes 1 channels, but the stream has 2"
     ));
-    assert_eq!(rec.warnings().len(), 2, "{:?}", rec.warnings());
+    // Units kymo has no quantity for (g, dps, kiloohm) are no warning: shown as written.
+    assert_eq!(rec.warnings().len(), 1, "{:?}", rec.warnings());
     // Stim channels' NaN is "no event", 0; other channels keep it.
     assert_eq!(values(&rec, 4), [0.0]);
     assert!(values(&rec, 2)[0].is_nan());
