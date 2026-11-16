@@ -61,10 +61,11 @@ impl Document {
                     irregular: g.times().is_some(),
                     samples: g.len(),
                     segments: g.segments().len(),
+                    stream: grid_stream(rec, g.channels()),
                     channels: g
                         .channels()
                         .iter()
-                        .map(|&c| rec.channel(c).name.clone())
+                        .map(|&c| ChannelSummary::of(rec, c))
                         .collect(),
                 })
                 .collect(),
@@ -76,6 +77,29 @@ impl Document {
     pub fn name(&self) -> String {
         file_name(&self.path)
     }
+}
+
+/// The smallest stream holding all of `channels` (an XDF stream's grid is its own; BVRF's
+/// participants share one, "All participants"), if the recording has several streams: its
+/// name, with its type where it has one, as streams may share a name ("Muse (ACC)").
+fn grid_stream(rec: &Recording, channels: &[kymo_core::ChannelId]) -> Option<String> {
+    if rec.streams().len() < 2 {
+        return None;
+    }
+    rec.streams()
+        .iter()
+        .filter_map(|s| match &s.content {
+            kymo_core::StreamContent::Channels(own) => Some((s, own)),
+            _ => None,
+        })
+        .filter(|(_, own)| channels.iter().all(|c| own.contains(c)))
+        .min_by_key(|(_, own)| own.len())
+        .map(|(s, _)| match (s.name.trim(), s.kind.trim()) {
+            (name, "") => name.to_owned(),
+            ("", kind) => kind.to_owned(),
+            (name, kind) => format!("{name} ({kind})"),
+        })
+        .filter(|name| !name.is_empty())
 }
 
 /// The file name of `path`, or the whole path if it has none.
@@ -116,7 +140,50 @@ pub struct GridSummary {
     pub samples: u64,
     /// Sample ranges holding data; more than one means the recording has gaps.
     pub segments: usize,
-    pub channels: Vec<String>,
+    /// The stream it shows, in a recording of several ([`grid_stream`]).
+    pub stream: Option<String>,
+    pub channels: Vec<ChannelSummary>,
+}
+
+/// One channel as the file describes it, for the Recording Info window's tables.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChannelSummary {
+    /// Its place among all the recording's channels, from 1.
+    pub number: usize,
+    pub name: String,
+    /// The type the file gives it.
+    pub kind: String,
+    /// Its unit as a symbol ([`kymo_core::Unit::symbol`]).
+    pub unit: String,
+    /// Physical (min, max) as stored, where the format has one.
+    pub range: Option<(f64, f64)>,
+    pub prefilter: String,
+    pub transducer: String,
+}
+
+impl ChannelSummary {
+    fn of(rec: &Recording, id: kymo_core::ChannelId) -> ChannelSummary {
+        let c = rec.channel(id);
+        ChannelSummary {
+            number: id.0 as usize + 1,
+            name: c.name.clone(),
+            kind: c.kind.name().to_owned(),
+            unit: c.unit.symbol(),
+            range: c.physical_range,
+            prefilter: one_line(&c.prefilter),
+            transducer: one_line(&c.transducer),
+        }
+    }
+}
+
+/// A channel known only by its name, for tests.
+impl From<&str> for ChannelSummary {
+    fn from(name: &str) -> ChannelSummary {
+        ChannelSummary {
+            name: name.to_owned(),
+            ..ChannelSummary::default()
+        }
+    }
 }
 
 impl GridSummary {
@@ -232,12 +299,14 @@ impl Summary {
             key: key.to_owned(),
             field: None,
             value,
+            grid: None,
         };
         let mut rows = vec![row("format", self.format.to_owned())];
         rows.extend(self.fields.iter().map(|(key, value)| InfoRow {
             key: String::new(),
             field: Some(key.clone()),
             value: value.clone(),
+            grid: None,
         }));
         let start = self.start.map(|t| format_start(t, false));
         rows.push(row("start", start.unwrap_or_else(|| "unknown".into())));
@@ -252,8 +321,16 @@ impl Summary {
         }
         rows.push(row("annotations", self.annotations.to_string()));
         for (i, grid) in self.grids.iter().enumerate() {
-            rows.push(row(&format!("grid {}", i + 1), grid.describe()));
-            rows.push(row("", grid.channels.join(", ")));
+            let names: Vec<&str> = grid.channels.iter().map(|c| c.name.as_str()).collect();
+            for (key, value) in [
+                (format!("grid {}", i + 1), grid.describe()),
+                (String::new(), names.join(", ")),
+            ] {
+                rows.push(InfoRow {
+                    grid: Some(i),
+                    ..row(&key, value)
+                });
+            }
         }
         rows.extend(self.warnings.iter().map(|w| row("warning", w.clone())));
         rows
@@ -267,6 +344,9 @@ pub struct InfoRow {
     pub key: String,
     pub field: Option<String>,
     pub value: String,
+    /// The grid a row describes (its line and its channels' names), by its index in
+    /// [`Summary::grids`]; the Recording Info window shows a table for it instead.
+    pub grid: Option<usize>,
 }
 
 impl fmt::Display for Summary {
@@ -513,7 +593,18 @@ mod tests {
             (grid.rate, grid.samples, grid.segments),
             (512.0, 60 * 512, 1)
         );
-        assert_eq!(grid.channels[..4], ["A1", "A2", "A3", "EXG1"]);
+        let names: Vec<&str> = grid.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names[..4], ["A1", "A2", "A3", "EXG1"]);
+        assert_eq!(grid.stream, None);
+        // As the file describes them: BDF's transducer, physical range and prefilter.
+        let a1 = &grid.channels[0];
+        assert_eq!(
+            (a1.number, a1.kind.as_str(), a1.unit.as_str()),
+            (1, "EEG", "\u{b5}V")
+        );
+        assert_eq!(a1.transducer, "AgAgCl electrode");
+        assert_eq!(a1.range, Some((-262144.0, 262143.0)));
+        assert_eq!(a1.prefilter, "HP:0.1Hz LP:100Hz");
         assert_eq!(grid.describe(), "512 Hz, 30720 samples, 5 channels");
     }
 
@@ -686,6 +777,7 @@ mod tests {
                     irregular: false,
                     samples: 200,
                     segments: 1,
+                    stream: None,
                     channels: vec!["Fz".into()],
                 }],
                 warnings: Vec::new(),
@@ -720,6 +812,7 @@ mod tests {
                 irregular: false,
                 samples: 200,
                 segments: 1,
+                stream: None,
                 channels: vec!["Fz".into(), "Cz".into()],
             }],
             warnings: Vec::new(),
@@ -753,6 +846,7 @@ mod tests {
             irregular: false,
             samples: 1000,
             segments: 1,
+            stream: None,
             channels: vec!["Fz".into(), "Cz".into()],
         };
         let summary = |grids: Vec<GridSummary>| Summary {

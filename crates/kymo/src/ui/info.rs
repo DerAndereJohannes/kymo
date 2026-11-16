@@ -5,7 +5,7 @@ use std::path::Path;
 use eframe::egui::{self, Align, Label, Layout, RichText, TextStyle};
 
 use crate::action::Action;
-use crate::document::{Summary, info_text};
+use crate::document::{GridSummary, Summary, info_text};
 use crate::ui::Overlay;
 
 /// What the Copy button is named, also for tests.
@@ -13,7 +13,8 @@ pub const COPY: &str = "Copy";
 
 /// The Recording Info window, while `open`: the file's name and path, then the rows of
 /// [`Summary::info_rows`], keys at the left (capitalized, grayed) and values wrapping in the
-/// width left, format fields after their names (capitalized: "Stream 1", "Patient"). Copy puts `--info`'s text on the clipboard.
+/// width left, format fields after their names (capitalized: "Stream 1", "Patient"), and
+/// below them a table of each grid's channels ([`grid_table`]) in place of its rows. Copy puts `--info`'s text on the clipboard.
 pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &Summary) {
     let rows = summary.info_rows();
     let style = ctx.global_style();
@@ -35,7 +36,7 @@ pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &
         // As wide as dragged, and as tall as its rows up to most of the screen, where they
         // scroll: a window's own scroll area (`vscroll`) keeps it at a fixed height.
         .resizable([true, false])
-        .default_width(520.0)
+        .default_width(640.0)
         .show(ctx, |ui| {
             let max_height = ui.ctx().content_rect().height() * 0.7;
             egui::ScrollArea::vertical()
@@ -60,6 +61,9 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
     ui.add_space(6.0);
     let gap = 12.0;
     for row in summary.info_rows() {
+        if row.grid.is_some() {
+            continue;
+        }
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(key_width, 0.0),
@@ -77,6 +81,85 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
             }
             ui.add(Label::new(&row.value).wrap());
         });
+    }
+    for (i, grid) in summary.grids.iter().enumerate() {
+        ui.add_space(6.0);
+        grid_table(ui, i, grid);
+    }
+}
+
+/// Names of the channel tables' columns, also for tests; the last three only where a
+/// channel of the grid has a value for them.
+pub const COLUMNS: [&str; 7] = [
+    "#",
+    "Name",
+    "Type",
+    "Unit",
+    "Physical Range",
+    "Prefilter",
+    "Transducer",
+];
+
+/// Grid `index`'s channels as the file describes them, under a header that folds them
+/// ("Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording has several): the grid's
+/// rate, samples and channels, then a striped table, a row per channel ([`COLUMNS`]), which
+/// scrolls sideways where it is wider than the window.
+fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
+    let mut title = format!("Grid {}", index + 1);
+    if let Some(stream) = &grid.stream {
+        title += &format!(" \u{b7} {stream}");
+    }
+    egui::CollapsingHeader::new(RichText::new(title).strong())
+        .id_salt(("kymo info grid", index))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.add(Label::new(RichText::new(grid.describe()).weak()).wrap());
+            let range = grid.channels.iter().any(|c| c.range.is_some());
+            let prefilter = grid.channels.iter().any(|c| !c.prefilter.is_empty());
+            let transducer = grid.channels.iter().any(|c| !c.transducer.is_empty());
+            let shown = [true, true, true, true, range, prefilter, transducer];
+            egui::ScrollArea::horizontal()
+                .id_salt(("kymo info channels", index))
+                .show(ui, |ui| {
+                    egui::Grid::new(("kymo info table", index))
+                        .striped(true)
+                        .spacing([12.0, 2.0])
+                        .show(ui, |ui| {
+                            for (name, _) in COLUMNS.iter().zip(shown).filter(|(_, s)| *s) {
+                                ui.add(Label::new(RichText::new(*name).weak()).extend());
+                            }
+                            ui.end_row();
+                            for c in &grid.channels {
+                                let range = c.range.map_or(String::new(), |(min, max)| {
+                                    format!("{} \u{2026} {}", number(min), number(max))
+                                });
+                                let cells = [
+                                    c.number.to_string(),
+                                    c.name.clone(),
+                                    c.kind.clone(),
+                                    c.unit.clone(),
+                                    range,
+                                    c.prefilter.clone(),
+                                    c.transducer.clone(),
+                                ];
+                                for (cell, _) in cells.into_iter().zip(shown).filter(|(_, s)| *s) {
+                                    ui.add(Label::new(cell).extend());
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+        });
+}
+
+/// `value` as written, or in scientific notation where that is long (a float format's
+/// range: "3.4028234663852886e38").
+fn number(value: f64) -> String {
+    let plain = value.to_string();
+    if plain.len() > 12 {
+        format!("{value:e}")
+    } else {
+        plain
     }
 }
 

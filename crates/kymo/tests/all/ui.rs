@@ -1802,7 +1802,8 @@ fn recording_info_shows_fields_grids_and_warnings() {
                 "Power line frequency:",
                 "Grid 1",
                 "500 Hz, 60000 samples, 9 channels",
-                "Fp1, Fz, Cz, Pz, Oz, HEOG, ECG, Photo_AUX1, Temp",
+                "Photo_AUX1",
+                "Temp",
             ],
         ),
         (
@@ -1811,8 +1812,10 @@ fn recording_info_shows_fields_grids_and_warnings() {
                 "Stream 3:",
                 "\"Amp\" (EEG), 3 × int16, 256 Hz, 23040 samples: channels; effective rate \
                  256.000000 Hz, 1 segment",
-                "Grid 6",
-                "Aux_0, Aux_1",
+                "Grid 1 \u{b7} Muse (ACC)",
+                "Grid 6 \u{b7} Aux (AUX)",
+                "Aux_0",
+                "Aux_1",
             ],
         ),
         (
@@ -1829,10 +1832,64 @@ fn recording_info_shows_fields_grids_and_warnings() {
         ready(&mut harness);
         harness.key_press_modifiers(command(), Key::I);
         harness.run_steps(2);
+        let window = info_window(&harness);
         for text in texts {
-            assert!(harness.query_by_label(text).is_some(), "{preset}: {text}");
+            assert!(window.query_by_label(text).is_some(), "{preset}: {text}");
         }
     }
+}
+
+/// The Recording Info window.
+fn info_window<'h>(harness: &'h Harness<'_, KymoApp>) -> egui_kittest::Node<'h> {
+    harness.get_by_role_and_label(egui::accesskit::Role::Window, "Recording Info")
+}
+
+/// Recording Info shows each grid's channels as a table, a row per channel with its number,
+/// name, type and unit, and its physical range, prefilter and transducer where the file has
+/// them, rather than `--info`'s list of names.
+#[test]
+fn recording_info_tables_the_channels() {
+    use kymo::ui::info::COLUMNS;
+    let cells = |harness: &Harness<'_, KymoApp>, texts: &[&str]| {
+        let window = info_window(harness);
+        texts
+            .iter()
+            .map(|t| window.query_all_by_label(t).count())
+            .collect::<Vec<_>>()
+    };
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.key_press_modifiers(command(), Key::I);
+    harness.run_steps(2);
+    // Every column, once each; four EEG channels in µV from AgAgCl electrodes, with the
+    // file's prefilter and range; the Status channel as the file describes it.
+    assert_eq!(cells(&harness, &COLUMNS), [1; 7]);
+    assert_eq!(cells(&harness, &["EEG", "AgAgCl electrode"]), [4, 4]);
+    assert_eq!(
+        cells(&harness, &["HP:0.1Hz LP:100Hz", "-262144 \u{2026} 262143"]),
+        [4, 3]
+    );
+    assert_eq!(
+        cells(
+            &harness,
+            &["Status", "Stim", "Boolean", "Triggers and Status"]
+        ),
+        [1, 1, 1, 1]
+    );
+    // The channels numbered (5 is also the Channels row).
+    assert_eq!(cells(&harness, &["1", "4", "5"]), [1, 1, 2]);
+    assert!(harness.query_by_label_contains("A1, A2").is_none());
+
+    // Without ranges, prefilters and transducers (XDF), without their columns.
+    let file = TempFile::preset("xdf-mixed");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.key_press_modifiers(command(), Key::I);
+    harness.run_steps(2);
+    assert_eq!(cells(&harness, &COLUMNS[..4]), [6; 4]);
+    assert_eq!(cells(&harness, &COLUMNS[4..]), [0; 3]);
+    assert!(harness.query_by_label_contains("Aux_0, Aux_1").is_none());
 }
 
 /// The Recording Info window's Copy button puts exactly what `kymo --info` prints on the
@@ -1843,7 +1900,7 @@ fn recording_info_copies_what_info_prints() {
     let mut harness = window(file.path());
     ready(&mut harness);
     harness.key_press_modifiers(command(), Key::I);
-    harness.run_steps(2);
+    harness.run_steps(10);
     harness.get_by_label(kymo::ui::info::COPY).click();
     harness.step();
     let copied = harness
