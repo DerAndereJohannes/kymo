@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use kymo::action::Action;
-use kymo::scale_bar::{ScaleBar, fitted, round_below, scale_bars};
+use kymo::scale_bar::{ScaleBar, fitted, reading_unit, round_below, scale_bars};
 use kymo::view::UnitKey;
 use kymo::view::{ScaleGroup, ViewState};
 use kymo_core::{
@@ -232,17 +232,26 @@ fn units_take_the_prefix_that_suits_the_value() {
     }
 }
 
-/// An EEG group fitted to millivolts shows its bar in millivolts.
+/// An EEG group fitted to millivolts shows its bar and readings in millivolts.
 #[test]
 fn a_bar_of_millivolts_says_so() {
     let rec = recording(3, 60);
     let mut view = ViewState::new(&rec);
+    // Readings in its unit, from the channels' µV, before and after; stim's in none.
+    assert_eq!(
+        reading_unit(&rec, &view, ChannelId(0)),
+        ("\u{b5}V".into(), 1.0)
+    );
+    let status = ChannelId(rec.channels().len() as u32 - 1);
+    assert!(rec.channel(status).kind.is_stim());
+    assert_eq!(reading_unit(&rec, &view, status), (String::new(), 1.0));
     let volts = UnitKey::Quantity(kymo_core::Quantity::Voltage);
     let eeg = ScaleGroup::Shared(ChannelKind::EEG, volts);
     view.set_amplitudes([(eeg, 2e-3)].into_iter().collect());
     let bar = scale_bars(&rec, &view).into_iter().next().unwrap();
     assert_eq!((bar.value, bar.unit.as_str()), (2.0, "mV"));
     assert_eq!(bar.label(), "2 mV");
+    assert_eq!(reading_unit(&rec, &view, ChannelId(0)), ("mV".into(), 1e-3));
     assert!((bar.fraction - 0.5).abs() < 1e-12);
 }
 

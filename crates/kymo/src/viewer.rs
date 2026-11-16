@@ -23,7 +23,7 @@ use crate::history::{self, Change, History};
 use crate::keymap::Keymap;
 use crate::render::{Frame, Scene};
 use crate::scale;
-use crate::scale_bar::{ScaleBar, scale_bars};
+use crate::scale_bar::{ScaleBar, reading_unit, scale_bars};
 use crate::stim_annotations::{StimAnnotations, Update};
 use crate::types::TypeSettings;
 use crate::ui::axis::{self, Clock};
@@ -885,7 +885,7 @@ impl Viewer {
                 let channel = self.hover.channel.map(|id| {
                     let info = rec.channel(id);
                     let view = self.view.tile_view(self.width_px.max(1));
-                    let (unit, factor) = readout::display_unit(self.view.kind_of(id), &info.unit);
+                    let (unit, factor) = reading_unit(rec, &self.view, id);
                     let reading = readout::read(rec, service.cache(), &view, id, time).map(|r| {
                         let r = r.relative_to(self.baseline(id)).scaled(factor);
                         status::reading_text(r, &unit)

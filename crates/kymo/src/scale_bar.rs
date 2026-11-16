@@ -71,17 +71,13 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         if kind.is_stim() || bars.iter().any(|b| b.group == group) {
             continue;
         }
-        let (unit, factor) = display_unit(kind, &recording.channel(channel).unit);
-        let span = 2.0 * view.channel_amplitude(channel) * factor;
-        let Some(value) = round_below(span) else {
+        let Some((value, unit, fraction)) = bar_value(recording, view, channel) else {
             continue;
         };
-        let fraction = value / span;
         let middle = (block.0.max(top) - top + 0.5).min(block.1 - top - 0.5);
         if middle < fraction / 2.0 || middle + fraction / 2.0 > rows {
             continue;
         }
-        let (value, unit) = fitted(value, &unit);
         bars.push(ScaleBar {
             kind: kind.clone(),
             group,
@@ -93,6 +89,36 @@ pub fn scale_bars(recording: &Recording, view: &ViewState) -> Vec<ScaleBar> {
         });
     }
     bars
+}
+
+/// What `channel`'s scale bar stands for, in its unit ([`fitted`]), and its length as a
+/// fraction of the row height; `None` without a usable amplitude.
+fn bar_value(
+    recording: &Recording,
+    view: &ViewState,
+    channel: ChannelId,
+) -> Option<(f64, String, f64)> {
+    let (unit, factor) = display_unit(view.kind_of(channel), &recording.channel(channel).unit);
+    let span = 2.0 * view.channel_amplitude(channel) * factor;
+    let value = round_below(span)?;
+    let (fitted_value, fitted_unit) = fitted(value, &unit);
+    Some((fitted_value, fitted_unit, value / span))
+}
+
+/// The unit `channel`'s readings are shown in, and the factor from its own unit to it: its
+/// scale bar's (on screen or not), so a reading beside a "2 mV" bar is in mV, which changes
+/// only as the scale does; the unit of [`display_unit`] where it has no bar's amplitude.
+/// None for stim channels, whose values are codes.
+pub fn reading_unit(recording: &Recording, view: &ViewState, channel: ChannelId) -> (String, f64) {
+    let (unit, factor) = display_unit(view.kind_of(channel), &recording.channel(channel).unit);
+    let span = 2.0 * view.channel_amplitude(channel) * factor;
+    match round_below(span) {
+        Some(value) => {
+            let (fitted_value, fitted_unit) = fitted(value, &unit);
+            (fitted_unit, factor * fitted_value / value)
+        }
+        None => (unit, factor),
+    }
 }
 
 /// The largest of 1, 2 or 5 times a power of ten up to `limit`; `None` unless `limit` is

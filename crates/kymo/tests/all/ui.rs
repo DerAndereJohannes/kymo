@@ -396,6 +396,61 @@ fn hovering_reads_the_value_under_the_pointer() {
     assert_eq!(viewer(&harness).status().left, "");
 }
 
+/// Readings are in their channel's scale bar's unit: scaled down until EEG's bar is in mV,
+/// the same reading in mV.
+#[test]
+fn readings_take_their_scale_bars_unit() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let layout = viewer(&harness).layout().unwrap();
+    let rows = viewer(&harness).view().rows() as f32;
+    let y = layout.traces.top() + 0.5 * layout.traces.height() / rows;
+    hover(&mut harness, egui::pos2(layout.traces.center().x, y));
+    step_until(&mut harness, "a reading", |app| {
+        has_reading(&app.viewer().unwrap().status().left)
+    });
+    // A1's numbers and unit ("0:10.000 · A1 −12.34 µV · 77").
+    let reading = |harness: &Harness<'_, KymoApp>| {
+        let left = viewer(harness).status().left.clone();
+        let part = left.split(" \u{b7} ").nth(1).unwrap();
+        let (numbers, unit) = part.strip_prefix("A1 ").unwrap().rsplit_once(' ').unwrap();
+        let values: Vec<f64> = numbers
+            .split(" \u{2026} ")
+            .map(|x| x.replace('\u{2212}', "-").parse().unwrap())
+            .collect();
+        (values, unit.to_owned())
+    };
+    let bar = |harness: &Harness<'_, KymoApp>| {
+        let bars = viewer(harness).scale_bars();
+        let eeg = bars.iter().find(|(b, _)| b.kind == ChannelKind::EEG);
+        eeg.unwrap().0.label()
+    };
+    let (micro, unit) = reading(&harness);
+    assert_eq!(
+        (unit.as_str(), bar(&harness).as_str()),
+        ("\u{b5}V", "20 \u{b5}V")
+    );
+    // Scaled down until the bar is in millivolts.
+    for _ in 0..40 {
+        if bar(&harness).ends_with(" mV") {
+            break;
+        }
+        harness.key_press_modifiers(command() | Modifiers::ALT, Key::Minus);
+        harness.run_steps(2);
+    }
+    assert!(bar(&harness).ends_with(" mV"), "{}", bar(&harness));
+    let (milli, unit) = reading(&harness);
+    assert_eq!(unit, "mV");
+    assert_eq!(milli.len(), micro.len());
+    for (m, u) in milli.iter().zip(&micro) {
+        assert!(
+            (m * 1e3 - u).abs() <= 0.01 * u.abs().max(1.0),
+            "{m} mV, {u} µV"
+        );
+    }
+}
+
 #[test]
 fn the_scrollbars_move_the_view() {
     let file = TempFile::preset("bdf+c-small");
