@@ -1586,6 +1586,114 @@ fn the_format_shows_its_fields_on_hover() {
     let format = harness.get_by_label("BrainVision").rect();
     hover(&mut harness, format.center());
     assert!(tooltip(&mut harness, fields));
+    assert!(tooltip(
+        &mut harness,
+        "INT_16\ncodepage: UTF-8\n\nClick for Recording Info"
+    ));
+}
+
+/// File → Recording Info…, ⌘I, the ⓘ button after the format's name and the name itself
+/// open the Recording Info window; ⌘I and Esc close it.
+#[test]
+fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
+    let file = TempFile::preset("bv-int16-multiplexed");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let open = |harness: &Harness<'_, KymoApp>| {
+        let open = harness.state().info_open();
+        assert_eq!(harness.query_by_label("orientation:").is_some(), open);
+        open
+    };
+    assert!(!open(&harness));
+    choose(&mut harness, "File", "Recording Info…");
+    assert!(open(&harness));
+    harness.key_press_modifiers(command(), Key::I);
+    harness.run_steps(2);
+    assert!(!open(&harness));
+    harness.key_press_modifiers(command(), Key::I);
+    harness.run_steps(2);
+    assert!(open(&harness));
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(!open(&harness));
+
+    harness.get_by_label(kymo::ui::header::INFO_LABEL).click();
+    harness.run_steps(2);
+    assert!(open(&harness));
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.get_by_label("BrainVision").click();
+    harness.run_steps(2);
+    assert!(open(&harness));
+}
+
+/// The Recording Info window shows what `--info` prints: the format's fields after their
+/// names, the streams, every grid with its exact rate and channels, and the warnings.
+#[test]
+fn recording_info_shows_fields_grids_and_warnings() {
+    let presets: [(&str, &[&str]); 2] = [
+        (
+            "bvrf-int16",
+            &[
+                "amplifiers:",
+                "kymo-testgen (serial 0)",
+                "power line frequency:",
+                "Grid 1",
+                "500 Hz, 60000 samples, 9 channels",
+                "Fp1, Fz, Cz, Pz, Oz, HEOG, ECG, Photo_AUX1, Temp",
+            ],
+        ),
+        (
+            "xdf-mixed",
+            &[
+                "stream 3:",
+                "\"Amp\" (EEG), 3 × int16, 256 Hz, 23040 samples: channels; effective rate \
+                 256.000000 Hz, 1 segment",
+                "Grid 6",
+                "Aux_0, Aux_1",
+                "units not recognized, so their channels are not scaled: g, dps",
+            ],
+        ),
+    ];
+    for (preset, texts) in presets {
+        let file = TempFile::preset(preset);
+        let mut harness = window(file.path());
+        ready(&mut harness);
+        harness.key_press_modifiers(command(), Key::I);
+        harness.run_steps(2);
+        for text in texts {
+            assert!(harness.query_by_label(text).is_some(), "{preset}: {text}");
+        }
+    }
+}
+
+/// The Recording Info window's Copy button puts exactly what `kymo --info` prints on the
+/// clipboard.
+#[test]
+fn recording_info_copies_what_info_prints() {
+    let file = TempFile::preset("bv-int16-multiplexed");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness.key_press_modifiers(command(), Key::I);
+    harness.run_steps(2);
+    harness.get_by_label(kymo::ui::info::COPY).click();
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
+    let summary = kymo::document::open(file.path()).unwrap().summary();
+    let printed = kymo::document::info_text(file.path(), &summary);
+    assert!(
+        printed.contains("\n             binary format: INT_16\n"),
+        "{printed}"
+    );
+    assert_eq!(copied.as_deref(), Some(printed.as_str()));
 }
 
 /// The shortcut overview's scroll bar is painted at the window's right border, a gap after

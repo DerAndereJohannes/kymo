@@ -155,6 +155,8 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         Item::Recent,
         a(Action::Close),
         Item::Separator,
+        a(Action::RecordingInfo),
+        Item::Separator,
         a(Action::LoadAnnotations),
         a(Action::SaveAnnotations),
         a(Action::ExportShownAnnotations),

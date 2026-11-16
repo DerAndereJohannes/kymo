@@ -1,6 +1,6 @@
 //! Pieces of the window: the time axis, scrollbars, the status line, the sidebar, trace
-//! colors and the color picker, the egui-drawn menus and windows, the Settings window, the
-//! renderer inside egui, and which of the windows is in front.
+//! colors and the color picker, the egui-drawn menus and windows, the Settings and
+//! Recording Info windows, the renderer inside egui, and which of the windows is in front.
 
 pub mod axis;
 pub mod color;
@@ -8,6 +8,7 @@ pub mod fonts;
 pub mod go_to;
 pub mod gpu;
 pub mod header;
+pub mod info;
 pub mod menus;
 pub mod palette;
 pub mod readout;
@@ -95,14 +96,16 @@ pub enum Overlay {
     Shortcuts,
     About,
     GoToTime,
+    RecordingInfo,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 4] = [
+    pub const ALL: [Overlay; 5] = [
         Overlay::Settings,
         Overlay::Shortcuts,
         Overlay::About,
         Overlay::GoToTime,
+        Overlay::RecordingInfo,
     ];
 
     /// The window's id, which also names its layer, so the one in front can be found.

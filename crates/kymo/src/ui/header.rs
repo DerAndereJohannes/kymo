@@ -6,8 +6,10 @@ use eframe::egui::{
 };
 use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
+use crate::action::Action;
 use crate::annotations::{AnnotationColors, Entry, Legend};
 use crate::document::{Document, Summary, format_rate, grid_rate, plural};
+use crate::keymap::{Keymap, Platform};
 use crate::ui::axis::{Clock, format_time};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
@@ -57,29 +59,47 @@ pub fn description_field_id() -> egui::Id {
 /// Rows of the annotation legend shown before it scrolls.
 const LEGEND_ROWS: f32 = 8.0;
 
+/// What the sidebar shows and doesn't change.
+pub struct HeaderSource<'a> {
+    /// This opening of the recording (the viewer's serial): the lists start at their top
+    /// for each.
+    pub recording: u64,
+    pub document: &'a Document,
+    pub summary: &'a Summary,
+    /// The types' trace colors where picked.
+    pub type_colors: &'a TypeColors,
+    /// For the shortcuts in tooltips.
+    pub platform: Platform,
+}
+
 /// File header, channels by type, and the annotation legend at the bottom. The channel
-/// list shows and hides channels and marks them bad in `view`, in their types' colors (`type_colors` where picked); the legend shows and hides annotations by
-/// description in `annotations.legend`, and picks their colors in `annotations.colors`. In
-/// annotation mode, `annotations.field` edits the description new annotations get, or the
-/// selected annotation's, above the legend, which then shows even without annotations.
-/// Returns a description picked from the field's menu for the selected annotation.
-/// `recording` names this opening of the recording (the viewer's serial): the lists start
-/// at their top for each.
+/// list shows and hides channels and marks them bad in `view`, in their types' colors; the
+/// legend shows and hides annotations by description in `annotations.legend`, and picks
+/// their colors in `annotations.colors`. In annotation mode, `annotations.field` edits the
+/// description new annotations get, or the selected annotation's, above the legend, which
+/// then shows even without annotations. The Format row's value and an ⓘ button after it
+/// ask for the Recording Info window. Returns a description picked from the field's menu
+/// for the selected annotation, and whether Recording Info was asked for.
 pub fn header_panel(
     ui: &mut Ui,
-    recording: u64,
-    document: &Document,
-    summary: &Summary,
+    source: HeaderSource<'_>,
     view: &mut ViewState,
-    type_colors: &TypeColors,
     annotations: AnnotationPanel<'_>,
-) -> Option<String> {
+) -> HeaderResponse {
+    let HeaderSource {
+        recording,
+        document,
+        summary,
+        type_colors,
+        platform,
+    } = source;
     let AnnotationPanel {
         legend,
         colors: annotation_colors,
         field,
     } = annotations;
     let mut relabel = None;
+    let mut info = false;
     ui.add_space(6.0);
     ui.add(Label::new(RichText::new(document.name()).heading()).truncate());
     ui.add(
@@ -108,6 +128,11 @@ pub fn header_panel(
                         }
                     })
                     .response
+                } else if row.info {
+                    ui.add(key);
+                    let (value, asked) = info_value(ui, &row.value, platform);
+                    info |= asked;
+                    value
                 } else {
                     ui.add(key);
                     ui.add(Label::new(row.value).truncate())
@@ -165,7 +190,68 @@ pub fn header_panel(
             fold_all_legend(ui, recording, legend, rect);
         }
     }
-    relabel
+    HeaderResponse { relabel, info }
+}
+
+/// What the sidebar asks of the viewer.
+pub struct HeaderResponse {
+    /// A description picked from the description field's menu for the selected annotation.
+    pub relabel: Option<String>,
+    /// Whether the Recording Info window was asked for.
+    pub info: bool,
+}
+
+/// The Format row's value, `text`, which a click on opens Recording Info, and an ⓘ button
+/// after it that does too (named "Recording Info" for screen readers, with the shortcut on
+/// `platform` on hover). The value shortens to leave the button its room. Returns the
+/// value's response, for its hover, and whether either was clicked.
+fn info_value(ui: &mut Ui, text: &str, platform: Platform) -> (Response, bool) {
+    ui.horizontal(|ui| {
+        let size = ui.text_style_height(&TextStyle::Body);
+        let room = (ui.available_width() - size - ui.spacing().item_spacing.x).max(0.0);
+        let value = ui
+            .scope(|ui| {
+                ui.set_max_width(room);
+                ui.add(
+                    Label::new(text)
+                        .sense(Sense::click())
+                        .selectable(false)
+                        .truncate(),
+                )
+            })
+            .inner
+            .on_hover_cursor(CursorIcon::PointingHand);
+        let (rect, button) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+        let color = if button.hovered() {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        info_sign(ui.painter(), rect, color);
+        accessible_label(ui, &button, INFO_LABEL.to_owned());
+        let shortcut = Keymap::chord(Action::RecordingInfo)
+            .map(|c| format!(" ({})", c.display(platform)))
+            .unwrap_or_default();
+        let clicked = value.clicked() || button.clicked();
+        button
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(format!("{INFO_LABEL}{shortcut}"));
+        (value, clicked)
+    })
+    .inner
+}
+
+/// What the ⓘ button is named, for screen readers and its tooltip.
+pub const INFO_LABEL: &str = "Recording Info";
+
+/// An information sign filling `rect`: a circle with an "i", in `color`.
+fn info_sign(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+    let at = |x: f32, y: f32| rect.lerp_inside(vec2(x, y));
+    let radius = rect.width() * 0.42;
+    painter.circle_stroke(rect.center(), radius, (rect.width() * 0.08, color));
+    let width = rect.width() * 0.1;
+    painter.line_segment([at(0.5, 0.44), at(0.5, 0.74)], (width, color));
+    painter.circle_filled(at(0.5, 0.29), width * 0.65, color);
 }
 
 /// Rows the channel list keeps when the legend is dragged taller.

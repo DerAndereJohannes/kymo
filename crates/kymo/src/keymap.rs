@@ -164,6 +164,7 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::Close, Chord::cmd(Key::W)),
     (Action::Quit, Chord::cmd(Key::Q)),
     (Action::SaveAnnotations, Chord::cmd(Key::S)),
+    (Action::RecordingInfo, Chord::cmd(Key::I)),
     (Action::Settings, Chord::cmd(Key::Comma)),
     (Action::Shortcuts, Chord::cmd(Key::Slash)),
     (Action::PanLeft, Chord::key(Key::ArrowLeft)),

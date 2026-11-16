@@ -28,7 +28,8 @@ use crate::stim_annotations::{StimAnnotations, Update};
 use crate::ui::axis::{self, Clock};
 use crate::ui::gpu::Gpu;
 use crate::ui::header::{
-    AnnotationPanel, DescriptionField, description_field_id, header_panel, within_width,
+    AnnotationPanel, DescriptionField, HeaderSource, description_field_id, header_panel,
+    within_width,
 };
 use crate::ui::palette::{TypeColors, annotation_color, bad_color, type_color};
 use crate::ui::{elide_middle, readout, scrollbar, status};
@@ -284,6 +285,11 @@ impl Viewer {
 
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// What the sidebar and the Recording Info window show of the recording.
+    pub fn summary(&self) -> &Summary {
+        &self.summary
     }
 
     pub fn view(&self) -> &ViewState {
@@ -734,6 +740,7 @@ impl Viewer {
         let mut relabel = None;
         let mut toggle_dc = false;
         let mut go_to = false;
+        let mut info = false;
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(color) = self.status.swatch {
@@ -765,14 +772,17 @@ impl Viewer {
                 .min_size(SIDEBAR_MIN_WIDTH)
                 .max_size((ui.available_width() * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH))
                 .show(ui, |ui| {
-                    relabel = within_width(ui, |ui| {
+                    let header = within_width(ui, |ui| {
                         header_panel(
                             ui,
-                            self.serial,
-                            &self.document,
-                            &self.summary,
+                            HeaderSource {
+                                recording: self.serial,
+                                document: &self.document,
+                                summary: &self.summary,
+                                type_colors: &self.type_colors,
+                                platform: keymap.platform(),
+                            },
                             &mut self.view,
-                            &self.type_colors,
                             AnnotationPanel {
                                 legend: &mut self.legend,
                                 colors: annotation_colors,
@@ -789,6 +799,8 @@ impl Viewer {
                             },
                         )
                     });
+                    relabel = header.relabel;
+                    info = header.info;
                 });
             if let Some(description) = relabel
                 && let Some(id) = self.selected
@@ -808,6 +820,8 @@ impl Viewer {
         }
         if go_to {
             Some(Action::GoToTime)
+        } else if info {
+            Some(Action::RecordingInfo)
         } else {
             toggle_dc.then_some(Action::ToggleDc)
         }

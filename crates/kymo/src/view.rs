@@ -372,6 +372,7 @@ impl ViewState {
             | Action::Quit
             | Action::Settings
             | Action::Shortcuts
+            | Action::RecordingInfo
             | Action::About
             | Action::ToggleSidebar
             | Action::ToggleScaleBars

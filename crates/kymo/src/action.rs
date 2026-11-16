@@ -19,6 +19,8 @@ pub enum Action {
     SaveAnnotations,
     /// Saves the annotations of the descriptions shown, stim ones included.
     ExportShownAnnotations,
+    /// Shows or hides the Recording Info window: everything `--info` prints.
+    RecordingInfo,
     Settings,
     Shortcuts,
     /// An About window; macOS uses the system's About panel instead.
@@ -86,7 +88,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 48] = [
+    pub const ALL: [Action; 49] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -95,6 +97,7 @@ impl Action {
         Action::LoadAnnotations,
         Action::SaveAnnotations,
         Action::ExportShownAnnotations,
+        Action::RecordingInfo,
         Action::Settings,
         Action::Shortcuts,
         Action::About,
@@ -149,6 +152,7 @@ impl Action {
             Action::LoadAnnotations => "Load Annotations…",
             Action::SaveAnnotations => "Save Annotations…",
             Action::ExportShownAnnotations => "Export Shown Annotations…",
+            Action::RecordingInfo => "Recording Info…",
             Action::Settings => "Settings…",
             Action::Shortcuts => "Keyboard Shortcuts",
             Action::About => "About Kymo",

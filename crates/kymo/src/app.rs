@@ -25,6 +25,7 @@ use crate::ui::fonts::apply_fonts;
 use crate::ui::go_to::{GoToField, go_to_window};
 use crate::ui::gpu::Gpu;
 use crate::ui::header;
+use crate::ui::info::info_window;
 use crate::ui::menus::{MenuState, about_window, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
 use crate::viewer::Viewer;
@@ -84,6 +85,8 @@ pub struct KymoApp {
     shortcuts_open: bool,
     about_open: bool,
     settings_open: bool,
+    /// Whether the Recording Info window is open.
+    info_open: bool,
     /// Go to Time…, and what its field holds.
     go_to_open: bool,
     go_to: GoToField,
@@ -168,6 +171,7 @@ impl KymoApp {
             shortcuts_open: false,
             about_open: false,
             settings_open: false,
+            info_open: false,
             go_to_open: false,
             go_to: GoToField::default(),
             pick_file: path.is_none(),
@@ -223,6 +227,11 @@ impl KymoApp {
     /// Whether the Settings window is open.
     pub fn settings_open(&self) -> bool {
         self.settings_open
+    }
+
+    /// Whether the Recording Info window is open.
+    pub fn info_open(&self) -> bool {
+        self.info_open
     }
 
     pub fn settings(&self) -> &Settings {
@@ -332,6 +341,7 @@ impl KymoApp {
                 Overlay::Shortcuts => self.shortcuts_open,
                 Overlay::About => self.about_open,
                 Overlay::GoToTime => self.go_to_open,
+                Overlay::RecordingInfo => self.info_open,
             })
             .collect()
     }
@@ -342,6 +352,7 @@ impl KymoApp {
             Overlay::Shortcuts => &mut self.shortcuts_open,
             Overlay::About => &mut self.about_open,
             Overlay::GoToTime => &mut self.go_to_open,
+            Overlay::RecordingInfo => &mut self.info_open,
         }
     }
 
@@ -461,6 +472,11 @@ impl KymoApp {
         about_window(&ctx, &mut self.about_open);
         if self.viewer().is_none() {
             self.go_to_open = false;
+            self.info_open = false;
+        }
+        if let State::Ready(viewer) = &self.state {
+            let document = viewer.document();
+            info_window(&ctx, &mut self.info_open, &document.path, viewer.summary());
         }
         if let Some(seconds) = go_to_window(&ctx, &mut self.go_to_open, &mut self.go_to)
             && let State::Ready(viewer) = &mut self.state
@@ -583,6 +599,7 @@ impl KymoApp {
             }
             Action::Quit => self.leave(ctx, Leave::Quit),
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
+            Action::RecordingInfo => self.info_open = !self.info_open,
             Action::About => self.about_open = true,
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Action::ToggleDc => self.set_settings(Settings {

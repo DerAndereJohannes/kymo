@@ -154,14 +154,19 @@ impl Summary {
             }
             None => SidebarRow::new("Start", "unknown".into()),
         };
-        // The format's own fields on hover, a line each.
-        let fields = self
+        // The format's own fields on hover, a line each, and that a click shows them all.
+        let mut hover: String = self
             .fields
             .iter()
-            .map(|(key, value)| format!("{key}: {value}"))
-            .collect::<Vec<_>>();
+            .map(|(key, value)| format!("{key}: {value}\n"))
+            .collect();
+        if !hover.is_empty() {
+            hover.push('\n');
+        }
+        hover.push_str(INFO_HINT);
         let format = SidebarRow {
-            hover: (!fields.is_empty()).then(|| fields.join("\n")),
+            hover: Some(hover),
+            info: true,
             ..SidebarRow::new("Format", self.format.to_owned())
         };
         let mut rows = vec![
@@ -228,33 +233,67 @@ impl Summary {
     }
 }
 
+impl Summary {
+    /// What `--info` prints and the Recording Info window shows, a row each: the format
+    /// and its own fields, start, duration, channels, streams (if several), annotations
+    /// (the file's), each grid with its channels, and the warnings.
+    pub fn info_rows(&self) -> Vec<InfoRow> {
+        let row = |key: &str, value: String| InfoRow {
+            key: key.to_owned(),
+            field: None,
+            value,
+        };
+        let mut rows = vec![row("format", self.format.to_owned())];
+        rows.extend(self.fields.iter().map(|(key, value)| InfoRow {
+            key: String::new(),
+            field: Some(key.clone()),
+            value: value.clone(),
+        }));
+        let start = self.start.map(|t| format_start(t, false));
+        rows.push(row("start", start.unwrap_or_else(|| "unknown".into())));
+        rows.push(row("duration", format_duration(self.duration)));
+        rows.push(row("channels", self.channels.to_string()));
+        if self.streams.0 > 1 {
+            let (streams, shown) = self.streams;
+            rows.push(row(
+                "streams",
+                format!("{streams} ({shown} shown as channels)"),
+            ));
+        }
+        rows.push(row("annotations", self.annotations.to_string()));
+        for (i, grid) in self.grids.iter().enumerate() {
+            rows.push(row(&format!("grid {}", i + 1), grid.describe()));
+            rows.push(row("", grid.channels.join(", ")));
+        }
+        rows.extend(self.warnings.iter().map(|w| row("warning", w.clone())));
+        rows
+    }
+}
+
+/// One row of [`Summary::info_rows`]: a key ("format", "grid 1"; empty where the row
+/// continues the one above), the name of a format field, and the value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InfoRow {
+    pub key: String,
+    pub field: Option<String>,
+    pub value: String,
+}
+
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "format       {}", self.format)?;
-        for (key, value) in &self.fields {
-            writeln!(f, "             {key}: {value}")?;
-        }
-        let start = self.start.map(|t| format_start(t, false));
-        writeln!(f, "start        {}", start.as_deref().unwrap_or("unknown"))?;
-        writeln!(f, "duration     {}", format_duration(self.duration))?;
-        writeln!(f, "channels     {}", self.channels)?;
-        if self.streams.0 > 1 {
-            writeln!(
-                f,
-                "streams      {} ({} shown as channels)",
-                self.streams.0, self.streams.1
-            )?;
-        }
-        writeln!(f, "annotations  {}", self.annotations)?;
-        for (i, grid) in self.grids.iter().enumerate() {
-            writeln!(f, "grid {:<7} {}", i + 1, grid.describe())?;
-            writeln!(f, "             {}", grid.channels.join(", "))?;
-        }
-        for warning in &self.warnings {
-            writeln!(f, "warning      {warning}")?;
+        for row in self.info_rows() {
+            match &row.field {
+                Some(field) => writeln!(f, "{:<12} {field}: {}", row.key, row.value)?,
+                None => writeln!(f, "{:<12} {}", row.key, row.value)?,
+            }
         }
         Ok(())
     }
+}
+
+/// What `--info` prints for the recording at `path`: the path, then the summary.
+pub fn info_text(path: &Path, summary: &Summary) -> String {
+    format!("{}\n{summary}", path.display())
 }
 
 pub fn plural(n: usize) -> &'static str {
@@ -279,11 +318,16 @@ pub fn format_start(time: jiff::civil::DateTime, rounded: bool) -> String {
 pub struct SidebarRow {
     pub key: String,
     pub value: String,
-    /// What hovering the value shows: the format's own fields for Format, the exact rates,
-    /// channels and samples for Sampling, the start with every digit where it has more than
-    /// three decimals.
+    /// What hovering the value shows: the format's own fields and [`INFO_HINT`] for Format,
+    /// the exact rates, channels and samples for Sampling, the start with every digit where
+    /// it has more than three decimals.
     pub hover: Option<String>,
+    /// Whether a click on the value opens the Recording Info window (Format's).
+    pub info: bool,
 }
+
+/// The last line of the Format row's hover.
+pub const INFO_HINT: &str = "Click for Recording Info";
 
 impl SidebarRow {
     fn new(key: &str, value: String) -> SidebarRow {
@@ -291,6 +335,7 @@ impl SidebarRow {
             key: key.to_owned(),
             value,
             hover: None,
+            info: false,
         }
     }
 }
@@ -596,7 +641,7 @@ mod tests {
         let hover = format.hover.as_deref().unwrap();
         assert!(hover.contains("\norientation: multiplexed\n"), "{hover}");
         assert!(
-            hover.ends_with("binary format: INT_16\ncodepage: UTF-8"),
+            hover.ends_with("binary format: INT_16\ncodepage: UTF-8\n\nClick for Recording Info"),
             "{hover}"
         );
         let info = summary.to_string();
@@ -750,9 +795,12 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .filter(|r| r.key != "Sampling")
+                .filter(|r| r.key != "Sampling" && r.key != "Format")
                 .all(|r| r.hover.is_none())
         );
+        // Without fields, Format's hover only says a click shows Recording Info.
+        let format = rows.iter().find(|r| r.key == "Format").unwrap();
+        assert_eq!(format.hover.as_deref(), Some(INFO_HINT));
         assert!(
             one.to_string()
                 .contains("500.006493 Hz, 1000 samples, 2 channels"),

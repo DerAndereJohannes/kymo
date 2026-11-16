@@ -26,8 +26,7 @@ fn run() -> Result<()> {
         Command::Version => println!("kymo {}", kymo_core::version()),
         Command::Info(path) => {
             let document = document::open(&path)?;
-            println!("{}", path.display());
-            print!("{}", document.summary());
+            print!("{}", document::info_text(&path, &document.summary()));
         }
         Command::View(path) => app::run(path)?,
     }
