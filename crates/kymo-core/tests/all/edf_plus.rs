@@ -258,6 +258,50 @@ fn malformed_tals_warn_and_the_rest_is_read() {
     );
 }
 
+/// Only a TAL at the annotation signal's first byte with an empty first annotation keeps
+/// the record's time (EDF+): an annotation's TAL in its place, or after a damaged one,
+/// doesn't move the record.
+#[test]
+fn only_the_first_tal_with_an_empty_text_keeps_time() {
+    let f = Format::EdfPlusC;
+    let mut spec = Spec::new(f, vec![ChannelSpec::eeg("EEG", 20, f)], 1.0, 6);
+    // Long, so every record's annotation block has room for the patched TALs; in record 4,
+    // which isn't patched.
+    spec.annotations = vec![Tal {
+        onset: 4.5,
+        duration: None,
+        texts: vec!["a long annotation that makes the blocks large enough".into()],
+    }];
+    let texts = |o: &kymo_core::Opened| -> Vec<(f64, String)> {
+        o.annotations
+            .iter()
+            .map(|a| (a.onset, a.description.clone()))
+            .filter(|(_, d)| !d.starts_with("a long"))
+            .collect()
+    };
+    // Record 0 without a time-keeping TAL, only an annotation at 2.5 s: it starts at 0, as
+    // contiguity implies for the first record, and the annotation stays at 2.5 s.
+    let opened = open_patched(&spec, 0, b"+2.5\x14lights off\x14\0").unwrap();
+    assert_eq!(opened.header.grids[0].time_of(0), 0.0);
+    assert_eq!(texts(&opened), [(2.5, "lights off".to_owned())]);
+    assert!(
+        opened.warnings.iter().any(|w| w.contains("time-keeping")),
+        "{:?}",
+        opened.warnings
+    );
+    // A damaged TAL first, then an annotation: still no time-keeping.
+    let opened = open_patched(&spec, 0, b"+x\x14\x14\0+0.25\x14\x14\0").unwrap();
+    assert_eq!(opened.header.grids[0].time_of(0), 0.0);
+    // The time-keeping TAL may carry annotations after its empty one.
+    let opened = open_patched(&spec, 0, b"+0.125\x14\x14start\x14\0").unwrap();
+    assert_eq!(opened.header.grids[0].time_of(0), 0.125);
+    assert_eq!(texts(&opened), [(0.125, "start".to_owned())]);
+    // EDF+D needs one in every record.
+    let (record, reason) = record_error(open_patched(&d_spec(), 2, b"+2\x14lights off\x14\0"));
+    assert_eq!(record, 2);
+    assert!(reason.contains("time-keeping"), "{reason}");
+}
+
 #[test]
 fn non_contiguous_continuous_file_warns_and_stays_continuous() {
     let f = Format::EdfPlusC;

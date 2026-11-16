@@ -31,6 +31,10 @@ pub(super) struct Parsed {
 /// GDF 1 headers have 1.x versions below 1.90; 1.90 and later use GDF 2's layout.
 const FIRST_GDF2: f64 = 1.90;
 
+/// From GDF 2.40 bytes 254 and 255 hold the start time's offset to UTC in minutes (int16;
+/// required from 2.50).
+const FIRST_TIME_ZONE: f64 = 2.40;
+
 /// Bounds-checked little-endian reads from the header.
 struct Bytes<'a>(&'a [u8]);
 
@@ -283,8 +287,11 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
 
         let mut decoder = Decoder::new(encoding, ByteOrder::Little);
         if kind != ChannelKind::Stim {
-            // GDF marks missing integer samples with the type's smallest value.
-            decoder = decoder.with_nan_minimum();
+            // Overflow detection, as biosig reads GDF: samples at or beyond the digital
+            // minimum and maximum are missing (the spec's invalid values, and the saturated
+            // ones; biosig writes NaN as the type's smallest value). Stim channels keep their
+            // codes; limits that aren't finite with DigMin < DigMax are ignored.
+            decoder = decoder.with_limits(dmin, dmax);
         }
         // A Status channel holds BioSemi's status word, as in BDF files converted to GDF:
         // trigger codes in the low 16 bits, the amplifier's own status above. Float samples
@@ -332,6 +339,15 @@ pub(super) fn parse(bytes: &[u8], warnings: &mut Vec<String>) -> Result<Parsed, 
         ("patient".to_owned(), patient),
         ("recording".to_owned(), recording),
     ];
+    if version >= FIRST_TIME_ZONE {
+        // Minutes east of UTC; the start time stays the local time the file stores.
+        let minutes = i16::from_le_bytes(b.get(254));
+        let (sign, minutes) = (if minutes < 0 { '-' } else { '+' }, minutes.unsigned_abs());
+        extra.push((
+            "time zone".to_owned(),
+            format!("UTC{sign}{:02}:{:02}", minutes / 60, minutes % 60),
+        ));
+    }
     if gdf2 && header_bytes > fixed_end {
         let tags = &bytes[fixed_end as usize..header_bytes as usize];
         extra.extend(tags_3(tags, warnings));

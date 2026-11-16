@@ -35,6 +35,44 @@ fn stored(encoding: Encoding, order: ByteOrder, bytes: &[u8]) -> f64 {
     }
 }
 
+/// Whether the stored value of `bytes` is missing under the limits `(low, high)`: at or
+/// beyond them, integers compared exactly (by hand, as `stored` decodes them).
+fn beyond(encoding: Encoding, order: ByteOrder, bytes: &[u8], (low, high): (f64, f64)) -> bool {
+    let value = stored(encoding, order, bytes);
+    if matches!(encoding, Encoding::F32 | Encoding::F64) {
+        return value <= low || value >= high;
+    }
+    let mut b = bytes[..encoding.size()].to_vec();
+    if order == ByteOrder::Big {
+        b.reverse();
+    }
+    let unsigned = b
+        .iter()
+        .rev()
+        .fold(0i128, |acc, &byte| (acc << 8) | i128::from(byte));
+    let bits = 8 * encoding.size() as u32;
+    let signed = matches!(
+        encoding,
+        Encoding::I8 | Encoding::I16 | Encoding::I24 | Encoding::I32 | Encoding::I64
+    );
+    let v = if signed && unsigned >> (bits - 1) & 1 == 1 {
+        unsigned - (1i128 << bits)
+    } else {
+        unsigned
+    };
+    v <= low.floor() as i128 || v >= high.ceil() as i128
+}
+
+/// Limits for `encoding` from two fractions in -1..1: around the integer types' range (a
+/// little beyond it, so some leave every value in between), over many magnitudes for floats.
+fn limits_of(encoding: Encoding, (a, b): (f64, f64)) -> (f64, f64) {
+    let f = |x: f64| match encoding.int_range() {
+        Some((min, max)) => (min as f64 + (x + 1.0) / 2.0 * (max - min) as f64 * 1.1).round(),
+        None => x.signum() * 10f64.powf(x.abs() * 40.0 - 10.0),
+    };
+    (f(a).min(f(b)), f(a).max(f(b)))
+}
+
 fn encodings() -> impl Strategy<Value = Encoding> {
     proptest::sample::select(Encoding::ALL.to_vec())
 }
@@ -79,17 +117,24 @@ proptest! {
         padding in 0..6usize,
         bytes in proptest::collection::vec(any::<u8>(), 40 * 14),
         reference in prop_oneof![Just(0.0), -1e9..1e9f64, Just(f64::NAN)],
-        nan_minimum in any::<bool>(),
+        fractions in proptest::option::of((-1.0..1.0f64, -1.0..1.0f64)),
     ) {
         let size = encoding.size();
         let stride = size + padding;
+        let limits = fractions.map(|f| limits_of(encoding, f)).filter(|(low, high)| low < high);
         let decoder = Decoder::new(encoding, order);
-        let decoder = if nan_minimum { decoder.with_nan_minimum() } else { decoder };
+        let decoder = match limits {
+            Some((low, high)) => decoder.with_limits(low, high),
+            None => decoder,
+        };
         let decoder = decoder.with_reference(reference);
-        let signed = matches!(encoding, Encoding::I8 | Encoding::I16 | Encoding::I24 | Encoding::I32 | Encoding::I64);
-        let missing = nan_minimum && signed;
-        prop_assert_eq!(decoder.nan_minimum(), missing);
-        let uses = encoding.uses_reference() || (missing && encoding == Encoding::I32);
+        // Limits that leave every integer of the encoding in between change nothing.
+        let limits = limits.filter(|&(low, high)| match encoding.int_range() {
+            Some((min, max)) => low.floor() as i128 >= min || high.ceil() as i128 <= max,
+            None => true,
+        });
+        prop_assert_eq!(decoder.limits(), limits);
+        let uses = encoding.uses_reference() || (limits.is_some() && encoding == Encoding::I32);
         prop_assert_eq!(decoder.uses_reference(), uses);
         let used = if uses && reference.is_finite() { reference } else { 0.0 };
         prop_assert_eq!(decoder.reference(), used);
@@ -97,9 +142,10 @@ proptest! {
         let src = &bytes[..if n == 0 { 0 } else { stride * (n - 1) + size }];
         let got = decoded(&decoder, src, stride, n).unwrap();
         for (i, &g) in got.iter().enumerate() {
-            let value = stored(encoding, order, &src[i * stride..]);
-            let minimum = -(2f64.powi(8 * size as i32 - 1));
-            let value = if missing && value == minimum { f64::NAN } else { value };
+            let bytes = &src[i * stride..];
+            let value = stored(encoding, order, bytes);
+            let gone = limits.is_some_and(|l| beyond(encoding, order, bytes, l));
+            let value = if gone { f64::NAN } else { value };
             prop_assert!(same(decoder.value(&src[i * stride..]).unwrap(), value));
             let want = match decoder.native() {
                 SampleType::F32 if uses => f64::from((value - used) as f32),
@@ -162,60 +208,85 @@ fn native_types_and_references() {
     }
 }
 
-/// Random bytes rarely hold a type's smallest value, so each signed encoding gets it here:
-/// with a NaN minimum it reads as NaN, its neighbours as they are; without, as a number.
+/// Values at or beyond the limits read as missing, those between them as they are, in
+/// every encoding; limits that leave every value of an integer encoding in between, or
+/// aren't finite with low < high, change nothing.
 #[test]
-fn the_smallest_signed_value_can_be_missing() {
-    for encoding in [
-        Encoding::I8,
-        Encoding::I16,
-        Encoding::I24,
-        Encoding::I32,
-        Encoding::I64,
-    ] {
-        let size = encoding.size();
+fn values_at_or_beyond_the_limits_are_missing() {
+    let values: [f64; 8] = [-5.0, 10.0, 10.5, 11.0, 19.0, 19.9, 20.0, 25.0];
+    for encoding in Encoding::ALL {
+        let signed = encoding.int_range().is_none_or(|(min, _)| min < 0);
+        let float = encoding.int_range().is_none();
         for order in [ByteOrder::Little, ByteOrder::Big] {
-            // The minimum is 0x80 followed by zeros (big-endian), then the minimum + 1.
-            let mut min = vec![0u8; size];
-            min[0] = 0x80;
-            let mut next = min.clone();
-            next[size - 1] |= 1;
-            if order == ByteOrder::Little {
-                min.reverse();
-                next.reverse();
+            let put = |v: f64| -> Vec<u8> {
+                let mut b: Vec<u8> = match encoding {
+                    Encoding::F32 => (v as f32).to_le_bytes().to_vec(),
+                    Encoding::F64 => v.to_le_bytes().to_vec(),
+                    _ => (v as i64).to_le_bytes()[..encoding.size()].to_vec(),
+                };
+                if order == ByteOrder::Big {
+                    b.reverse();
+                }
+                b
+            };
+            let kept: Vec<f64> = values
+                .into_iter()
+                .filter(|&v| (signed || v >= 0.0) && (float || v.fract() == 0.0))
+                .collect();
+            let bytes: Vec<u8> = kept.iter().flat_map(|&v| put(v)).collect();
+            let d = Decoder::new(encoding, order).with_limits(10.5, 20.0);
+            assert_eq!(d.native(), SampleType::F32, "{encoding:?}");
+            let d = d.with_reference(d.reference_among(strided(&bytes, encoding.size(), 9)));
+            let mut out = vec![0f32; kept.len()];
+            d.decode(&bytes, encoding.size(), &mut out).unwrap();
+            for (k, (&v, &got)) in kept.iter().zip(&out).enumerate() {
+                let missing = !(10.5 < v && v < 20.0);
+                let at = &bytes[k * encoding.size()..];
+                assert_eq!(d.value(at).unwrap().is_nan(), missing, "{encoding:?} {v}");
+                assert_eq!(got.is_nan(), missing, "{encoding:?} {order:?} {v}");
+                if !missing {
+                    // The stored value (as float32 stores it) minus the reference, rounded
+                    // once to float32.
+                    let v = if encoding == Encoding::F32 {
+                        f64::from(v as f32)
+                    } else {
+                        v
+                    };
+                    assert_eq!(got, (v - d.reference()) as f32, "{encoding:?} {v}");
+                }
             }
-            let bytes = [min, next].concat();
-            let minimum = -(2f64.powi(8 * size as i32 - 1));
-            let plain = Decoder::new(encoding, order);
-            let missing = plain.with_nan_minimum().with_reference(5.0);
-            assert_eq!(missing.native(), SampleType::F32, "{encoding:?}");
-            assert_eq!(plain.value(&bytes), Some(minimum), "{encoding:?} {order:?}");
-            assert!(
-                missing.value(&bytes).unwrap().is_nan(),
-                "{encoding:?} {order:?}"
-            );
-            assert_eq!(missing.reference_from(&bytes), 0.0, "{encoding:?}");
-            let mut out = [0f32; 2];
-            missing.decode(&bytes, size, &mut out).unwrap();
-            assert!(out[0].is_nan(), "{encoding:?} {order:?}");
-            let r = missing.reference();
-            assert_eq!(out[1], (minimum + 1.0 - r) as f32, "{encoding:?} {order:?}");
             // Interleaved too.
-            let spaced = [&bytes[..size], &[7, 7], &bytes[size..]].concat();
-            missing.decode(&spaced, size + 2, &mut out).unwrap();
-            assert!(out[0].is_nan() && out[1] == (minimum + 1.0 - r) as f32);
+            let spaced: Vec<u8> = kept
+                .iter()
+                .flat_map(|&v| [put(v), vec![7, 7]].concat())
+                .collect();
+            let mut again = vec![0f32; kept.len()];
+            d.decode(&spaced, encoding.size() + 2, &mut again).unwrap();
+            assert!(
+                out.iter()
+                    .zip(&again)
+                    .all(|(a, b)| same((*a).into(), (*b).into()))
+            );
         }
-    }
-    for encoding in [
-        Encoding::U8,
-        Encoding::U16,
-        Encoding::U32,
-        Encoding::F32,
-        Encoding::F64,
-    ] {
-        let d = Decoder::new(encoding, ByteOrder::Little).with_nan_minimum();
-        assert!(!d.nan_minimum(), "{encoding:?}");
-        assert_eq!(d.native(), encoding.native());
+        for (low, high) in [
+            (f64::NAN, 1.0),
+            (5.0, 5.0),
+            (6.0, 5.0),
+            (0.0, f64::INFINITY),
+        ] {
+            let d = Decoder::new(encoding, ByteOrder::Little).with_limits(low, high);
+            assert_eq!(d.limits(), None, "{encoding:?} {low} {high}");
+            assert_eq!(d.native(), encoding.native());
+        }
+        if let Some((min, max)) = encoding.int_range() {
+            let wide = Decoder::new(encoding, ByteOrder::Little)
+                .with_limits(min as f64 * 1.01 - 1.0, max as f64 * 1.01 + 1.0);
+            assert_eq!(wide.limits(), None, "{encoding:?}");
+            // The type's own extremes as limits: those values are missing.
+            let full =
+                Decoder::new(encoding, ByteOrder::Little).with_limits(min as f64, max as f64);
+            assert!(full.limits().is_some(), "{encoding:?}");
+        }
     }
 }
 
@@ -241,8 +312,8 @@ fn the_reference_is_the_first_finite_value() {
         .map(|i| if i < REFERENCE_SEARCH { f64::NAN } else { 1.0 }.to_be_bytes())
         .collect();
     assert_eq!(f64s.reference_among(late.iter().map(|b| &b[..])), 0.0);
-    // GDF's missing int32 is passed over too.
-    let i32s = Decoder::new(Encoding::I32, ByteOrder::Little).with_nan_minimum();
+    // A missing int32 (beyond GDF's digital limits) is passed over too.
+    let i32s = Decoder::new(Encoding::I32, ByteOrder::Little).with_limits(-2e9, 2e9);
     let bytes = [i32::MIN, 40_000_000].map(i32::to_le_bytes).concat();
     assert_eq!(i32s.reference_among(strided(&bytes, 4, 2)), 4e7);
     // Exact encodings never subtract one.
@@ -296,8 +367,9 @@ fn int64_differences_round_once() {
             "{encoding:?}"
         );
     }
-    // GDF's missing int64 is exactly i64::MIN; its neighbor is a value.
-    let d = Decoder::new(Encoding::I64, ByteOrder::Little).with_nan_minimum();
+    // At GDF's digital minimum i64::MIN, exactly i64::MIN is missing; its neighbor isn't.
+    let d = Decoder::new(Encoding::I64, ByteOrder::Little)
+        .with_limits(i64::MIN as f64, i64::MAX as f64);
     assert_eq!(
         d.value(&(i64::MIN + 1).to_le_bytes()),
         Some(i64::MIN as f64)

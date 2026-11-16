@@ -16,8 +16,8 @@ const V1: Format = Format::Gdf(GdfVersion::V1);
 const V2: Format = Format::Gdf(GdfVersion::V2);
 const TAGGED: Format = Format::Gdf(GdfVersion::V2Tagged);
 
-/// Sample types read relative to the channel's first sample (int32 too: its smallest value
-/// is a missing sample, so it decodes to float32).
+/// Sample types read relative to the channel's first sample (int32 too where its limits
+/// make it float32).
 fn relative(stored: Stored) -> bool {
     matches!(
         stored,
@@ -25,14 +25,49 @@ fn relative(stored: Stored) -> bool {
     )
 }
 
-/// The native type of a non-stim channel: signed integers decode to float32, so their
-/// smallest value can be NaN.
-fn native(stored: Stored) -> SampleType {
-    match stored {
-        Stored::U8 => SampleType::I16,
-        Stored::U16 | Stored::U24 => SampleType::I32,
+/// The smallest and largest value of an integer type; `None` for floats.
+fn int_range(stored: Stored) -> Option<(i64, i64)> {
+    Some(match stored {
+        Stored::I8 => (-128, 127),
+        Stored::U8 => (0, 255),
+        Stored::I16 => (-32_768, 32_767),
+        Stored::U16 => (0, 65_535),
+        Stored::I24 => (-8_388_608, 8_388_607),
+        Stored::U24 => (0, 16_777_215),
+        Stored::I32 => (i64::from(i32::MIN), i64::from(i32::MAX)),
+        Stored::U32 => (0, i64::from(u32::MAX)),
+        Stored::I64 => (i64::MIN, i64::MAX),
+        Stored::U64 => (0, i64::MAX),
+        Stored::F32 | Stored::F64 => return None,
+    })
+}
+
+/// Whether samples at or beyond channel `c`'s digital limits read as missing (biosig's
+/// overflow detection): for channels other than stim channels, where the limits leave out
+/// a value of the type.
+fn limited(spec: &Spec, c: usize, stim: bool) -> bool {
+    let s = &spec.channels[c];
+    !stim
+        && int_range(s.stored.unwrap()).is_none_or(|(min, max)| {
+            i64::from(s.digital_min) >= min || i64::from(s.digital_max) <= max
+        })
+}
+
+/// The native type of channel `c`: float32 where samples can be missing, otherwise as its
+/// type decodes.
+fn native(spec: &Spec, c: usize, stim: bool) -> SampleType {
+    if limited(spec, c, stim) {
+        return SampleType::F32;
+    }
+    match spec.channels[c].stored.unwrap() {
+        Stored::I8 | Stored::U8 | Stored::I16 => SampleType::I16,
+        Stored::U16 | Stored::I24 | Stored::U24 | Stored::I32 => SampleType::I32,
         _ => SampleType::F32,
     }
+}
+
+fn is_stim(rec: &Recording, c: usize) -> bool {
+    rec.channels()[c].kind == ChannelKind::Stim
 }
 
 fn physical(rec: &Recording, grid: GridId, channels: &[ChannelId], range: Range<u64>) -> Vec<f32> {
@@ -48,13 +83,28 @@ fn step(x: f64) -> f64 {
 }
 
 /// Whether `got` (channel-major) matches the truth exactly or, for channels read relative
-/// to their first sample, within the steps of both roundings.
-fn matches(spec: &Spec, channels: &[ChannelId], range: Range<u64>, got: &[f32]) -> bool {
+/// to their first sample, within the steps of both roundings; NaN where the truth lies at
+/// or beyond the channel's digital limits (biosig's overflow detection).
+fn matches(
+    rec: &Recording,
+    spec: &Spec,
+    channels: &[ChannelId],
+    range: Range<u64>,
+    got: &[f32],
+) -> bool {
     let n = (range.end - range.start) as usize;
     got.len() == channels.len() * n
         && got.iter().enumerate().all(|(k, &g)| {
             let c = channels[k / n.max(1)].0 as usize;
             let i = range.start + (k % n.max(1)) as u64;
+            let s = &spec.channels[c];
+            let digital = spec.digital(c, i);
+            if limited(spec, c, is_stim(rec, c)) {
+                let missing = digital <= s.digital_min || digital >= s.digital_max;
+                if missing || g.is_nan() {
+                    return missing && g.is_nan();
+                }
+            }
             let e = spec.physical(c, i);
             if g == e as f32 {
                 return true;
@@ -185,9 +235,8 @@ proptest! {
         let (rec, _) = open(file.path());
         prop_assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
         for (c, channel) in rec.channels().iter().enumerate() {
-            let s = &spec.channels[c];
             let grid = rec.grid(channel.grid);
-            prop_assert_eq!(grid.sample_type(), native(s.stored.unwrap()));
+            prop_assert_eq!(grid.sample_type(), native(spec, c, is_stim(&rec, c)));
             prop_assert_eq!(grid.rate(), spec.rate(c));
             prop_assert_eq!(grid.len(), spec.len(c));
         }
@@ -195,8 +244,7 @@ proptest! {
         for (a, ca) in rec.channels().iter().enumerate() {
             for (b, cb) in rec.channels().iter().enumerate() {
                 let same = spec.rate(a) == spec.rate(b)
-                    && native(spec.channels[a].stored.unwrap())
-                        == native(spec.channels[b].stored.unwrap());
+                    && native(spec, a, is_stim(&rec, a)) == native(spec, b, is_stim(&rec, b));
                 prop_assert_eq!(ca.grid == cb.grid, same);
             }
         }
@@ -206,7 +254,7 @@ proptest! {
                 let (a, b) = (a.index(grid.len() as usize + 1) as u64, b.index(grid.len() as usize + 1) as u64);
                 let range = a.min(b)..a.max(b);
                 let got = physical(&rec, GridId(g as u32), &ids, range.clone());
-                prop_assert!(matches(spec, &ids, range.clone(), &got), "grid {} {:?}: {:?}", g, range, got);
+                prop_assert!(matches(&rec, spec, &ids, range.clone(), &got), "grid {} {:?}: {:?}", g, range, got);
                 rec.prefetch(GridId(g as u32), range);
             }
         }
@@ -230,7 +278,7 @@ fn presets_open_with_their_channels_and_events() {
             assert_eq!(grid.rate(), spec.rate(c));
             let got = physical(&rec, GridId(g as u32), &ids, 0..grid.len());
             assert!(
-                matches(&spec, &ids, 0..grid.len(), &got),
+                matches(&rec, &spec, &ids, 0..grid.len(), &got),
                 "{preset} grid {g}"
             );
         }
@@ -395,6 +443,27 @@ fn version_boundaries() {
     put(&mut b, at, &old);
     let (_, got) = Patched::new(&b).open();
     assert_eq!(summary(&got), summary(&events));
+    // From 2.40, bytes 254 and 255 hold the offset to UTC in minutes, for the info view;
+    // before, they are reserved.
+    let zone = |rec: &Recording| {
+        rec.extra()
+            .iter()
+            .find(|(k, _)| k == "time zone")
+            .map(|(_, v)| v.clone())
+    };
+    let mut z = original.clone();
+    put(&mut z, 254, &(-330i16).to_le_bytes());
+    assert_eq!(zone(&Patched::new(&z).open().0), None);
+    put(&mut z, 0, b"GDF 2.50");
+    let (rec, got) = Patched::new(&z).open();
+    assert_eq!(zone(&rec).as_deref(), Some("UTC-05:30"));
+    assert_eq!(rec.start_time(), Some(spec.start));
+    assert_eq!(summary(&got), summary(&events));
+    put(&mut z, 254, &60i16.to_le_bytes());
+    assert_eq!(
+        zone(&Patched::new(&z).open().0).as_deref(),
+        Some("UTC+01:00")
+    );
     // GDF 1.x (below 1.90) and 3.x aren't read as GDF 2.
     for version in [b"GDF 0.50", b"GDF 3.00", b"GDF x.yz"] {
         put(&mut b, 0, version);
@@ -458,7 +527,7 @@ fn record_counts() {
         );
         let ids = rec.grids()[0].channels().to_vec();
         let got = physical(&rec, GridId(0), &ids, 0..16);
-        assert!(matches(&spec, &ids, 0..16, &got));
+        assert!(matches(&rec, &spec, &ids, 0..16, &got));
         // Below -1: an error.
         put(&mut unknown, at, &(-2i64).to_le_bytes());
         assert!(matches!(
@@ -685,7 +754,8 @@ fn tag_length_value_header() {
         rec.extra()[3],
         ("manufacturer".into(), "kymo-testgen".into())
     );
-    assert_eq!(events.len(), 4);
+    // Four entries, one of them the end of another.
+    assert_eq!(events.len(), 3);
     // A tag running past the header: a warning, the rest skipped.
     let mut damaged = b.clone();
     let at = 256 * 4;
@@ -700,7 +770,7 @@ fn tag_length_value_header() {
     assert_eq!(rec.extra().len(), 3);
     let ids = rec.grids()[0].channels().to_vec();
     let got = physical(&rec, GridId(0), &ids, 0..32);
-    assert!(matches(&spec, &ids, 0..32, &got));
+    assert!(matches(&rec, &spec, &ids, 0..32, &got));
     // A header length shorter than the channels need is an error.
     let mut short = b.clone();
     put(&mut short, 184, &3u16.to_le_bytes());
@@ -793,14 +863,14 @@ fn channels_kymo_cannot_scale_or_read() {
 
 #[test]
 fn events_of_both_modes() {
-    // Mode 1 (GDF 1): points in time; mode 3 (GDF 2): durations, all channels.
+    // Mode 1 (GDF 1): points in time; mode 3 (GDF 2): durations, all channels. 769 and its
+    // end (33537 = 769 | 0x8000) at the same position are one event of duration 0.
     let (_, mode1) = Patched::new(&bytes(&small(V1))).open();
     assert_eq!(
         summary(&mode1),
         [
             (0.25, 0.0, "768", vec![]),
             (1.0, 0.0, "769", vec![]),
-            (1.0, 0.0, "33537", vec![]),
             (3.875, 0.0, "32766", vec![]),
         ]
     );
@@ -812,7 +882,6 @@ fn events_of_both_modes() {
         [
             (0.25, 0.5, "768", vec![]),
             (1.0, 0.0, "769", vec![]),
-            (1.0, 0.0, "33537", vec![]),
             (3.875, 0.5, "32766", vec![]),
         ]
     );
@@ -839,7 +908,8 @@ fn events_of_both_modes() {
     // Another rate: positions and durations count its samples.
     let (events, _) = patched(&|b| put(b, at + 4, &16f32.to_le_bytes()));
     assert_eq!((events[0].0, events[0].1), (0.125, 0.25));
-    // Channels, counted from 1; 0 or a channel the file lacks are all channels.
+    // Channels, counted from 1; 0 or a channel the file lacks are all channels. An end on
+    // another channel than its start ends nothing.
     let (events, warnings) = patched(&|b| {
         put(b, chn, &2u16.to_le_bytes());
         put(b, chn + 2, &3u16.to_le_bytes());
@@ -847,6 +917,7 @@ fn events_of_both_modes() {
     });
     assert_eq!(events[0].3, [1]);
     assert_eq!(events[1].3, [2]);
+    assert_eq!(events[2].2, "33537");
     assert!(events[2].3.is_empty());
     assert!(
         warnings[0].contains("1 events name a channel"),
@@ -860,6 +931,55 @@ fn events_of_both_modes() {
     });
     assert_eq!(events.len(), 2);
     assert!(warnings[0].contains("position 0"), "{warnings:?}");
+    // An end later than its start (position 17 at 8 Hz, 2 s): the start lasts until it.
+    let (events, _) = patched(&|b| put(b, pos + 8, &17u32.to_le_bytes()));
+    assert_eq!(
+        events[1..3],
+        [
+            (1.0, 1.0, "769".to_owned(), vec![]),
+            (3.875, 0.5, "32766".to_owned(), vec![])
+        ]
+    );
+    // An end before any start of its type stays a point in time (events in file order).
+    let (events, _) = patched(&|b| {
+        put(b, pos + 4, &17u32.to_le_bytes());
+        put(b, pos + 8, &9u32.to_le_bytes());
+    });
+    assert_eq!(events[1], (2.0, 0.0, "769".to_owned(), vec![]));
+    assert_eq!(events[2], (1.0, 0.0, "33537".to_owned(), vec![]));
+    // Each end closes the oldest open start of its type: 769, 769, end, end.
+    let (events, _) = patched(&|b| {
+        put(b, pos, &9u32.to_le_bytes());
+        put(b, typ, &769u16.to_le_bytes());
+        put(b, at + 8 + 8 * n, &0u32.to_le_bytes()); // no duration of its own
+        put(b, pos + 4, &13u32.to_le_bytes());
+        put(b, pos + 8, &17u32.to_le_bytes());
+        put(b, typ + 6, &33537u16.to_le_bytes());
+        put(b, pos + 12, &25u32.to_le_bytes());
+        put(b, at + 8 + 8 * n + 12, &0u32.to_le_bytes());
+    });
+    assert_eq!(
+        events,
+        [
+            (1.0, 1.0, "769".to_owned(), vec![]),
+            (1.5, 1.5, "769".to_owned(), vec![])
+        ]
+    );
+    // Modes 5 and 7: modes 1 and 3 with a timestamp per event after the table, skipped.
+    let (events, warnings) = patched(&|b| {
+        b[at] = 7;
+        b.extend_from_slice(&[0xab; 8 * 4]);
+    });
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0], (0.25, 0.5, "768".to_owned(), vec![]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let spec1 = small(V1);
+    let mut b5 = bytes(&spec1);
+    b5[table_at(&spec1)] = 5;
+    b5.extend_from_slice(&[0xab; 8 * 4]);
+    let (rec, events) = Patched::new(&b5).open();
+    assert_eq!(summary(&events), summary(&mode1));
+    assert!(rec.warnings().is_empty(), "{:?}", rec.warnings());
     // Another mode: no events, with a warning.
     let (events, warnings) = patched(&|b| b[at] = 2);
     assert!(events.is_empty());

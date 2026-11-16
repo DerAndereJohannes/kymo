@@ -6,6 +6,8 @@
 /// One parsed TAL.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Tal {
+    /// Its first byte's position in the block.
+    pub start: usize,
     /// Seconds since the start date/time in the header.
     pub onset: f64,
     pub duration: Option<f64>,
@@ -25,6 +27,7 @@ pub(crate) fn parse_block(bytes: &[u8]) -> (Vec<Tal>, Vec<String>) {
         if rest.is_empty() {
             break;
         }
+        let at = bytes.len() - rest.len();
         let (tal, next) = match rest.iter().position(|&b| b == 0) {
             Some(end) => (&rest[..end], &rest[end + 1..]),
             None => {
@@ -33,7 +36,7 @@ pub(crate) fn parse_block(bytes: &[u8]) -> (Vec<Tal>, Vec<String>) {
             }
         };
         match parse_tal(tal) {
-            Ok(t) => tals.push(t),
+            Ok(t) => tals.push(Tal { start: at, ..t }),
             Err(e) => errors.push(e),
         }
         rest = next;
@@ -68,6 +71,7 @@ fn parse_tal(tal: &[u8]) -> Result<Tal, String> {
         ),
     };
     Ok(Tal {
+        start: 0,
         onset,
         duration,
         texts: texts
@@ -97,8 +101,9 @@ fn number(bytes: &[u8]) -> Option<f64> {
 mod tests {
     use super::*;
 
-    fn tal(onset: f64, duration: Option<f64>, texts: &[&str]) -> Tal {
+    fn tal(start: usize, onset: f64, duration: Option<f64>, texts: &[&str]) -> Tal {
         Tal {
+            start,
             onset,
             duration,
             texts: texts.iter().map(|t| (*t).to_owned()).collect(),
@@ -114,9 +119,9 @@ mod tests {
         assert_eq!(
             tals,
             [
-                tal(0.25, None, &[""]),
-                tal(1.5, Some(2.5), &["sleep", "N2 \u{b5}V"]),
-                tal(-3.0, None, &["ev"]),
+                tal(0, 0.25, None, &[""]),
+                tal(8, 1.5, Some(2.5), &["sleep", "N2 \u{b5}V"]),
+                tal(31, -3.0, None, &["ev"]),
             ]
         );
     }
@@ -124,7 +129,7 @@ mod tests {
     #[test]
     fn empty_duration_is_none() {
         let (tals, _) = parse_block(b"+7\x15\x14x\x14\0");
-        assert_eq!(tals, [tal(7.0, None, &["x"])]);
+        assert_eq!(tals, [tal(0, 7.0, None, &["x"])]);
     }
 
     #[test]
@@ -140,9 +145,9 @@ mod tests {
         assert_eq!(
             tals,
             [
-                tal(1.0, None, &["a"]),
-                tal(4.0, None, &["b"]),
-                tal(5.0, None, &["unterminated"])
+                tal(0, 1.0, None, &["a"]),
+                tal(78, 4.0, None, &["b"]),
+                tal(84, 5.0, None, &["unterminated"])
             ]
         );
         assert_eq!(errors.len(), 5, "{errors:?}");

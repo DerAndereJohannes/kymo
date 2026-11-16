@@ -43,9 +43,11 @@ pub(crate) fn index(
                     .into_iter()
                     .map(|p| format!("record {record}: {p}")),
             );
-            for (t, tal) in tals.into_iter().enumerate() {
-                // The first TAL of the first annotation signal keeps the record's time.
-                if a == 0 && t == 0 {
+            for tal in tals {
+                // The time-keeping TAL (EDF+): at the first annotation signal's first byte,
+                // with an empty first annotation. Any other TAL in its place is an
+                // annotation's, whose onset isn't the record's.
+                if a == 0 && tal.start == 0 && tal.texts.first().is_some_and(String::is_empty) {
                     onset = Some(tal.onset);
                 }
                 for text in tal.texts.into_iter().filter(|t| !t.is_empty()) {
@@ -70,6 +72,13 @@ pub(crate) fn index(
     }
     warnings.extend(tal_problems);
 
+    let untimed = onsets.iter().filter(|o| o.is_none()).count();
+    if untimed > 0 && !layout.discontinuous {
+        warnings.push(format!(
+            "{untimed} records have no time-keeping annotation at the start of their \
+             annotation signal; they follow the previous record (the first starts at 0)"
+        ));
+    }
     let onsets = record_onsets(onsets, layout, warnings)?;
     let first = onsets.first().copied().unwrap_or(0.0);
 

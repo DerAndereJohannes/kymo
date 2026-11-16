@@ -17,10 +17,10 @@
 //! variation at full f32 precision, as the renderer keeps EDF/BDF's huge offsets. Stim
 //! channels keep a reference of 0: their native values are the codes.
 //!
-//! A decoder can also read the smallest value of a signed integer encoding (−128, −32,768,
-//! −2^23, −2^31, −2^63) as a missing sample, as GDF writes them
-//! ([`Decoder::with_nan_minimum`]). Its samples then decode to `F32` with that value as NaN,
-//! int32 and int64 relative to a reference.
+//! A decoder can also read values at or beyond two limits as missing samples, as GDF's
+//! overflow detection does with its digital minimum and maximum ([`Decoder::with_limits`]).
+//! Its samples then decode to `F32` with those values as NaN (integers up to 24 bits
+//! exactly, int32 and wider relative to a reference).
 
 use crate::{ReadError, Sample, SampleType, SamplesMut};
 
@@ -95,6 +95,18 @@ impl Encoding {
         }
     }
 
+    /// The smallest and largest value of an integer encoding; `None` for floats.
+    pub fn int_range(self) -> Option<(i128, i128)> {
+        let bits = 8 * self.size() as u32;
+        match self {
+            Encoding::F32 | Encoding::F64 => None,
+            Encoding::U8 | Encoding::U16 | Encoding::U24 | Encoding::U32 | Encoding::U64 => {
+                Some((0, (1i128 << bits) - 1))
+            }
+            _ => Some((-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)),
+        }
+    }
+
     /// Whether decoding subtracts a reference value (see the module docs). The others are
     /// exact and ignore it.
     pub fn uses_reference(self) -> bool {
@@ -129,14 +141,35 @@ macro_rules! each {
     }};
 }
 
+/// Values at or beyond these limits are missing (see [`Decoder::with_limits`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Limits {
+    low: f64,
+    high: f64,
+    /// The limits for integers: an integer `v` is missing if `v <= low_int` or
+    /// `v >= high_int` (the limits rounded down and up).
+    low_int: i128,
+    high_int: i128,
+}
+
+impl Limits {
+    fn int_missing(&self, v: i128) -> bool {
+        v <= self.low_int || v >= self.high_int
+    }
+
+    fn float_missing(&self, v: f64) -> bool {
+        v <= self.low || v >= self.high
+    }
+}
+
 /// Decodes samples of one encoding and byte order into their native type.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decoder {
     encoding: Encoding,
     order: ByteOrder,
     reference: f64,
-    /// The smallest value of a signed integer encoding is NaN, so samples decode to `F32`.
-    nan_minimum: bool,
+    /// Values at or beyond these are missing, so samples decode to `F32`.
+    limits: Option<Limits>,
 }
 
 impl Decoder {
@@ -146,34 +179,51 @@ impl Decoder {
             encoding,
             order,
             reference: 0.0,
-            nan_minimum: false,
+            limits: None,
         }
     }
 
-    /// The same decoder reading the smallest value of a signed integer encoding as NaN (GDF's
-    /// missing samples), so its samples decode to `F32`: int8, int16 and int24 exactly, int32
-    /// and int64 relative to a reference (which then [uses one](Self::uses_reference)).
-    /// Unchanged for other encodings, which have no such value.
-    pub fn with_nan_minimum(self) -> Self {
-        let signed = matches!(
-            self.encoding,
-            Encoding::I8 | Encoding::I16 | Encoding::I24 | Encoding::I32 | Encoding::I64
-        );
+    /// The same decoder reading values `<= low` or `>= high` as missing (NaN), as biosig's
+    /// overflow detection reads GDF's samples at or beyond the digital minimum and maximum,
+    /// so its samples decode to `F32`: integers up to 24 bits exactly, int32 and wider
+    /// relative to a reference (which int32 then [uses](Self::uses_reference)).
+    ///
+    /// Unchanged if the limits aren't finite with `low < high`, or (for an integer encoding)
+    /// leave every value of the encoding in between.
+    pub fn with_limits(self, low: f64, high: f64) -> Self {
+        if !(low.is_finite() && high.is_finite() && low < high) {
+            return self;
+        }
+        // Far beyond any 64-bit value, so the casts below can't overflow.
+        let bound = 2f64.powi(100);
+        let limits = Limits {
+            low,
+            high,
+            low_int: low.floor().clamp(-bound, bound) as i128,
+            high_int: high.ceil().clamp(-bound, bound) as i128,
+        };
+        if let Some((min, max)) = self.encoding.int_range()
+            && limits.low_int < min
+            && limits.high_int > max
+        {
+            return self;
+        }
         Decoder {
-            nan_minimum: signed,
+            limits: Some(limits),
             ..self
         }
     }
 
-    /// Whether the smallest value reads as NaN (see [`with_nan_minimum`](Self::with_nan_minimum)).
-    pub fn nan_minimum(&self) -> bool {
-        self.nan_minimum
+    /// The limits at or beyond which values are missing, if any (see
+    /// [`with_limits`](Self::with_limits)).
+    pub fn limits(&self) -> Option<(f64, f64)> {
+        self.limits.map(|l| (l.low, l.high))
     }
 
     /// Whether decoding subtracts a reference value: for the encodings that
-    /// [use one](Encoding::uses_reference), and for int32 with a NaN minimum.
+    /// [use one](Encoding::uses_reference), and for int32 with limits.
     pub fn uses_reference(&self) -> bool {
-        self.encoding.uses_reference() || (self.nan_minimum && self.encoding == Encoding::I32)
+        self.encoding.uses_reference() || (self.limits.is_some() && self.encoding == Encoding::I32)
     }
 
     /// The same decoder subtracting `reference` from every value, if it
@@ -228,7 +278,7 @@ impl Decoder {
     }
 
     pub fn native(&self) -> SampleType {
-        if self.nan_minimum {
+        if self.limits.is_some() {
             SampleType::F32
         } else {
             self.encoding.native()
@@ -239,33 +289,35 @@ impl Decoder {
     /// integers beyond 2^53), NaN for a missing one; `None` if `bytes` is too short.
     pub fn value(&self, bytes: &[u8]) -> Option<f64> {
         let value = self.stored(bytes)?;
-        Some(if self.nan_minimum && self.is_minimum(bytes) {
-            f64::NAN
-        } else {
-            value
-        })
+        let missing = match self.limits {
+            None => false,
+            // Integers compare exactly: in f64, 64-bit ones beside a limit would round to it.
+            Some(l) => match self.stored_int(bytes) {
+                Some(v) => l.int_missing(v),
+                None => l.float_missing(value),
+            },
+        };
+        Some(if missing { f64::NAN } else { value })
     }
 
-    /// Whether the sample at the start of `bytes` (long enough) is its signed integer
-    /// encoding's smallest value, compared as an integer (in f64, int64's neighbors of the
-    /// minimum would round to it): in two's complement, a top byte of 0x80 and zeros below.
-    fn is_minimum(&self, bytes: &[u8]) -> bool {
-        let n = match self.encoding {
-            Encoding::I8 => 1,
-            Encoding::I16 => 2,
-            Encoding::I24 => 3,
-            Encoding::I32 => 4,
-            Encoding::I64 => 8,
-            _ => return false,
-        };
-        let Some(b) = bytes.get(..n) else {
-            return false;
-        };
-        let (top, rest) = match self.order {
-            ByteOrder::Little => (b[n - 1], &b[..n - 1]),
-            ByteOrder::Big => (b[0], &b[1..]),
-        };
-        top == 0x80 && rest.iter().all(|&x| x == 0)
+    /// The stored integer at the start of `bytes` (long enough), `None` for floats.
+    fn stored_int(&self, bytes: &[u8]) -> Option<i128> {
+        let n = self.encoding.size();
+        let b = bytes.get(..n)?;
+        let signed = self.encoding.int_range()?.0 < 0;
+        // Little-endian from here on: the value is the sum of its bytes' weights.
+        let ordered: [u8; 8] = std::array::from_fn(|i| match self.order {
+            _ if i >= n => 0,
+            ByteOrder::Little => b[i],
+            ByteOrder::Big => b[n - 1 - i],
+        });
+        let unsigned = u64::from_le_bytes(ordered);
+        let bits = 8 * n as u32;
+        Some(if signed && unsigned >> (bits - 1) & 1 == 1 {
+            i128::from(unsigned) - (1i128 << bits)
+        } else {
+            i128::from(unsigned)
+        })
     }
 
     /// The stored value at the start of `bytes`, never NaN for integers.
@@ -364,45 +416,54 @@ impl Decoder {
                 Encoding::I32 => each!(src, stride, d, 4, i32::from_be_bytes),
                 _ => unreachable!("native type checked above"),
             },
-            SamplesMut::F32(d) if self.nan_minimum => {
-                // Missing samples (the smallest value) become NaN.
-                fn or_nan<V: PartialEq>(v: V, min: V, f: impl Fn(V) -> f32) -> f32 {
-                    if v == min { f32::NAN } else { f(v) }
+            SamplesMut::F32(d) if let Some(l) = self.limits => {
+                // Values at or beyond the limits become NaN; integers compare exactly.
+                let int = move |v: i128, x: f32| if l.int_missing(v) { f32::NAN } else { x };
+                let float = move |v: f64, x: f32| if l.float_missing(v) { f32::NAN } else { x };
+                macro_rules! le_be {
+                    ($n:literal, $t:ty, $f:expr) => {
+                        if little {
+                            each!(src, stride, d, $n, |a| $f(<$t>::from_le_bytes(a)))
+                        } else {
+                            each!(src, stride, d, $n, |a| $f(<$t>::from_be_bytes(a)))
+                        }
+                    };
                 }
                 match self.encoding {
                     Encoding::I8 => each!(src, stride, d, 1, |[a]: [u8; 1]| {
-                        or_nan(a as i8, i8::MIN, f32::from)
+                        let v = a as i8;
+                        int(v.into(), f32::from(v))
                     }),
-                    Encoding::I16 if little => each!(src, stride, d, 2, |a| {
-                        or_nan(i16::from_le_bytes(a), i16::MIN, f32::from)
-                    }),
-                    Encoding::I16 => each!(src, stride, d, 2, |a| {
-                        or_nan(i16::from_be_bytes(a), i16::MIN, f32::from)
-                    }),
+                    Encoding::U8 => {
+                        each!(src, stride, d, 1, |[a]: [u8; 1]| int(
+                            a.into(),
+                            f32::from(a)
+                        ))
+                    }
+                    Encoding::I16 => le_be!(2, i16, |v: i16| int(v.into(), f32::from(v))),
+                    Encoding::U16 => le_be!(2, u16, |v: u16| int(v.into(), f32::from(v))),
                     Encoding::I24 => each!(src, stride, d, 3, |a| {
-                        or_nan(i24(a, little), -8_388_608, |v| v as f32)
+                        let v = i24(a, little);
+                        int(v.into(), v as f32)
                     }),
-                    Encoding::I32 if little => each!(src, stride, d, 4, |a| {
-                        or_nan(i32::from_le_bytes(a), i32::MIN, |v| {
-                            (f64::from(v) - r) as f32
-                        })
+                    Encoding::U24 => each!(src, stride, d, 3, |a| {
+                        let v = u24(a, little);
+                        int(v.into(), v as f32)
                     }),
-                    Encoding::I32 => each!(src, stride, d, 4, |a| {
-                        or_nan(i32::from_be_bytes(a), i32::MIN, |v| {
-                            (f64::from(v) - r) as f32
-                        })
+                    Encoding::I32 => le_be!(4, i32, |v: i32| {
+                        int(v.into(), (f64::from(v) - r) as f32)
                     }),
-                    Encoding::I64 if little => each!(src, stride, d, 8, |a| {
-                        or_nan(i64::from_le_bytes(a), i64::MIN, |v| {
-                            (i128::from(v) - ri) as f32
-                        })
+                    Encoding::U32 => le_be!(4, u32, |v: u32| {
+                        int(v.into(), (f64::from(v) - r) as f32)
                     }),
-                    Encoding::I64 => each!(src, stride, d, 8, |a| {
-                        or_nan(i64::from_be_bytes(a), i64::MIN, |v| {
-                            (i128::from(v) - ri) as f32
-                        })
+                    Encoding::I64 => le_be!(8, i64, |v: i64| {
+                        int(v.into(), (i128::from(v) - ri) as f32)
                     }),
-                    _ => unreachable!("only signed integers have a NaN minimum"),
+                    Encoding::U64 => le_be!(8, u64, |v: u64| {
+                        int(v.into(), (i128::from(v) - ri) as f32)
+                    }),
+                    Encoding::F32 => le_be!(4, f32, |v: f32| float(v.into(), v)),
+                    Encoding::F64 => le_be!(8, f64, |v: f64| float(v, (v - r) as f32)),
                 }
             }
             SamplesMut::F32(d) => match self.encoding {
