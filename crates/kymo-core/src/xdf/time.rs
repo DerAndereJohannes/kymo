@@ -52,8 +52,9 @@ pub(crate) struct Clock {
 
 impl Clock {
     /// The correction from a stream's ClockOffset chunks, (clock time, offset) in file
-    /// order; `None` without any. Ranges whose offsets can't be fitted (all at one time)
-    /// get no correction, with a warning.
+    /// order; `None` without any. A range whose offsets can't be fitted with a line (all at
+    /// one time) gets their median as a constant, as a single offset is applied (pyxdf
+    /// applies none then).
     pub fn new(offsets: &[(f64, f64)], name: &str, warnings: &mut Vec<String>) -> Option<Clock> {
         let finite: Vec<(f64, f64)> = offsets
             .iter()
@@ -83,11 +84,8 @@ impl Clock {
                     (part[0].1, 0.0)
                 } else {
                     robust_line(part).unwrap_or_else(|| {
-                        warnings.push(format!(
-                            "{name}: clock offsets {a} to {b} can't be fitted; they are not \
-                             applied"
-                        ));
-                        (0.0, 0.0)
+                        let values: Vec<f64> = part.iter().map(|p| p.1).collect();
+                        (median(&values), 0.0)
                     })
                 };
                 ClockRange {
@@ -109,18 +107,28 @@ impl Clock {
 
 /// Corrects a stream's time stamps, fed in order: each belongs to the range it is in, up to
 /// the first that is closer to the next range's first clock time than to the end of its own
-/// (pyxdf's rule, which assumes time stamps that increase).
+/// (pyxdf's rule, which assumes time stamps that increase). Then the stream's
+/// `offset_mean` comes off.
 pub(crate) struct Corrector<'a> {
     clock: Option<&'a Clock>,
     range: usize,
+    offset_mean: f64,
 }
 
 impl<'a> Corrector<'a> {
-    pub fn new(clock: Option<&'a Clock>) -> Self {
-        Corrector { clock, range: 0 }
+    pub fn new(clock: Option<&'a Clock>, offset_mean: f64) -> Self {
+        Corrector {
+            clock,
+            range: 0,
+            offset_mean,
+        }
     }
 
     pub fn correct(&mut self, t: f64) -> f64 {
+        self.synchronize(t) - self.offset_mean
+    }
+
+    fn synchronize(&mut self, t: f64) -> f64 {
         let Some(clock) = self.clock else { return t };
         let ranges = &clock.ranges;
         while self.range + 1 < ranges.len() {
@@ -499,6 +507,23 @@ mod tests {
         assert!((a2 + 0.249_955_815_025_348_8).abs() < 1e-12, "{a2}");
         assert!((b2 - 1.960_669_841_757_041_5e-6).abs() < 1e-17, "{b2}");
         assert_eq!(robust_line(&[(1.0, 0.0), (1.0, 1.0)]), None);
+    }
+
+    #[test]
+    fn offsets_at_one_time_give_their_median() {
+        // No line through them, but their value there: the median, as a constant, as a
+        // single offset is applied.
+        let mut warnings = Vec::new();
+        let offsets = [(10.0, 0.5), (10.0, 0.7), (10.0, 0.6)];
+        let clock = Clock::new(&offsets, "s", &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut corrector = Corrector::new(Some(&clock), 0.0);
+        assert!((corrector.correct(100.0) - 100.6).abs() < 1e-12);
+        // offset_mean comes off after the clock's correction.
+        let mut corrector = Corrector::new(Some(&clock), 0.25);
+        assert!((corrector.correct(100.0) - 100.35).abs() < 1e-12);
+        let mut corrector = Corrector::new(None, -0.5);
+        assert_eq!(corrector.correct(100.0), 100.5);
     }
 
     #[test]

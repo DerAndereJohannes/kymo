@@ -998,38 +998,113 @@ fn first_sample(bytes: &[u8]) -> usize {
 
 #[test]
 fn chunks_out_of_place_and_unknown() {
-    // Samples before their stream's header; a tag XDF doesn't have, after which the walk
-    // goes on after the next boundary chunk (skipping the clock offset before it).
+    // Samples before their stream's header; chunks of tags XDF doesn't define, which are
+    // skipped by their length (the specification keeps the length in every chunk so that
+    // readers can pass over new ones), with the chunks after them read: a clock offset and
+    // samples, without a boundary chunk.
     let mut c = Chunks::new(None);
     c.numeric(1, XdfFormat::I16, &eeg_samples(0..2));
     eeg_header(&mut c, 1);
-    let at = c.bytes.len();
+    c.stream_header(2, &header_xml("Markers", "Markers", 1, 0.0, "string", None));
     c.raw(77, b"whatever");
     c.clock_offset(1, 10.0, -0.5);
-    c.boundary();
     c.numeric(1, XdfFormat::I16, &eeg_samples(2..5));
+    c.raw(9, b"");
+    c.strings(2, &[(Some(5.0), vec!["go".into()])]);
+    c.raw(77, &[0xff; 300]);
+    c.numeric(1, XdfFormat::I16, &eeg_samples(5..7));
     c.footer(1, "<info/>");
-    let rec = Built::new(&c.bytes).open();
+    c.footer(2, "<info/>");
+    let (rec, annotations) = Built::new(&c.bytes).open_with();
     assert!(has_warning(
         &rec,
         "samples of stream 1 come before its header"
     ));
-    let skipped = (1 + 1 + 2 + 8) + (1 + 1 + 2 + 20) + (1 + 1 + 2 + 16);
     assert!(
         has_warning(
             &rec,
-            &format!(
-                "the chunk at byte {at} has the tag 77, which XDF doesn't have; the \
-                 {skipped} bytes up to and including the next boundary chunk are skipped"
-            )
+            "3 chunks of tags XDF 1.0 doesn't define (9, 77) are skipped"
         ),
         "{:?}",
         rec.warnings()
     );
     assert_eq!(rec.warnings().len(), 2, "{:?}", rec.warnings());
-    assert_eq!(values(&rec, 0), [2.0, 3.0, 4.0]);
-    // The first sample is at its own timestamp.
+    assert_eq!(values(&rec, 0), [2.0, 3.0, 4.0, 5.0, 6.0]);
+    // The first sample is at its own timestamp, 5.2 on the stream's clock, 4.7 after the
+    // clock offset; the marker, on a clock without offsets, 0.3 s later.
     assert_eq!(rec.grids()[0].time_of(0), 0.0);
+    assert_eq!(annotations.len(), 1);
+    assert!(
+        (annotations[0].onset - 0.3).abs() < 1e-12,
+        "{annotations:?}"
+    );
+}
+
+/// The Synchronization meta-data's `offset_mean` ("subtracted from XDF timestamps before
+/// comparing streams") moves a stream's samples and annotations; one that isn't a number
+/// is ignored, with a warning.
+#[test]
+fn offset_mean_is_subtracted() {
+    let sync = |xml: String, offset: &str| {
+        xml.replace(
+            "<desc>",
+            &format!(
+                "<desc><synchronization><offset_mean>{offset}</offset_mean>\
+                 </synchronization>"
+            ),
+        )
+    };
+    let channels: Vec<(String, String, String)> = ["A", "B", "C"]
+        .iter()
+        .map(|l| ((*l).to_owned(), "EEG".to_owned(), "microvolts".to_owned()))
+        .collect();
+    let mut c = Chunks::new(None);
+    c.stream_header(
+        1,
+        &sync(
+            header_xml("Amp", "EEG", 3, 10.0, "int16", Some(&channels)),
+            " 0.25 ",
+        ),
+    );
+    let markers = |name| header_xml(name, "Markers", 1, 0.0, "string", None);
+    c.stream_header(2, &markers("Plain"));
+    c.stream_header(3, &sync(markers("Late"), "-0.5"));
+    c.stream_header(4, &sync(markers("Odd"), "soon"));
+    c.numeric(1, XdfFormat::I16, &eeg_samples(0..10));
+    for id in 2..5 {
+        c.strings(id, &[(Some(5.0), vec![format!("m{id}")])]);
+    }
+    for id in 1..5 {
+        c.footer(id, "<info/>");
+    }
+    let (rec, annotations) = Built::new(&c.bytes).open_with();
+    assert!(
+        has_warning(
+            &rec,
+            "stream 4 (Odd): its offset_mean \"soon\" isn't a number and is ignored"
+        ),
+        "{:?}",
+        rec.warnings()
+    );
+    assert_eq!(rec.warnings().len(), 1, "{:?}", rec.warnings());
+    // The signal starts at 5 - 0.25: t = 0.
+    let mut onsets: Vec<(String, f64)> = annotations
+        .iter()
+        .map(|a| (a.description.clone(), a.onset))
+        .collect();
+    onsets.sort_by(|a, b| a.0.cmp(&b.0));
+    let expected = [("m2", 0.25), ("m3", 0.75), ("m4", 0.25)];
+    for ((d, onset), (e, want)) in onsets.iter().zip(expected) {
+        assert_eq!(d, e);
+        assert!((onset - want).abs() < 1e-12, "{onsets:?}");
+    }
+    let info = rec
+        .extra()
+        .iter()
+        .find(|(k, _)| k == "stream 1")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    assert!(info.ends_with("; offset_mean 0.25 s subtracted"), "{info}");
 }
 
 #[test]
@@ -1328,6 +1403,19 @@ fn start_times() {
         let rec = Built::new(&c.bytes).open();
         let expected = start.map(|(h, m, s, ns)| jiff::civil::date(2021, 12, 15).at(h, m, s, ns));
         assert_eq!(rec.start_time(), expected, "{datetime:?}");
+        // mnextend reads `datetime` as a point in time, so MNE's CSV of the recording has
+        // UTC times where it has an offset.
+        let offset = match zone {
+            Some("UTC+01:00") => Some(3600),
+            Some("UTC-05:30") => Some(-19800),
+            Some("UTC") => Some(0),
+            _ => None,
+        };
+        assert_eq!(
+            rec.utc_offset().map(|o| o.seconds()),
+            offset,
+            "{datetime:?}"
+        );
         let got_zone = rec
             .extra()
             .iter()

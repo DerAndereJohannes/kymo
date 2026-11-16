@@ -92,6 +92,10 @@ pub(crate) struct Info {
     /// The header says the stream can drop samples (`desc/synchronization/can_drop_samples`),
     /// so pyxdf doesn't dejitter it.
     pub can_drop: bool,
+    /// Seconds to subtract from the stream's synchronized time stamps
+    /// (`desc/synchronization/offset_mean`, "subtracted from XDF timestamps before comparing
+    /// streams"); 0 without one.
+    pub offset_mean: f64,
 }
 
 /// How a stream is read.
@@ -191,6 +195,8 @@ pub(crate) struct Scan {
     /// In order of first appearance.
     pub streams: Vec<Stream>,
     pub warnings: Vec<String>,
+    /// Chunks of tags XDF 1.0 doesn't define, skipped: how many of each.
+    unknown: std::collections::BTreeMap<u16, u64>,
 }
 
 /// A variable-length integer at `at`: a byte giving its width (1, 4 or 8), then the value,
@@ -227,8 +233,9 @@ fn after_boundary(map: &[u8], from: usize) -> Option<usize> {
         .map(|k| from + k + BOUNDARY.len())
 }
 
-/// Walks the chunks of `map` (which starts with [`MAGIC`]). Where the walk loses its place
-/// (an invalid length or a tag XDF doesn't have), it goes on after the next Boundary chunk.
+/// Walks the chunks of `map` (which starts with [`MAGIC`]), passing over those of tags XDF
+/// 1.0 doesn't define. Where the walk loses its place (an invalid length), it goes on after
+/// the next Boundary chunk.
 pub(crate) fn scan(map: &[u8]) -> Scan {
     let mut scan = Scan::default();
     let mut index: HashMap<u32, usize> = HashMap::new();
@@ -268,15 +275,11 @@ pub(crate) fn scan(map: &[u8]) -> Scan {
                 .push("the file ends inside its last chunk, which is ignored".into());
             break;
         };
+        // A tag XDF 1.0 doesn't define: a later version's chunk, passed over by its length
+        // ("so that programs can read through the chunks without having to parse the
+        // content structure").
         if !(tag::FILE_HEADER..=tag::STREAM_FOOTER).contains(&tag) {
-            let what = format!("the tag {tag}, which XDF doesn't have");
-            match lost(pos, &what, &mut scan.warnings) {
-                Some(next) => {
-                    pos = next;
-                    continue;
-                }
-                None => break,
-            }
+            *scan.unknown.entry(tag).or_default() += 1;
         }
         let body = &map[content + 2..end];
         let body_at = content + 2;
@@ -342,7 +345,7 @@ pub(crate) fn scan(map: &[u8]) -> Scan {
                 }
             }
             tag::BOUNDARY => {}
-            // Chunks the file ends inside.
+            // Chunks the file ends inside, and unknown ones.
             _ => {}
         }
         if truncated {
@@ -426,11 +429,24 @@ fn header(stream: &mut Stream, xml_bytes: &[u8], warnings: &mut Vec<String>) {
         ValueFormat::Numeric(_) if !is_event_type(&kind) => Mode::Irregular,
         ValueFormat::Numeric(_) => Mode::Annotations,
     };
-    let can_drop = root
-        .child("desc")
-        .and_then(|d| d.child("synchronization"))
+    let sync = root.child("desc").and_then(|d| d.child("synchronization"));
+    let can_drop = sync
         .and_then(|s| s.text_of("can_drop_samples"))
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
+    let offset_mean = match sync.and_then(|s| s.text_of("offset_mean")).map(str::trim) {
+        None | Some("") => 0.0,
+        Some(text) => match text.parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => {
+                warnings.push(format!(
+                    "stream {} ({name}): its offset_mean {text:?} isn't a number and is \
+                     ignored",
+                    stream.id
+                ));
+                0.0
+            }
+        },
+    };
     stream.info = Some(Info {
         name,
         kind,
@@ -439,6 +455,7 @@ fn header(stream: &mut Stream, xml_bytes: &[u8], warnings: &mut Vec<String>) {
         rate,
         channels,
         can_drop,
+        offset_mean,
     });
 }
 
@@ -452,6 +469,7 @@ fn placeholder(name: String, kind: String) -> Info {
         rate: 0.0,
         channels: Vec::new(),
         can_drop: false,
+        offset_mean: 0.0,
     }
 }
 
@@ -752,6 +770,16 @@ fn decode_events(
 impl Scan {
     /// Warnings about streams that only show once the whole file is scanned.
     pub fn finish(&mut self) {
+        if !self.unknown.is_empty() {
+            let count: u64 = self.unknown.values().sum();
+            let tags: Vec<String> = self.unknown.keys().map(u16::to_string).collect();
+            self.warnings.push(format!(
+                "{count} chunk{} of tags XDF 1.0 doesn't define ({}) {} skipped",
+                if count == 1 { "" } else { "s" },
+                tags.join(", "),
+                if count == 1 { "is" } else { "are" }
+            ));
+        }
         for stream in &self.streams {
             if stream.unstamped > 0 {
                 self.warnings.push(format!(

@@ -29,6 +29,9 @@
 //!   first time stamp count back from it (pyxdf counts them on from 0). Marker streams
 //!   with a nominal rate are not dejittered (pyxdf dejitters them like signals): their
 //!   events are irregular.
+//! - A stream's `desc/synchronization/offset_mean` (the XDF meta-data's "subtracted from
+//!   XDF timestamps before comparing streams") comes off its synchronized time stamps;
+//!   pyxdf ignores it.
 //! - Annotation samples without a timestamp take the previous one's plus a sample period
 //!   (as in pyxdf); those before a stream's first timestamp are left out.
 

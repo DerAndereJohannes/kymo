@@ -276,7 +276,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         if stream.mode != Mode::Annotations {
             continue;
         }
-        let mut corrector = Corrector::new(clock.as_ref());
+        let mut corrector = Corrector::new(clock.as_ref(), offset_mean(stream));
         let before = annotations.len();
         annotations.extend(stream.events.iter().filter_map(|(t, text)| {
             let onset = corrector.correct(*t) - t0;
@@ -323,10 +323,14 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         })
         .collect();
 
-    let start_time = scan
+    let start = scan
         .datetime
         .as_deref()
         .and_then(|text| start_time(text, &mut extra, &mut warnings));
+    let (start_time, utc_offset) = match start {
+        Some((time, offset)) => (Some(time), offset),
+        None => (None, None),
+    };
 
     Ok(Opened {
         header: Header {
@@ -337,7 +341,7 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
             extra,
             bad_channels: Vec::new(),
             streams: stream_list,
-            utc_offset: None,
+            utc_offset,
         },
         annotations,
         warnings,
@@ -398,7 +402,7 @@ fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
             own: None,
         };
     }
-    let mut corrector = Corrector::new(clock);
+    let mut corrector = Corrector::new(clock, offset_mean(stream));
     let mut dejitter = Dejitter::new(nominal);
     timestamps(stream, map, frame, 1.0 / nominal, |i, t| {
         dejitter.push(i, corrector.correct(t));
@@ -411,6 +415,11 @@ fn timing(stream: &Stream, map: &[u8], clock: Option<&Clock>) -> Timing {
         stamped: true,
         own: None,
     }
+}
+
+/// The seconds a stream's header says to subtract from its time stamps.
+fn offset_mean(stream: &Stream) -> f64 {
+    stream.info.as_ref().map_or(0.0, |i| i.offset_mean)
 }
 
 /// Bytes of a sample without a time stamp: the flag and the values.
@@ -445,7 +454,7 @@ fn own_times(
     let nominal = stream.info.as_ref().map_or(0.0, |i| i.rate);
     // pyxdf deduces missing time stamps of an irregular stream as the previous one.
     let tdiff = if nominal > 0.0 { 1.0 / nominal } else { 0.0 };
-    let mut corrector = Corrector::new(clock);
+    let mut corrector = Corrector::new(clock, offset_mean(stream));
     let mut previous = f64::NEG_INFINITY;
     let mut backward = 0;
     timestamps(stream, map, frame_of(stream), tdiff, |i, t| {
@@ -698,6 +707,9 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
         Some(1) => text.push_str(", 1 clock reset"),
         Some(n) => text.push_str(&format!(", {n} clock resets")),
     }
+    if info.offset_mean != 0.0 {
+        text.push_str(&format!("; offset_mean {} s subtracted", info.offset_mean));
+    }
     text
 }
 
@@ -832,12 +844,14 @@ fn unscaled_unit(unit: &str) -> bool {
 
 /// The file header's `datetime` (`2021-12-15T10:46:02+0100`, the offset as `+HH:MM`,
 /// `+HHMM` or `Z`, or none) as the start time in the file's local time, with its time zone
-/// in `extra`.
+/// in `extra`, and its offset from UTC where it has one: mnextend reads `datetime` as a
+/// point in time, so MNE's CSV of the recording has UTC times then (without an offset,
+/// mnextend reads it in the reading machine's zone).
 fn start_time(
     text: &str,
     extra: &mut Vec<(String, String)>,
     warnings: &mut Vec<String>,
-) -> Option<jiff::civil::DateTime> {
+) -> Option<(jiff::civil::DateTime, Option<jiff::tz::Offset>)> {
     let text = text.trim();
     let date_end = text.find('T').unwrap_or(0);
     let (local, offset) = if let Some(local) = text.strip_suffix('Z') {
@@ -868,7 +882,10 @@ fn start_time(
         };
         extra.push(("time zone".to_owned(), zone));
     }
-    Some(time)
+    let utc = offset
+        .flatten()
+        .and_then(|s| jiff::tz::Offset::from_seconds(s).ok());
+    Some((time, utc))
 }
 
 /// `+HH:MM`, `+HHMM` or `+HH` in seconds.

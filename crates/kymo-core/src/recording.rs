@@ -29,11 +29,12 @@ pub struct Header {
     /// channels are in effect one stream. If any, every channel belongs to exactly one, and
     /// a stream's channels are consecutive.
     pub streams: Vec<Stream>,
-    /// The start time's offset from UTC, where the file stores its date in UTC and kymo
-    /// shows it in local time (FIFF: UTC unless the file stores an offset). `None` where the
-    /// file's date is local time already, even with an offset beside it (GDF, BVRF), as MNE
-    /// reads those times as they are. MNE's CSV of a recording has UTC times where this is
-    /// set.
+    /// The start time's offset from UTC, where the format's reader for MNE places the date
+    /// in UTC while kymo shows it in local time, so MNE's CSV of the recording has UTC times:
+    /// FIFF (its date is UTC; kymo's local where the file stores an offset) and XDF
+    /// (mnextend reads `datetime` with its offset as a point in time). `None` where MNE's
+    /// reader takes the local time as it is, even with an offset beside it (GDF, BVRF), or
+    /// the file has no offset.
     pub utc_offset: Option<jiff::tz::Offset>,
 }
 

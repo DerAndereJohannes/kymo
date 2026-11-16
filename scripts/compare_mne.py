@@ -228,6 +228,8 @@ With --annotations, annotation files are checked both ways (`kymo-core --example
 annotations`): the recording's annotations saved by Kymo as an events table and read
 with `read_events_table` (the snippet in the docs) equal MNE's own reading of the file;
 and MNE's CSV of them (`Annotations.save`) loaded by Kymo equals Kymo's own reading.
+For XDF, only the CSV way: MNE's CSV of mnextend's reading (whose meas_date is the file's
+datetime in UTC, so the CSV holds UTC times) loaded by Kymo gives mnextend's onsets.
 """
 
 import argparse
@@ -617,7 +619,7 @@ def xdf_channels(stream):
     return channels if len(channels) == count else [("", "", "")] * count
 
 
-def compare_xdf(path, tmp, header, annotations, windows):
+def compare_xdf(path, tmp, header, annotations, windows, annotation_files=False):
     """Compares Kymo's reading of an XDF file with pyxdf's and mnextend's; returns the
     problems and prints a summary."""
     import pyxdf
@@ -872,6 +874,8 @@ def compare_xdf(path, tmp, header, annotations, windows):
         )
         if sorted(a["description"] for a in annotations) != theirs:
             problems.append("annotation texts differ from mnextend's")
+        if annotation_files:
+            problems += compare_xdf_csv(path, raw, tmp, header["duration"], notes)
 
     # The start time: the file header's datetime, in UTC.
     datetime_text = (file_header["info"].get("datetime") or [None])[0]
@@ -912,6 +916,58 @@ def compare_xdf(path, tmp, header, annotations, windows):
     return problems
 
 
+def compare_xdf_csv(path, raw, tmp, duration, notes):
+    """Problems with MNE's CSV of mnextend's reading, loaded in Kymo: mnextend's meas_date
+    is the file's datetime in UTC, so the CSV's times are UTC; loaded, they must give
+    mnextend's onsets (from its first time stamp, Kymo's t = 0 where the streams it reads
+    start first), within the CSV's microseconds. Those outside Kymo's recording (markers
+    after its last sample) are left out on loading, as for every file loaded."""
+    keep = [k for k, d in enumerate(raw.annotations.description) if d != "BAD_ACQ_SKIP"]
+    theirs = raw.annotations[keep]
+    csv = tmp / "mne.csv"
+    theirs.save(csv, overwrite=True, verbose="error")
+    out = subprocess.run(
+        [
+            "cargo", "run", "-q", "--release", "-p", "kymo-core", "--example",
+            "annotations", "--", "load", str(path), str(csv),
+        ],
+        check=True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    ).stdout
+    loaded = json.loads(out)
+    problems = []
+    # Inside as the CSV has them, rounded to microseconds: a marker at the end of the
+    # recording (minimal.xdf's last, at 0.9 s, the duration 0.8999999999999987) may round
+    # beyond it.
+    inside = [
+        (o, d)
+        for o, dur, d in zip(theirs.onset, theirs.duration, theirs.description)
+        if round(o, 6) <= duration and round(o, 6) + dur >= 0
+    ]
+    if loaded["outside"] != len(theirs) - len(inside):
+        problems.append(
+            f"MNE's CSV in Kymo: {loaded['outside']} annotations outside, "
+            f"{len(theirs) - len(inside)} beyond Kymo's recording"
+        )
+    elif loaded["outside"]:
+        notes.append(
+            f"MNE's CSV in Kymo: {loaded['outside']} of mnextend's annotations lie outside "
+            "the recording and are left out"
+        )
+    got = sorted((a["onset"], a["description"]) for a in loaded["annotations"])
+    want = sorted(inside)
+    if len(got) != len(want):
+        problems.append(f"MNE's CSV in Kymo: {len(got)} annotations, mnextend {len(want)}")
+    else:
+        for a, b in zip(got, want):
+            if abs(a[0] - b[0]) > 2e-6 or a[1] != b[1]:
+                problems.append(f"MNE's CSV in Kymo: {a}, mnextend {b}")
+                break
+    return problems
+
+
 def compare(path, max_values=None, annotation_files=False):
     """Returns a list of problems (empty if the readers agree), or None for a file
     neither reader reads, and prints a summary."""
@@ -935,7 +991,7 @@ def compare(path, max_values=None, annotation_files=False):
         annotations = json.loads((tmp / "annotations.json").read_text())
         windows = json.loads((tmp / "windows.json").read_text())
         if header["format"] == "XDF":
-            return compare_xdf(path, tmp, header, annotations, windows)
+            return compare_xdf(path, tmp, header, annotations, windows, annotation_files)
 
         brainvision = header["format"] == "BrainVision"
         bvrf = header["format"] == "BVRF"
