@@ -696,13 +696,13 @@ fn presets_open_with_their_channels() {
     assert_eq!(
         extra(&rec, "stream 1").as_deref(),
         Some(
-            "\"BrainAmp\" (EEG), 8 × float32, 500 Hz, 30000 samples: channels; effective \
+            "\"BrainAmp\" (EEG), 8 × float32, 500 Hz, 30000 samples (channels); effective \
              rate 500.000000 Hz, 1 segment"
         )
     );
     assert_eq!(
         extra(&rec, "stream 2").as_deref(),
-        Some("\"BrainAmp Markers\" (Markers), 1 × string, irregular, 36 samples: annotations")
+        Some("\"BrainAmp Markers\" (Markers), 1 × string, irregular, 36 samples (annotations)")
     );
     for channel in rec.channels() {
         assert_eq!(
@@ -781,7 +781,7 @@ fn presets_open_with_their_channels() {
     assert!(
         extra(&rec, "stream 5")
             .unwrap()
-            .contains("channels; own time stamps, average rate")
+            .contains("(channels); own time stamps, average rate")
     );
 }
 
@@ -1161,7 +1161,7 @@ fn streams_kymo_doesnt_show() {
         &rec,
         "stream 5 is not read: its header can't be read"
     ));
-    assert!(extra("stream 8").ends_with("0 samples: no samples"));
+    assert!(extra("stream 8").ends_with(", 0 samples"));
     assert_eq!(rec.warnings().len(), 3, "{:?}", rec.warnings());
     // Every stream is listed, with why it isn't shown.
     let listed: Vec<(u32, &str, &str, &StreamContent)> = rec

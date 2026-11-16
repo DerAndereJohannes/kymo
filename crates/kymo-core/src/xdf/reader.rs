@@ -697,8 +697,9 @@ fn grid_of(
     Grid::new(timebase, layout.len, segments, native, channels)
 }
 
-/// A stream for the info view: name, type, channels, rate, samples and how it is read;
-/// for streams shown as channels, the effective rate, segments and clock resets.
+/// A stream for the info view: name, type, channels, rate, samples and how it is shown
+/// ("30000 samples (channels)"); for streams shown as channels, the effective rate,
+/// segments and clock resets.
 fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> String {
     let Some(info) = &stream.info else {
         return "no header".to_owned();
@@ -708,12 +709,12 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
     } else {
         format!("{:?} ({})", info.name, info.kind)
     };
+    // How it is shown, in parentheses after its samples; nothing for a stream without any.
     let how = match &stream.mode {
         Mode::Unreadable(reason) => return format!("{name}, not read: {reason}"),
-        _ if stream.len == 0 => "no samples",
-        Mode::Channels => "channels",
-        Mode::Annotations => "annotations",
-        Mode::Irregular => "channels",
+        _ if stream.len == 0 => "",
+        Mode::Channels | Mode::Irregular => " (channels)",
+        Mode::Annotations => " (annotations)",
     };
     let rate = if info.rate > 0.0 {
         format!("{} Hz", info.rate)
@@ -721,7 +722,7 @@ fn describe(stream: &Stream, clock: Option<&Clock>, timing: Option<&Timing>) -> 
         "irregular".to_owned()
     };
     let mut text = format!(
-        "{name}, {} × {}, {rate}, {} samples: {how}",
+        "{name}, {} × {}, {rate}, {} samples{how}",
         info.count,
         info.format.name(),
         stream.len

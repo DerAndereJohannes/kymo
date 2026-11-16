@@ -1639,16 +1639,25 @@ fn rates_are_rounded_with_the_exact_one_on_hover() {
     harness.get_by_label_contains(&exact);
 }
 
-/// Hovering the summary's format shows nothing: its header fields are in Recording Info.
+/// The summary's format and the ⓘ after it are one button, "Recording Info" for screen
+/// readers with the format as its value; hovering it names it and its shortcut, without the
+/// format's header fields, which are in Recording Info.
 #[test]
-fn the_format_has_no_hover() {
+fn the_format_is_one_button_with_its_info_sign() {
+    use egui::accesskit::Role;
     let file = TempFile::preset("bv-int16-multiplexed");
     let mut harness = window(file.path());
     ready(&mut harness);
-    let format = harness.get_by_label("BrainVision").rect();
+    assert!(harness.query_by_label("BrainVision").is_none());
+    let button = harness.get_by_role_and_label(Role::Button, kymo::ui::header::INFO_LABEL);
+    assert_eq!(
+        button.accesskit_node().value().as_deref(),
+        Some("BrainVision")
+    );
+    let format = button.rect();
     hover(&mut harness, format.center());
-    assert!(!tooltip(&mut harness, "orientation: multiplexed"));
-    assert!(!tooltip(&mut harness, "Click for Recording Info"));
+    assert!(tooltip(&mut harness, "Recording Info ("));
+    assert!(harness.query_by_label_contains("orientation").is_none());
 }
 
 /// The channel named `name`.
@@ -1754,8 +1763,8 @@ fn channels_scaled_on_their_own_each_have_a_scale_bar() {
     assert_eq!(bars(&harness, ChannelKind::EEG), 1);
 }
 
-/// File → Recording Info…, ⌘I, the ⓘ button after the format's name and the name itself
-/// open the Recording Info window; ⌘I and Esc close it.
+/// File → Recording Info…, ⌘I and the format's button open the Recording Info window; ⌘I
+/// and Esc close it.
 #[test]
 fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
     let file = TempFile::preset("bv-int16-multiplexed");
@@ -1763,7 +1772,7 @@ fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
     ready(&mut harness);
     let open = |harness: &Harness<'_, KymoApp>| {
         let open = harness.state().info_open();
-        assert_eq!(harness.query_by_label("Orientation:").is_some(), open);
+        assert_eq!(harness.query_by_label("Orientation").is_some(), open);
         open
     };
     assert!(!open(&harness));
@@ -1782,26 +1791,22 @@ fn recording_info_opens_from_the_menu_the_shortcut_and_the_format() {
     harness.get_by_label(kymo::ui::header::INFO_LABEL).click();
     harness.run_steps(2);
     assert!(open(&harness));
-    harness.key_press(Key::Escape);
-    harness.run_steps(2);
-    harness.get_by_label("BrainVision").click();
-    harness.run_steps(2);
-    assert!(open(&harness));
 }
 
-/// The Recording Info window shows what `--info` prints: the format's fields after their
-/// names, the streams, every grid with its exact rate and channels, and the warnings.
+/// The Recording Info window shows what `--info` prints: the format's fields, their names
+/// as keys in line with the others, the streams (a rate's unit on its line), every grid with
+/// its exact rate and channels, and the warnings.
 #[test]
 fn recording_info_shows_fields_grids_and_warnings() {
     let presets: [(&str, &[&str]); 3] = [
         (
             "bvrf-int16",
             &[
-                "Amplifiers:",
+                "Amplifiers",
                 "kymo-testgen (serial 0)",
-                "Power line frequency:",
+                "Power line frequency",
                 "Grid 1",
-                "500 Hz, 60000 samples, 9 channels",
+                "500\u{a0}Hz, 60000 samples, 9 channels",
                 "Photo_AUX1",
                 "Temp",
             ],
@@ -1809,9 +1814,9 @@ fn recording_info_shows_fields_grids_and_warnings() {
         (
             "xdf-mixed",
             &[
-                "Stream 3:",
-                "\"Amp\" (EEG), 3 × int16, 256 Hz, 23040 samples: channels; effective rate \
-                 256.000000 Hz, 1 segment",
+                "Stream 3",
+                "\"Amp\" (EEG), 3 × int16, 256\u{a0}Hz, 23040 samples (channels); effective \
+                 rate 256.000000\u{a0}Hz, 1 segment",
                 "Grid 1 \u{b7} Muse (ACC)",
                 "Grid 6 \u{b7} Aux (AUX)",
                 "Aux_0",
@@ -1832,10 +1837,30 @@ fn recording_info_shows_fields_grids_and_warnings() {
         ready(&mut harness);
         harness.key_press_modifiers(command(), Key::I);
         harness.run_steps(2);
+        unfold_grids(&mut harness);
         let window = info_window(&harness);
         for text in texts {
             assert!(window.query_by_label(text).is_some(), "{preset}: {text}");
         }
+        // The fields' names start where the other keys do.
+        let left = |key: &str| window.get_by_label(key).rect().left();
+        if preset == "bvrf-int16" {
+            assert_eq!(left("Amplifiers"), left("Format"));
+        }
+    }
+}
+
+/// Unfolds every grid's table in the Recording Info window, folded at first.
+fn unfold_grids(harness: &mut Harness<'_, KymoApp>) {
+    let grids: Vec<String> = info_window(harness)
+        .query_all_by_label_contains("Grid ")
+        .filter_map(|n| n.accesskit_node().label())
+        .collect();
+    assert!(!grids.is_empty());
+    // Through accessibility, as unfolding one moves the others below the scrolled view.
+    for grid in grids {
+        info_window(harness).get_by_label(&grid).click_accesskit();
+        harness.run_steps(2);
     }
 }
 
@@ -1862,6 +1887,9 @@ fn recording_info_tables_the_channels() {
     ready(&mut harness);
     harness.key_press_modifiers(command(), Key::I);
     harness.run_steps(2);
+    // Folded at first.
+    assert_eq!(cells(&harness, &COLUMNS), [0; 7]);
+    unfold_grids(&mut harness);
     // Every column, once each; four EEG channels in µV from AgAgCl electrodes, with the
     // file's prefilter and range; the Status channel as the file describes it.
     assert_eq!(cells(&harness, &COLUMNS), [1; 7]);
@@ -1887,6 +1915,7 @@ fn recording_info_tables_the_channels() {
     ready(&mut harness);
     harness.key_press_modifiers(command(), Key::I);
     harness.run_steps(2);
+    unfold_grids(&mut harness);
     assert_eq!(cells(&harness, &COLUMNS[..4]), [6; 4]);
     assert_eq!(cells(&harness, &COLUMNS[4..]), [0; 3]);
     assert!(harness.query_by_label_contains("Aux_0, Aux_1").is_none());

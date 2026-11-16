@@ -219,7 +219,7 @@ impl Summary {
                     ..SidebarRow::new("Start", shown)
                 }
             }
-            None => SidebarRow::new("Start", "unknown".into()),
+            None => SidebarRow::new("Start", "Unknown".into()),
         };
         // The format's own fields are in the Recording Info window its click opens.
         let format = SidebarRow {
@@ -309,7 +309,7 @@ impl Summary {
             grid: None,
         }));
         let start = self.start.map(|t| format_start(t, false));
-        rows.push(row("start", start.unwrap_or_else(|| "unknown".into())));
+        rows.push(row("start", start.unwrap_or_else(|| "Unknown".into())));
         rows.push(row("duration", format_duration(self.duration)));
         rows.push(row("channels", self.channels.to_string()));
         if self.streams.0 > 1 {
@@ -823,6 +823,17 @@ mod tests {
                 .find(|r| r.key == "Streams")
                 .map(|r| r.value)
         };
+        // Without a start, "Unknown".
+        let start = summary((0, 0))
+            .sidebar_rows()
+            .into_iter()
+            .find(|r| r.key == "Start");
+        assert_eq!(start.unwrap().value, "Unknown");
+        assert!(
+            summary((0, 0))
+                .to_string()
+                .contains("start        Unknown\n")
+        );
         assert_eq!(row(&summary((0, 0))), None);
         assert_eq!(row(&summary((1, 1))), None);
         assert!(!summary((1, 1)).to_string().contains("streams"));

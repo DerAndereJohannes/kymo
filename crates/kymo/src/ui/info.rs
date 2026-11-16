@@ -5,16 +5,17 @@ use std::path::Path;
 use eframe::egui::{self, Align, Label, Layout, RichText, TextStyle};
 
 use crate::action::Action;
-use crate::document::{GridSummary, Summary, info_text};
+use crate::document::{GridSummary, InfoRow, Summary, info_text};
 use crate::ui::Overlay;
 
 /// What the Copy button is named, also for tests.
 pub const COPY: &str = "Copy";
 
 /// The Recording Info window, while `open`: the file's name and path, then the rows of
-/// [`Summary::info_rows`], keys at the left (capitalized, grayed) and values wrapping in the
-/// width left, format fields after their names (capitalized: "Stream 1", "Patient"), and
-/// below them a table of each grid's channels ([`grid_table`]) in place of its rows. Copy puts `--info`'s text on the clipboard.
+/// [`Summary::info_rows`], keys at the left (capitalized, grayed; a format field's name as
+/// its key: "Stream 1", "Patient") and values wrapping in the width left, and below them a
+/// table of each grid's channels ([`grid_table`]) in place of its rows. Copy puts
+/// `--info`'s text on the clipboard.
 pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &Summary) {
     let rows = summary.info_rows();
     let style = ctx.global_style();
@@ -22,8 +23,9 @@ pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &
     let color = style.visuals.text_color();
     let key_width = ctx.fonts_mut(|f| {
         rows.iter()
+            .filter(|row| row.grid.is_none())
             .map(|row| {
-                f.layout_no_wrap(capitalized(&row.key), font.clone(), color)
+                f.layout_no_wrap(key_text(row), font.clone(), color)
                     .size()
                     .x
             })
@@ -52,8 +54,8 @@ pub fn info_window(ctx: &egui::Context, open: &mut bool, path: &Path, summary: &
         });
 }
 
-/// The window's rows: the file's name and path, then [`Summary::info_rows`], with the keys
-/// in a column `key_width` wide.
+/// The window's rows: the file's name and path, then [`Summary::info_rows`] but the grids',
+/// with the keys in a column `key_width` wide, then the grids' tables.
 fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
     let name = path.file_name().unwrap_or(path.as_os_str());
     ui.label(RichText::new(name.to_string_lossy()).strong());
@@ -70,16 +72,11 @@ fn rows_ui(ui: &mut egui::Ui, path: &Path, summary: &Summary, key_width: f32) {
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.set_min_width(key_width);
-                    ui.add(Label::new(RichText::new(capitalized(&row.key)).weak()).extend());
+                    ui.add(Label::new(RichText::new(key_text(&row)).weak()).extend());
                 },
             );
             ui.add_space(gap - ui.spacing().item_spacing.x);
-            if let Some(field) = &row.field {
-                ui.add(
-                    Label::new(RichText::new(format!("{}:", capitalized(field))).weak()).extend(),
-                );
-            }
-            ui.add(Label::new(&row.value).wrap());
+            ui.add(Label::new(unbroken(&row.value)).wrap());
         });
     }
     for (i, grid) in summary.grids.iter().enumerate() {
@@ -100,10 +97,10 @@ pub const COLUMNS: [&str; 7] = [
     "Transducer",
 ];
 
-/// Grid `index`'s channels as the file describes them, under a header that folds them
-/// ("Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording has several): the grid's
-/// rate, samples and channels, then a striped table, a row per channel ([`COLUMNS`]), which
-/// scrolls sideways where it is wider than the window.
+/// Grid `index`'s channels as the file describes them, under a header that unfolds them
+/// (folded at first; "Grid 2 · iViewNG_HMD (Gaze)", its stream named where the recording
+/// has several): the grid's rate, samples and channels, then a striped table, a row per
+/// channel ([`COLUMNS`]), which scrolls sideways where it is wider than the window.
 fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
     let mut title = format!("Grid {}", index + 1);
     if let Some(stream) = &grid.stream {
@@ -111,9 +108,9 @@ fn grid_table(ui: &mut egui::Ui, index: usize, grid: &GridSummary) {
     }
     egui::CollapsingHeader::new(RichText::new(title).strong())
         .id_salt(("kymo info grid", index))
-        .default_open(true)
+        .default_open(false)
         .show(ui, |ui| {
-            ui.add(Label::new(RichText::new(grid.describe()).weak()).wrap());
+            ui.add(Label::new(RichText::new(unbroken(&grid.describe())).weak()).wrap());
             let range = grid.channels.iter().any(|c| c.range.is_some());
             let prefilter = grid.channels.iter().any(|c| !c.prefilter.is_empty());
             let transducer = grid.channels.iter().any(|c| !c.transducer.is_empty());
@@ -161,6 +158,17 @@ fn number(value: f64) -> String {
     } else {
         plain
     }
+}
+
+/// A row's key as shown: its format field's name, or its key, capitalized.
+fn key_text(row: &InfoRow) -> String {
+    capitalized(row.field.as_deref().unwrap_or(&row.key))
+}
+
+/// `text` with a non-breaking space before each "Hz", so a rate's unit stays on its line
+/// ("60 Hz" in a stream's line).
+fn unbroken(text: &str) -> String {
+    text.replace(" Hz", "\u{a0}Hz")
 }
 
 /// `key` with its first letter in upper case ("grid 1" → "Grid 1", "stream 1" →

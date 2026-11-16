@@ -131,8 +131,8 @@ pub fn header_panel(
                     .response
                 } else if row.info {
                     ui.add(key);
-                    let (value, asked) = info_value(ui, &row.value, platform);
-                    info |= asked;
+                    let value = info_value(ui, &row.value, platform);
+                    info |= value.clicked();
                     value
                 } else {
                     ui.add(key);
@@ -208,47 +208,64 @@ pub struct HeaderResponse {
     pub all_types: bool,
 }
 
-/// The Format row's value, `text`, which a click on opens Recording Info, and an ⓘ button
-/// after it that does too (named "Recording Info" for screen readers, with the shortcut on
-/// `platform` on hover). The value shortens to leave the button its room. Returns the
-/// value's response, for its hover, and whether either was clicked.
-fn info_value(ui: &mut Ui, text: &str, platform: Platform) -> (Response, bool) {
-    ui.horizontal(|ui| {
-        let size = ui.text_style_height(&TextStyle::Body);
-        let room = (ui.available_width() - size - ui.spacing().item_spacing.x).max(0.0);
-        let value = ui
-            .scope(|ui| {
-                ui.set_max_width(room);
-                ui.add(
-                    Label::new(text)
-                        .sense(Sense::click())
-                        .selectable(false)
-                        .truncate(),
-                )
-            })
-            .inner
-            .on_hover_cursor(CursorIcon::PointingHand);
-        let (rect, button) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-        let color = if button.hovered() {
-            ui.visuals().strong_text_color()
+/// The Format row's value: `text` and an ⓘ after it, one button that opens Recording Info
+/// (named "Recording Info" for screen readers, with `text` as its value, and the shortcut
+/// on `platform` on hover). It reads as text until hovered, when both brighten on a
+/// background as [`text_button`]'s; the background reaches past the text into the gaps
+/// around it, so the format lines up with the other values. The text shortens to leave the
+/// ⓘ its room.
+fn info_value(ui: &mut Ui, text: &str, platform: Platform) -> Response {
+    let padding = ui.spacing().button_padding;
+    let icon = ui.text_style_height(&TextStyle::Body);
+    let gap = ui.spacing().item_spacing.x;
+    let room = (ui.available_width() - icon - gap - padding.x).max(0.0);
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room,
+        TextStyle::Body,
+    );
+    let size = vec2(galley.size().x + gap + icon, galley.size().y.max(icon));
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let hovered = response.hovered() || response.has_focus();
+        let (text_color, icon_color) = if hovered {
+            let widget = &visuals.widgets.hovered;
+            ui.painter().rect(
+                rect.expand2(padding),
+                crate::ui::TEXT_BUTTON_RADIUS,
+                widget.weak_bg_fill,
+                widget.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+            (visuals.strong_text_color(), visuals.strong_text_color())
         } else {
-            ui.visuals().weak_text_color()
+            (visuals.text_color(), visuals.weak_text_color())
         };
-        info_sign(ui.painter(), rect, color);
-        accessible_label(ui, &button, INFO_LABEL.to_owned());
-        let shortcut = Keymap::chord(Action::RecordingInfo)
-            .map(|c| format!(" ({})", c.display(platform)))
-            .unwrap_or_default();
-        let clicked = value.clicked() || button.clicked();
-        button
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text(format!("{INFO_LABEL}{shortcut}"));
-        (value, clicked)
-    })
-    .inner
+        let top = rect.center().y - galley.size().y / 2.0;
+        ui.painter()
+            .galley(egui::pos2(rect.left(), top), galley, text_color);
+        let sign = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - icon / 2.0, rect.center().y),
+            vec2(icon, icon),
+        );
+        info_sign(ui.painter(), sign, icon_color);
+    }
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), INFO_LABEL));
+    let value = text.to_owned();
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_value(value));
+    let shortcut = Keymap::chord(Action::RecordingInfo)
+        .map(|c| format!(" ({})", c.display(platform)))
+        .unwrap_or_default();
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(format!("{INFO_LABEL}{shortcut}"))
 }
 
-/// What the ⓘ button is named, for screen readers and its tooltip.
+/// What the Format row's button is named, for screen readers and its tooltip.
 pub const INFO_LABEL: &str = "Recording Info";
 
 /// An information sign filling `rect`: a circle with an "i", in `color`.
