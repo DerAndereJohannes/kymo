@@ -1759,15 +1759,29 @@ fn irregular_streams_on_their_own_time_stamps() {
     );
     let grid = &rec.grids()[0];
     assert!(grid.holds_values());
-    // A slot of its own for the pause, a usual step (the median step) after the sample
-    // before it; the last sample ends a usual step after its time.
-    assert_eq!(grid.segments(), [0..20, 21..31]);
+    // The pause as slots a usual step (the median step, within 1 %) apart, the first a step
+    // after the sample before it, so that no bucket of a coarse level holds samples from
+    // either side; the last sample ends a usual step after its time.
+    let segments = grid.segments();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0], 0..20);
+    let gap = segments[1].start - 20;
+    assert!((990..=1010).contains(&gap), "{gap}");
+    assert_eq!(segments[1].end - segments[1].start, 10);
     assert_eq!(grid.time_of(7), grid.time_of(6));
     assert!((grid.time_of(6) - 0.06).abs() < 1e-9);
     let step = |a: u64, b: u64| grid.time_of(b) - grid.time_of(a);
-    assert!((step(19, 20) / 0.01 - 1.0).abs() < 0.01, "{}", step(19, 20));
-    assert!((grid.time_of(21) - 10.2).abs() < 1e-9);
-    assert!((step(30, 31) / 0.01 - 1.0).abs() < 0.01, "{}", step(30, 31));
+    for k in 19..19 + gap {
+        assert!(
+            (step(k, k + 1) / 0.01 - 1.0).abs() < 0.011,
+            "{k}: {}",
+            step(k, k + 1)
+        );
+    }
+    let after = segments[1].start;
+    assert!(step(after - 1, after) > 0.0 && step(after - 1, after) < 0.0102);
+    assert!((grid.time_of(after) - 10.2).abs() < 1e-9);
+    assert!((step(after + 9, after + 10) / 0.01 - 1.0).abs() < 0.01);
     // The average rate within the segments: 28 steps of (mostly) 10 ms.
     let seconds = 0.19 + 0.09;
     assert!(
@@ -1776,9 +1790,67 @@ fn irregular_streams_on_their_own_time_stamps() {
         grid.rate()
     );
     let mut out = vec![0.0f32; 2];
-    rec.read_physical(GridId(0), grid.channels(), 21..22, &mut out)
+    rec.read_physical(GridId(0), grid.channels(), after..after + 1, &mut out)
         .unwrap();
     assert_eq!(out, [100.0, 0.0]);
+}
+
+/// Zoomed out, no bucket drawn of an irregular stream holds samples from either side of a
+/// gap and spans it: a bucket reaches at most a pixel into a gap, or, for gaps beyond the
+/// stream's budget of gap slots, as many pixels as the gap wants slots per slot it has.
+#[test]
+fn coarse_buckets_dont_span_irregular_gaps() {
+    // 5,000 samples 1 ms apart, a pause of 60 s, 5,000 more; and a pause of 10,000 s, more
+    // slots at 1 ms than the budget (2^22) allows.
+    for pause in [60.0, 10_000.0] {
+        let mut c = Chunks::new(None);
+        c.stream_header(1, &header_xml("Tracker", "Gaze", 1, 0.0, "float32", None));
+        let samples: Vec<(Option<f64>, Vec<f64>)> = (0..10_000)
+            .map(|i| {
+                let t = 5.0 + 0.001 * f64::from(i) + if i >= 5_000 { pause } else { 0.0 };
+                (Some(t), vec![f64::from(i)])
+            })
+            .collect();
+        c.numeric(1, XdfFormat::F32, &samples);
+        c.footer(1, "<info/>");
+        let rec = Built::new(&c.bytes).open();
+        let grid = &rec.grids()[0];
+        let segments = grid.segments().to_vec();
+        assert_eq!(segments.len(), 2);
+        let gap = grid.time_of(segments[0].end)..grid.time_of(segments[1].start);
+        let slots = segments[1].start - segments[0].end;
+        let reach = (pause / 0.001 / slots as f64).max(1.0);
+        assert_eq!(reach > 1.5, pause > 5_000.0, "{slots} slots");
+        let duration = rec.duration();
+        let mut coarse = false;
+        for width in [100u32, 333, 1000, 4000] {
+            for span in [duration, duration / 3.0, pause * 1.5, 10.0] {
+                let span = span.min(duration);
+                let start = ((gap.start + gap.end - span) / 2.0).clamp(0.0, duration - span);
+                let v = crate::common::view(start..start + span, width, vec![0]);
+                let per_px = f64::from(width) / span;
+                for (key, placed) in kymo_core::tile::placements_for_view(&rec, &v) {
+                    coarse |= key.level.get() > 0;
+                    let bucket = key.level.bucket_len();
+                    let first = key.sample_range().start;
+                    for item in (placed.start - first) / bucket..=(placed.end - 1 - first) / bucket
+                    {
+                        let slots =
+                            first + item * bucket..(first + (item + 1) * bucket).min(grid.len());
+                        let present = grid.present_in(slots.clone()).next().is_some();
+                        let (a, b) = (grid.time_of(slots.start), grid.time_of(slots.end));
+                        let inside = (b.min(gap.end) - a.max(gap.start)).max(0.0) * per_px;
+                        assert!(
+                            !present || inside <= reach + 1e-9,
+                            "pause {pause}, {span} s on {width} px: {key:?} item {item} \
+                             reaches {inside:.1} px into the gap"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(coarse, "pause {pause}: some view draws buckets");
+    }
 }
 
 #[test]

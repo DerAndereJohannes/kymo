@@ -604,6 +604,41 @@ def xdf_own_timing(stamps, nominal):
     return times, lengths, rate
 
 
+def xdf_gap_slots(sid, times, segments, stamps, nominal, samples):
+    """Problems with the gap slots of a stream on its own time stamps: each gap's slots lie
+    between the samples around it, in order, about a usual step apart (Kymo's median is a
+    histogram's, within 1 %), unless the stream's gaps want more slots than its budget
+    (its samples or 2**22), which they then share."""
+    if len(segments) < 2:
+        return []
+    usual = xdf_usual_step(stamps, nominal)
+    gaps = [(segments[k][1], segments[k + 1][0]) for k in range(len(segments) - 1)]
+    wanted = [
+        max(np.ceil((times[b] - times[a - 1]) / usual) - 1, 1) for a, b in gaps
+    ]
+    shared = sum(wanted) > max(samples, 2**22)
+    for (a, b), want in zip(gaps, wanted):
+        gap = times[a - 1 : b + 1]
+        if np.any(np.diff(gap) < 0) or gap[-2] >= gap[-1]:
+            return [f"stream {sid}: gap slots {a}..{b} out of order"]
+        if not shared and np.max(np.diff(gap[:-1]), initial=0) > usual * 1.02:
+            return [f"stream {sid}: gap slots {a}..{b} more than a usual step apart"]
+        if not shared and abs((b - a) - want) > 0.02 * want + 1:
+            return [f"stream {sid}: {b - a} gap slots at {a}, expected about {want:.0f}"]
+    return []
+
+
+def xdf_usual_step(stamps, nominal):
+    """The usual step of a stream on its own time stamps, as `xdf_own_timing` has it."""
+    times = np.maximum.accumulate(np.asarray(stamps, dtype=np.float64))
+    if nominal > 0:
+        return 1.0 / nominal
+    steps = np.sort(np.diff(times))
+    median = steps[(len(steps) - 1) // 2] if len(steps) else 0.0
+    span = times[-1] - times[0] if len(times) else 0.0
+    return median if median > 0 else (span / (len(times) - 1) if span > 0 else 1.0)
+
+
 def xdf_channels(stream):
     """(label, type, unit) of each channel of a pyxdf stream, empty where it has none."""
     info = stream["info"]
@@ -722,6 +757,7 @@ def compare_xdf(path, tmp, header, annotations, windows, annotation_files=False)
             all_times = np.fromfile(tmp / f"grid{g}.times", dtype="<f8")
             times = all_times[slots]
             error = np.abs(times - (expected_times - t0))
+            problems += xdf_gap_slots(sid, all_times, segments, stamps, nominal, len(stamps))
         else:
             effective = float(info["effective_srate"]) or nominal
             if not np.isclose(grid["rate"], effective, rtol=1e-9, atol=0):

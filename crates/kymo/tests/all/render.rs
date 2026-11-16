@@ -547,8 +547,9 @@ fn columns_match_the_samples_at_every_zoom() {
 }
 
 /// One channel on an irregular time base: 30,000 samples 1 ms apart, 2,000 jittered ones
-/// 2 to 18 ms apart, 300 a tenth of a second apart, a gap of 20 s, 60,000 samples 0.5 ms
-/// apart, and 5,000 jittered ones again; values held (steps) or joined by lines.
+/// 2 to 18 ms apart, 300 a tenth of a second apart, a gap of 20 s (40,000 slots), 60,000
+/// samples 0.5 ms apart, and 5,000 jittered ones again; values held (steps) or joined by
+/// lines.
 fn irregular(hold: bool) -> Fixture {
     let mut rng = Rng::new(if hold { 21 } else { 22 });
     let mut jitter = Rng::new(3);
@@ -568,8 +569,12 @@ fn irregular(hold: bool) -> Fixture {
     run(&mut times, &mut t, 2_000, 2e-3, true);
     run(&mut times, &mut t, 300, 0.1, false);
     let before = 0..times.len() as u64;
-    // The gap's slot, one step after the sample before it.
-    times.push(t);
+    // The gap's slots, as the XDF reader lays them out: the first a step after the sample
+    // before it, then evenly at about the median step (0.5 ms) to the sample after it.
+    let slots = 40_000;
+    for j in 0..slots {
+        times.push(t + 20.0 * f64::from(j) / f64::from(slots));
+    }
     t += 20.0;
     let after = times.len() as u64;
     run(&mut times, &mut t, 60_000, 5e-4, false);
@@ -616,6 +621,56 @@ fn irregular_columns_match_the_samples_at_every_zoom() {
             }
             span *= 6.7;
         }
+    }
+}
+
+/// Zoomed out, an irregular time base's gap stays dark: no envelope is drawn over it,
+/// beyond a pixel at either end. (Laid out as one slot, as long as it lasted, a bucket
+/// holding it held samples from either side and was drawn across it.)
+#[test]
+fn irregular_gaps_stay_unlit_zoomed_out() {
+    let Some(gpu) = gpu() else { return };
+    for hold in [true, false] {
+        let fx = irregular(hold);
+        let grid = fx.recording.grid(kymo_core::GridId(0));
+        // The gap's first slot, and the first sample after it.
+        let segments = grid.segments();
+        let (from, to) = (
+            grid.time_of(segments[0].end),
+            grid.time_of(segments[1].start),
+        );
+        let duration = fx.recording.duration();
+        let mut coarse = false;
+        for span in [duration, 90.0, 40.0, 25.0] {
+            let middle = (from + to) / 2.0;
+            let start = (middle - span / 2.0).clamp(0.0, duration - span);
+            let scene = fx.scene(ChannelId(0), start..start + span, SIZE);
+            let cache = exact(&fx, &scene);
+            let q = query(&fx.recording, &view(&scene), &cache);
+            coarse |= q.draw.iter().any(|p| p.tile.key().level > Level::RAW);
+            for antialias in [false, true] {
+                let scene = Scene {
+                    antialias,
+                    ..scene.clone()
+                };
+                let image = gpu.render(&mut gpu.renderer(), &Frame::new(&fx.recording, &scene, &q));
+                let per_px = f64::from(SIZE[0]) / span;
+                let (a, b) = ((from - start) * per_px, (to - start) * per_px);
+                // Columns lying wholly inside the gap, more than a pixel from its ends
+                // (anti-aliasing reaches a pixel).
+                let first = (a + 2.0).ceil().max(0.0) as u32;
+                let last = (b - 2.0).floor().min(f64::from(SIZE[0])) as u32;
+                for x in first..last {
+                    let lit = (0..SIZE[1]).find(|&y| image.cover(x, y) > 0.0);
+                    assert!(
+                        lit.is_none(),
+                        "hold {hold}, {span} s, antialias {antialias}: column {x} of the \
+                         gap ({a:.1} to {b:.1} px) lit at row {lit:?}"
+                    );
+                }
+            }
+        }
+        assert!(coarse, "some view draws buckets");
     }
 }
 

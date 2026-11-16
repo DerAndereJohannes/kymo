@@ -16,9 +16,9 @@
 // The distance comes from slices: the vertex stage cuts the two pixels around a column's
 // center into SLICES slices and records the y range the trace reaches in each, once per
 // column; a pixel then takes its distance to those boxes. The trace runs through all of
-// each box's height, so this is the distance to the trace, or less by up to a slice's width:
-// a pixel is covered at most 1/SLICES more than exactly, never less, whatever the number
-// of samples per pixel.
+// each box's height, so this is the distance to the trace, or less by up to a slice's width
+// (2/SLICES pixels): a pixel is covered at most 2/SLICES more than exactly, never less,
+// whatever the number of samples per pixel.
 //
 // Positions are physical pixels of the trace area, y down. The CPU side
 // (`render/frame.rs`) computes every parameter in f64 relative to an anchor near the

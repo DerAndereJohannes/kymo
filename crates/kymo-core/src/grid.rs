@@ -26,8 +26,10 @@ pub enum Timebase {
     Segmented { rate: f64, pieces: Vec<Piece> },
     /// Each slot's time from a table (an XDF stream without a nominal rate, or one that can
     /// drop samples): `t(i) = times.time(i)`, non-decreasing; from the grid's length on,
-    /// `times.end()` plus whole periods of `rate`. A gap is a slot of its own, whose time
-    /// the reader chooses between its neighbors'. `rate` is the average rate, for showing
+    /// `times.end()` plus whole periods of `rate`. A gap is slots of their own (NaN), whose
+    /// times the reader chooses between its neighbors': as many as the gap's duration holds
+    /// at the usual step, so that no bucket of a coarse level holds samples from both sides
+    /// and is drawn across it. `rate` is the average rate, for showing
     /// it. With `hold`, a sample's value holds until the next sample (drawn as steps),
     /// otherwise lines join the samples.
     Irregular {

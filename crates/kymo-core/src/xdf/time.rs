@@ -198,7 +198,8 @@ fn robust_line(points: &[(f64, f64)]) -> Option<(f64, f64)> {
     let y: Vec<f64> = points.iter().map(|p| p.1 / WINSOR).collect();
     let offset = a.iter().copied().fold(f64::INFINITY, f64::min);
     let a: Vec<f64> = a.iter().map(|v| v - offset).collect();
-    // (AᵀA)⁻¹Aᵀ for the design matrix [1, a], through its Cholesky factor as numpy's.
+    // (AᵀA)⁻¹Aᵀ for the design matrix [1, a], with the 2 × 2 inverse in closed form
+    // (pyxdf goes through a Cholesky factor; the times start at 0, so both are exact enough).
     let (m00, m01, m11) = (
         n as f64,
         a.iter().sum::<f64>(),

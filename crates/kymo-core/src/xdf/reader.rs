@@ -371,14 +371,53 @@ struct Timing {
 /// How a stream on its own (synchronized, not dejittered) time stamps is laid out.
 struct OwnTimes {
     /// The usual step: the median step of an irregular stream, the sample period of one
-    /// with a nominal rate. A gap's slot lies this far after the sample before it, and the
-    /// last sample ends this far after its time.
+    /// with a nominal rate. A gap's slots lie this far apart, the first this far after the
+    /// sample before it ([`gap_slots`]), and the last sample ends this far after its time.
     step: f64,
     /// Whether samples hold their values until the next one (irregular streams) or lines
     /// join them (streams with a nominal rate that can drop samples).
     hold: bool,
     /// Time stamps before the previous one's, taken as the previous one.
     backward: u64,
+    /// Per gap (before each segment but the first), its slots ([`gap_slots`]).
+    gaps: Vec<u64>,
+}
+
+/// Gap slots a stream may have beyond its samples' number, at least.
+const GAP_BUDGET: u64 = 1 << 22;
+
+/// The slots a gap from a sample at `previous` to the next at `next` wants: as many as fit
+/// at `step` apart (the first a step after `previous`), at least one. A gap of one slot, as
+/// long as it lasts, would let a bucket of a coarse level hold samples from either side and
+/// be drawn across it; at the usual step, a bucket reaches no further into a gap than its
+/// own samples span, at most a pixel at the level the view draws.
+fn gap_wanted(previous: f64, next: f64, step: f64) -> f64 {
+    let fit = ((next - previous) / step).ceil() - 1.0;
+    if fit.is_finite() { fit.max(1.0) } else { 1.0 }
+}
+
+/// Each gap's slots from what they want ([`gap_wanted`]), within a budget of the stream's
+/// samples or [`GAP_BUDGET`], whichever is more: beyond it, the slots are shared in
+/// proportion to what each wants, so a bucket reaches at most (wanted / budget) pixels into
+/// any gap.
+fn gap_slots(wanted: &[f64], samples: u64) -> Vec<u64> {
+    let budget = samples.max(GAP_BUDGET) as f64;
+    let total: f64 = wanted.iter().sum();
+    let scale = if total > budget { budget / total } else { 1.0 };
+    wanted
+        .iter()
+        .map(|w| ((w * scale).floor() as u64).max(1))
+        .collect()
+}
+
+/// The time of slot `j` of `count` in a gap from `previous` to `next`: the first a step
+/// after `previous`, the others evenly to before `next` (a step apart unless capped).
+fn gap_time(previous: f64, next: f64, step: f64, j: u64, count: u64) -> f64 {
+    let first = (previous + step).min(next);
+    if count <= 1 {
+        return first;
+    }
+    first + (next - first) * j as f64 / count as f64
 }
 
 /// Synchronizes and dejitters the time stamps of a stream shown as channels; those of an
@@ -505,6 +544,7 @@ fn own_timing(stream: &Stream, map: &[u8], clock: Option<&Clock>, nominal: f64) 
         1f64.max(500.0 * usual)
     };
     let mut segments: Vec<Segment> = Vec::new();
+    let mut wanted = Vec::new();
     let mut previous = f64::NAN;
     let (mut samples, mut seconds) = (0u64, 0.0);
     own_times(stream, map, clock, unstamped_step(period), |i, t| {
@@ -514,12 +554,17 @@ fn own_timing(stream: &Stream, map: &[u8], clock: Option<&Clock>, nominal: f64) 
                 samples += 1;
                 seconds += t - previous;
             }
-            _ => segments.push(Segment {
-                first: i,
-                len: 1,
-                start: t,
-                step: None,
-            }),
+            last => {
+                if last.is_some() {
+                    wanted.push(gap_wanted(previous, t, usual));
+                }
+                segments.push(Segment {
+                    first: i,
+                    len: 1,
+                    start: t,
+                    step: None,
+                });
+            }
         }
         previous = t;
     });
@@ -536,13 +581,14 @@ fn own_timing(stream: &Stream, map: &[u8], clock: Option<&Clock>, nominal: f64) 
             step: usual,
             hold: nominal <= 0.0,
             backward,
+            gaps: gap_slots(&wanted, stream.len),
         }),
     }
 }
 
 /// The layout of a stream on its own time stamps, and its time table: its runs between gaps
-/// in order, a slot of its own for each gap (its time a usual step after the sample before
-/// it), the last sample ending a usual step after its time; times from `origin`.
+/// in order, each gap's slots between them ([`gap_slots`], the first a usual step after the
+/// sample before), the last sample ending a usual step after its time; times from `origin`.
 fn own_layout(
     stream: &Stream,
     map: &[u8],
@@ -552,8 +598,7 @@ fn own_layout(
     origin: f64,
 ) -> Result<Layout, crate::TimeTableError> {
     let segments = &timing.segments;
-    let gaps = segments.len().saturating_sub(1) as u64;
-    let len = stream.len + gaps;
+    let len = stream.len + own.gaps.iter().sum::<u64>();
     let mut writer = TimeTable::writer(len);
     let mut next = 1;
     let mut previous = f64::NAN;
@@ -564,17 +609,26 @@ fn own_layout(
     own_times(stream, map, clock, unstamped_step(period), |i, t| {
         let t = t - origin;
         if segments.get(next).is_some_and(|s| s.first == i) {
-            writer.push((previous + own.step).min(t));
+            let count = own.gaps.get(next - 1).copied().unwrap_or(1);
+            for j in 0..count {
+                writer.push(gap_time(previous, t, own.step, j, count));
+            }
             next += 1;
         }
         writer.push(t);
         previous = t;
     });
     let times = writer.finish(previous + own.step)?;
+    let mut before = 0;
     let map = segments
         .iter()
         .enumerate()
-        .map(|(k, s)| (s.first + k as u64, s.first, s.len))
+        .map(|(k, s)| {
+            if k > 0 {
+                before += own.gaps.get(k - 1).copied().unwrap_or(1);
+            }
+            (s.first + before, s.first, s.len)
+        })
         .collect();
     Ok(Layout {
         pieces: Vec::new(),
