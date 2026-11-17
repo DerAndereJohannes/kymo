@@ -192,7 +192,7 @@ impl Action {
             Action::Redo => "Redo",
             Action::DeleteAnnotation => "Delete",
             Action::MergeAnnotations => "Merge Annotations",
-            Action::Deselect => "Deselect Annotation",
+            Action::Deselect => "Deselect",
         }
     }
 

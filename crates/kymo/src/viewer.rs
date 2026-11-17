@@ -582,10 +582,10 @@ impl Viewer {
                 }
                 return true;
             }
-            // Esc first takes back a drag.
+            // Esc first takes back a drag, then deselects the annotation, then the channels.
             Action::Deselect => {
-                if !self.cancel_drag() {
-                    self.selected = None;
+                if !self.cancel_drag() && self.selected.take().is_none() {
+                    self.view.clear_selection();
                 }
                 return true;
             }
@@ -884,15 +884,18 @@ impl Viewer {
         };
         let service = live(&self.service);
         let rec = &self.document.recording;
+        let view = &self.view;
+        // A stim channel given another type has no annotations, until it is stim again.
         let changes = || -> Vec<kymo_core::stim::StimChanges> {
             (0..rec.grids().len() as u32)
                 .filter_map(|grid| service.pyramid(GridId(grid)))
                 .flat_map(|pyramid| pyramid.stim_changes(rec))
+                .filter(|changes| view.kind_of(changes.channel).is_stim())
                 .collect()
         };
-        let done = service.progress().done;
+        let progress = (service.progress().done, view.kinds_revision());
         let now = ctx.input(|i| i.time);
-        match stim.update(&mut self.document.annotations, rec, done, now, changes) {
+        match stim.update(&mut self.document.annotations, rec, progress, now, changes) {
             Update::Changed => self.legend.sync(&self.document.annotations),
             Update::Wait(seconds) => ctx.request_repaint_after(Duration::from_secs_f64(seconds)),
             Update::Unchanged => {}

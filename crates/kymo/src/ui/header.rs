@@ -17,7 +17,7 @@ use crate::ui::axis::{Clock, format_time};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
-use crate::ui::types::{menu_width, type_menu, type_swatch};
+use crate::ui::types::{Dots, Retype, Targets, channel_menu, menu_width, type_menu, type_swatch};
 use crate::ui::{elide_middle, text_button};
 use crate::view::ViewState;
 
@@ -1141,6 +1141,20 @@ fn channel_list(
         })
         .collect();
     let mut measured = None;
+    // The channels' rows in the list's order, for ⇧-click to select a range of.
+    let channel_rows: Vec<ChannelId> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Channel(id, _, _) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let recording_kinds = view.kinds();
+    let selected = view.selected();
+    // The menu at each channel row's end, always given its room, so nothing moves as it
+    // shows.
+    let menu = menu_width(row_height);
+    let mut last_bottom = f32::NEG_INFINITY;
     // A solid scroll bar, which egui makes room for while the list scrolls: a floating one
     // lies over the rows' ends and takes the clicks meant for the types' menus.
     let scroll = std::mem::replace(&mut ui.spacing_mut().scroll, ScrollStyle::solid());
@@ -1149,17 +1163,29 @@ fn channel_list(
         .show_rows(ui, row_height, items.len(), |ui, rows| {
             let fit = columns.fit(
                 ui.available_width(),
-                fixed + indent(deepest),
+                fixed + indent(deepest) + menu + gap,
                 gap,
                 LIST_MIN_NAME_EMS * body.size,
                 LIST_MIN_UNIT_EMS * body.size,
             );
             for i in rows {
+                let sense = match items[i] {
+                    Item::Channel(..) => Sense::click(),
+                    _ => Sense::hover(),
+                };
                 let (rect, row_response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_height), sense);
+                last_bottom = rect.bottom();
                 if i % 2 == 1 {
                     stripe(ui, rect);
                 }
+                if let Item::Channel(id, _, _) = items[i]
+                    && view.is_selected(id)
+                {
+                    let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.4);
+                    ui.painter().rect_filled(rect, 0.0, fill);
+                }
+                let pointed = ui.rect_contains_pointer(rect);
                 // What is left past the row's right edge is clipped.
                 let mut row = ui.new_child(
                     UiBuilder::new()
@@ -1293,8 +1319,16 @@ fn channel_list(
                     response = response.on_hover_text(hover);
                 }
                 if shown {
-                    let response = response.on_hover_cursor(CursorIcon::PointingHand);
-                    if response.clicked() {
+                    response = response.on_hover_cursor(CursorIcon::PointingHand);
+                }
+                if response.clicked() || row_response.clicked() {
+                    let modifiers = ui.input(|i| i.modifiers);
+                    if modifiers.command {
+                        view.toggle_selected(id);
+                    } else if modifiers.shift {
+                        view.select_range(&channel_rows, id);
+                    } else {
+                        view.select(id);
                         view.scroll_to(id);
                     }
                 }
@@ -1337,6 +1371,39 @@ fn channel_list(
                     }
                     cells.push(response);
                 }
+                // A selected row's menu acts on every selected channel.
+                let ids = if view.is_selected(id) && selected.len() > 1 {
+                    selected.clone()
+                } else {
+                    vec![id]
+                };
+                let title = match ids.len() {
+                    1 => name.clone(),
+                    n => format!("{n} channels"),
+                };
+                let kinds: Vec<ChannelKind> =
+                    ids.iter().map(|&c| view.kind_of(c).clone()).collect();
+                let targets = targets_of(view, &ids, &kinds);
+                let dots = if pointed || view.is_selected(id) {
+                    Dots::Weak
+                } else {
+                    Dots::Hidden
+                };
+                let choice = ui
+                    .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        channel_menu(
+                            ui,
+                            name,
+                            &title,
+                            types,
+                            (&targets, &recording_kinds),
+                            dots,
+                            row_height,
+                        )
+                    })
+                    .inner;
+                retype(ui, view, &ids, choice.retype);
+                all_types |= choice.all_types;
                 if let Some(full) = full {
                     for response in cells {
                         response.on_hover_text(&full);
@@ -1346,6 +1413,16 @@ fn channel_list(
         })
         .inner_rect;
     ui.spacing_mut().scroll = scroll;
+    // A click below the rows clears the selection.
+    let below = ui.input(|i| {
+        i.pointer.primary_clicked()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|p| area.contains(p) && p.y > last_bottom)
+    });
+    if below {
+        view.clear_selection();
+    }
     if let Some(width) = measured
         && width != fixed
     {
@@ -1700,9 +1777,18 @@ fn kind_row(
             ),
         );
     }
-    let all_types = ui
+    let ids: Vec<ChannelId> = view
+        .order()
+        .iter()
+        .copied()
+        .filter(|&c| view.group_of(c) == (stream, kind.clone()))
+        .collect();
+    let kinds = [kind.clone()];
+    let targets = targets_of(view, &ids, &kinds);
+    let recording = view.kinds();
+    let choice = ui
         .with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let all_types = type_menu(ui, &kind, &label, types, row_height);
+            let choice = type_menu(ui, &kind, &label, types, (&targets, &recording), row_height);
             if show_count {
                 cells.push(
                     ui.add(
@@ -1712,13 +1798,40 @@ fn kind_row(
                     ),
                 );
             }
-            all_types
+            choice
         })
         .inner;
     for cell in cells {
         cell.on_hover_text(&full);
     }
-    (clicked, all_types)
+    retype(ui, view, &ids, choice.retype);
+    (clicked, choice.all_types)
+}
+
+/// What a [`change_type_menu`](crate::ui::types::change_type_menu) for `ids` needs: their
+/// types (`kinds`, all of them or the one they share), the file's type where they share
+/// one, and whether any type differs from the file's.
+fn targets_of<'a>(view: &ViewState, ids: &[ChannelId], kinds: &'a [ChannelKind]) -> Targets<'a> {
+    let file_kind = ids.first().map(|&c| view.file_kind(c).clone());
+    let file_kind = file_kind.filter(|k| ids.iter().all(|&c| view.file_kind(c) == k));
+    Targets {
+        kinds,
+        file_kind,
+        retyped: ids.iter().any(|&c| view.retyped(c)),
+    }
+}
+
+/// Changes the types of `ids` as a menu picked, redrawing at once, as the list's rows were
+/// laid out before.
+fn retype(ui: &Ui, view: &mut ViewState, ids: &[ChannelId], picked: Option<Retype>) {
+    let changed = match picked {
+        Some(Retype::To(kind)) => view.set_kind(ids, &kind),
+        Some(Retype::FromFile) => view.kinds_from_file(ids),
+        None => false,
+    };
+    if changed {
+        ui.ctx().request_repaint();
+    }
 }
 
 /// A stream the file has but kymo doesn't show, grayed, in line with the streams' names;

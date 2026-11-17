@@ -82,7 +82,7 @@ fn updates_follow_the_build_at_most_every_interval() {
     let never = || -> Vec<StimChanges> { panic!("changes read without an update") };
 
     // The first update is at once, whatever the time.
-    let update = stim.update(&mut store, &rec, 25, 100.0, || changes(25));
+    let update = stim.update(&mut store, &rec, (25, 0), 100.0, || changes(25));
     assert_eq!(update, Update::Changed);
     let descriptions = |store: &AnnotationStore| -> Vec<(f64, String, u32)> {
         stim_data(store)
@@ -104,15 +104,15 @@ fn updates_follow_the_build_at_most_every_interval() {
 
     // No progress: nothing to do, however long it has been.
     assert_eq!(
-        stim.update(&mut store, &rec, 25, 200.0, never),
+        stim.update(&mut store, &rec, (25, 0), 200.0, never),
         Update::Unchanged
     );
     // Progress, but too soon: wait for the rest of the interval.
-    let Update::Wait(wait) = stim.update(&mut store, &rec, 45, 100.1, never) else {
+    let Update::Wait(wait) = stim.update(&mut store, &rec, (45, 0), 100.1, never) else {
         panic!("no wait");
     };
     assert!((wait - (INTERVAL - 0.1)).abs() < 1e-9, "{wait}");
-    let update = stim.update(&mut store, &rec, 45, 100.0 + INTERVAL, || changes(45));
+    let update = stim.update(&mut store, &rec, (45, 0), 100.0 + INTERVAL, || changes(45));
     assert_eq!(update, Update::Changed);
     // And 3 at 0.4 s on channel 2.
     assert_eq!(
@@ -133,7 +133,7 @@ fn a_rule_change_rebuilds_at_once_and_keeps_the_file_annotations() {
     let mut store = file_annotations();
     let files = of(&store, Origin::File);
     let mut stim = StimAnnotations::new(EventOptions::default());
-    stim.update(&mut store, &rec, 100, 0.0, || changes(100));
+    stim.update(&mut store, &rec, (100, 0), 0.0, || changes(100));
     assert_eq!(stim_data(&store).len(), 4);
 
     let from_zero = options(EventRule::FromZero, false);
@@ -141,7 +141,7 @@ fn a_rule_change_rebuilds_at_once_and_keeps_the_file_annotations() {
     assert_eq!(stim.options(), from_zero);
     // Same progress, same instant: still rebuilt.
     assert_eq!(
-        stim.update(&mut store, &rec, 100, 0.0, || changes(100)),
+        stim.update(&mut store, &rec, (100, 0), 0.0, || changes(100)),
         Update::Changed
     );
     let codes: Vec<String> = stim_data(&store)
@@ -155,7 +155,7 @@ fn a_rule_change_rebuilds_at_once_and_keeps_the_file_annotations() {
     // Setting the same options again changes nothing.
     stim.set_options(from_zero);
     assert_eq!(
-        stim.update(&mut store, &rec, 100, 0.0, || changes(100)),
+        stim.update(&mut store, &rec, (100, 0), 0.0, || changes(100)),
         Update::Unchanged
     );
 }
@@ -218,7 +218,7 @@ proptest! {
                 Some(_) => Update::Changed,
             };
             let before = stim_data(&store);
-            let update = stim.update(&mut store, &rec, done, now, || changes(done));
+            let update = stim.update(&mut store, &rec, (done, 0), now, || changes(done));
             match (update, expected) {
                 (Update::Wait(a), Update::Wait(b)) => prop_assert!((a - b).abs() < 1e-9),
                 _ => prop_assert_eq!(update, expected),

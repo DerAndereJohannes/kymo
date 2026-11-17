@@ -2,13 +2,14 @@
 //! and its menu ("⋯"), which sets its DC removal and scaling, and the Channel Types window,
 //! which lists every type kymo knows, those set and the open recording's.
 
+use eframe::egui::containers::menu::{MenuConfig, SubMenuButton};
 use eframe::egui::{
-    self, Align, Button, Checkbox, CursorIcon, Layout, Popup, PopupCloseBehavior, RichText, Sense,
-    TextEdit, Ui, Vec2,
+    self, Align, Button, Checkbox, CursorIcon, Layout, Popup, PopupCloseBehavior, Response,
+    RichText, Sense, TextEdit, Ui, Vec2,
 };
 use kymo_core::{ChannelKind, KNOWN_KINDS};
 
-use crate::types::TypeSettings;
+use crate::types::{TypeSet, TypeSettings};
 use crate::ui::Overlay;
 use crate::ui::color::{Choice, picker, swatch, swatch_button};
 use crate::ui::menus::check_item;
@@ -54,44 +55,253 @@ pub fn menu_width(height: f32) -> f32 {
     height
 }
 
+/// How a "⋯" button's dots are drawn when the pointer isn't on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dots {
+    /// Not at all (a channel's row, neither hovered nor selected).
+    Hidden,
+    Weak,
+    /// In the text color: something in the menu differs from its start.
+    Marked,
+}
+
+/// A "⋯" button `height` high, named `label` for screen readers, with `hover` as its
+/// tooltip, its dots drawn as `dots` says unless the pointer is on it or its menu is open
+/// (then strong). The caller opens its menu.
+pub fn dots_button(ui: &mut Ui, label: String, hover: String, dots: Dots, height: f32) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(menu_width(height), height), Sense::click());
+    label_for(ui, &response, label);
+    let open = Popup::is_id_open(ui.ctx(), Popup::default_response_id(&response));
+    let visuals = ui.visuals();
+    let color = if response.hovered() || response.is_pointer_button_down_on() || open {
+        Some(visuals.strong_text_color())
+    } else {
+        match dots {
+            Dots::Hidden => None,
+            Dots::Weak => Some(visuals.weak_text_color()),
+            Dots::Marked => Some(visuals.text_color()),
+        }
+    };
+    if response.hovered() || open {
+        let fill = visuals.widgets.hovered.weak_bg_fill;
+        ui.painter().rect_filled(rect.shrink(1.0), 3.0, fill);
+    }
+    if let Some(color) = color {
+        let radius = (height / 14.0).max(1.0);
+        for dx in [-1.0, 0.0, 1.0] {
+            let center = rect.center() + Vec2::new(dx * radius * 3.2, 0.0);
+            ui.painter().circle_filled(center, radius, color);
+        }
+    }
+    response
+        .on_hover_text(hover)
+        .on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// What a type's or a channel's menu asked for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuChoice {
+    /// The Channel Types window.
+    pub all_types: bool,
+    /// A change of the channels' types.
+    pub retype: Option<Retype>,
+}
+
+/// A change of channels' types picked in a [`change_type_menu`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Retype {
+    To(ChannelKind),
+    /// Back to the types the file gives them.
+    FromFile,
+}
+
+/// The channels a [`change_type_menu`] changes, as it needs them.
+pub struct Targets<'a> {
+    /// Their types now.
+    pub kinds: &'a [ChannelKind],
+    /// The type the file gives them where they share one, else `None`.
+    pub file_kind: Option<ChannelKind>,
+    /// Whether any type differs from the file's.
+    pub retyped: bool,
+}
+
+/// What the Change Type To menu is called, and its items.
+pub const CHANGE_TYPE: &str = "Change Type To";
+pub const OTHER_TYPES: &str = "Other Types";
+pub const NEW_TYPE: &str = "New Type\u{2026}";
+pub const FROM_FILE: &str = "From File";
+
+/// A Change Type To submenu for the channels `targets`: the recording's types (`recording`,
+/// stim left out), checked where every target has it; Other Types, every other type kymo
+/// knows or something was set for (stim left out), alphabetically, with a filter field
+/// above; New Type…, a field to name one (a known spelling, as "EKG", is the known type;
+/// stim can't be named); and From File, enabled while a type differs from the file's (with
+/// the file's type where the targets share one). Naming a type kymo doesn't know keeps it
+/// in `types`, so Other Types offers it from then on.
+pub fn change_type_menu(
+    ui: &mut Ui,
+    targets: &Targets<'_>,
+    recording: &[ChannelKind],
+    types: &mut TypeSettings,
+) -> Option<Retype> {
+    let mut picked = None;
+    ui.menu_button(CHANGE_TYPE, |ui| {
+        for kind in recording.iter().filter(|k| !k.is_stim()) {
+            let all = targets.kinds.iter().all(|k| k == kind);
+            if check_item(ui, true, all, true, kind.name(), None).clicked() && !all {
+                picked = Some(Retype::To(kind.clone()));
+            }
+        }
+        ui.separator();
+        let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+        SubMenuButton::new(OTHER_TYPES)
+            .config(config.clone())
+            .ui(ui, |ui| {
+                if let Some(kind) = other_types(ui, recording, types) {
+                    picked = Some(Retype::To(kind));
+                    ui.close();
+                }
+            });
+        SubMenuButton::new(NEW_TYPE).config(config).ui(ui, |ui| {
+            if let Some(kind) = new_type(ui) {
+                if kind.known().is_none() && !types.stored(&kind) {
+                    types.insert(TypeSet {
+                        name: kind.name().to_owned(),
+                        ..TypeSet::default()
+                    });
+                }
+                picked = Some(Retype::To(kind));
+                ui.close();
+            }
+        });
+        ui.separator();
+        let text = match &targets.file_kind {
+            Some(kind) => format!("{FROM_FILE} ({})", kind.name()),
+            None => FROM_FILE.to_owned(),
+        };
+        if ui.add_enabled(targets.retyped, Button::new(text)).clicked() {
+            picked = Some(Retype::FromFile);
+        }
+    });
+    picked
+}
+
+/// The Other Types submenu's contents: a filter field and the types it matches.
+fn other_types(
+    ui: &mut Ui,
+    recording: &[ChannelKind],
+    types: &TypeSettings,
+) -> Option<ChannelKind> {
+    let id = ui.scope_id().with("kymo other types filter");
+    let mut filter: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let field = ui.add(
+        TextEdit::singleline(&mut filter)
+            .hint_text("Filter")
+            .desired_width(OTHER_TYPES_WIDTH),
+    );
+    label_for(ui, &field, "Filter Other Types".to_owned());
+    if !ui.memory(|m| m.focused().is_some()) {
+        field.request_focus();
+    }
+    let others: Vec<ChannelKind> = listed_types(types, &[])
+        .into_iter()
+        .filter(|k| !k.is_stim() && !recording.contains(k) && matches(k, &filter))
+        .collect();
+    let mut picked = None;
+    egui::ScrollArea::vertical()
+        .max_height(ui.ctx().content_rect().height() * 0.4)
+        .show(ui, |ui| {
+            ui.set_min_width(OTHER_TYPES_WIDTH);
+            if others.is_empty() {
+                ui.label(RichText::new("No channel types match.").weak());
+            }
+            for kind in &others {
+                if ui.button(kind.name()).clicked() {
+                    picked = Some(kind.clone());
+                }
+            }
+        });
+    if picked.is_some() {
+        filter.clear();
+    }
+    ui.data_mut(|d| d.insert_temp(id, filter));
+    picked
+}
+
+/// The width of the Other Types and New Type… fields.
+const OTHER_TYPES_WIDTH: f32 = 160.0;
+
+/// The New Type… submenu's contents: a field to name the type, Enter or Change taking it,
+/// and below what the name stands for (a known type spelled otherwise) or why it can't be
+/// taken (empty, or stim).
+fn new_type(ui: &mut Ui) -> Option<ChannelKind> {
+    let id = ui.scope_id().with("kymo new type name");
+    let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let field = ui.add(
+        TextEdit::singleline(&mut name)
+            .hint_text("Name")
+            .desired_width(OTHER_TYPES_WIDTH),
+    );
+    label_for(ui, &field, "New Type Name".to_owned());
+    if !ui.memory(|m| m.focused().is_some()) {
+        field.request_focus();
+    }
+    let kind = ChannelKind::named(&name);
+    let valid = !name.trim().is_empty() && !kind.is_stim();
+    let note = if name.trim().is_empty() {
+        String::new()
+    } else if kind.is_stim() {
+        "Stim channels come from the file.".to_owned()
+    } else if kind.name() != name.trim() {
+        format!("As {}", kind.name())
+    } else {
+        String::new()
+    };
+    if !note.is_empty() {
+        ui.label(RichText::new(note).weak().small());
+    }
+    // The field gives up the keyboard on Enter, which `lost_focus` shows only a frame later.
+    let entered =
+        (field.has_focus() || field.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let change = ui.add_enabled(valid, Button::new("Change"));
+    let picked = (valid && (entered || change.clicked())).then_some(kind);
+    if picked.is_some() {
+        name.clear();
+    }
+    ui.data_mut(|d| d.insert_temp(id, name));
+    picked
+}
+
 /// A "⋯" button `height` high at the end of a type's row, named "Options for {label}" for
 /// screen readers: gray, or in the text color while `kind`'s DC removal or scaling differs
 /// from its start. A click opens a menu with the type's name, Remove DC and Scale Each
-/// Channel as checkable items (neither for stim channels), Reset, enabled while anything
-/// differs from the type's start (its color too; a custom type keeps its entry), and All
-/// Types…, which asks for the Channel Types window. Returns whether it was asked for.
+/// Channel as checkable items (neither for stim channels), Change Type To (see
+/// [`change_type_menu`]; its channels are `targets`), Reset, enabled while anything differs
+/// from the type's start (its color too; a custom type keeps its entry), and All Types…,
+/// which asks for the Channel Types window.
 pub fn type_menu(
     ui: &mut Ui,
     kind: &ChannelKind,
     label: &str,
     types: &mut TypeSettings,
+    (targets, recording): (&Targets<'_>, &[ChannelKind]),
     height: f32,
-) -> bool {
+) -> MenuChoice {
     let name = kind.name();
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(menu_width(height), height), Sense::click());
-    label_for(ui, &response, format!("Options for {label}"));
-    let visuals = ui.visuals();
-    let color = if response.hovered() || response.is_pointer_button_down_on() {
-        visuals.strong_text_color()
-    } else if types.options_changed(kind) {
-        visuals.text_color()
+    let dots = if types.options_changed(kind) {
+        Dots::Marked
     } else {
-        visuals.weak_text_color()
+        Dots::Weak
     };
-    if response.hovered() {
-        let fill = visuals.widgets.hovered.weak_bg_fill;
-        ui.painter().rect_filled(rect.shrink(1.0), 3.0, fill);
-    }
-    let radius = (height / 14.0).max(1.0);
-    for dx in [-1.0, 0.0, 1.0] {
-        let center = rect.center() + Vec2::new(dx * radius * 3.2, 0.0);
-        ui.painter().circle_filled(center, radius, color);
-    }
-    let response = response
-        .on_hover_text(format!("Options for {name}"))
-        .on_hover_cursor(CursorIcon::PointingHand);
-    let mut all_types = false;
+    let response = dots_button(
+        ui,
+        format!("Options for {label}"),
+        format!("Options for {name}"),
+        dots,
+        height,
+    );
+    let mut choice = MenuChoice::default();
     Popup::menu(&response).show(|ui| {
         ui.label(RichText::new(name).strong());
         if !kind.is_stim() {
@@ -108,15 +318,45 @@ pub fn type_menu(
             }
         }
         ui.separator();
+        choice.retype = change_type_menu(ui, targets, recording, types);
+        ui.separator();
         let reset = ui.add_enabled(types.changed(kind), Button::new(format!("Reset {name}")));
         if reset.clicked() {
             types.reset(kind);
         }
         if ui.button(ALL_TYPES).clicked() {
-            all_types = true;
+            choice.all_types = true;
         }
     });
-    all_types
+    choice
+}
+
+/// A "⋯" button `height` high at the end of a channel's row, named "Options for {label}"
+/// for screen readers, its dots drawn as `dots` says: a menu with `title` (the channel's
+/// name, or how many channels it acts on) and Change Type To (see [`change_type_menu`]).
+pub fn channel_menu(
+    ui: &mut Ui,
+    label: &str,
+    title: &str,
+    types: &mut TypeSettings,
+    (targets, recording): (&Targets<'_>, &[ChannelKind]),
+    dots: Dots,
+    height: f32,
+) -> MenuChoice {
+    let response = dots_button(
+        ui,
+        format!("Options for {label}"),
+        format!("Options for {title}"),
+        dots,
+        height,
+    );
+    let mut choice = MenuChoice::default();
+    Popup::menu(&response).show(|ui| {
+        ui.label(RichText::new(title).strong());
+        ui.separator();
+        choice.retype = change_type_menu(ui, targets, recording, types);
+    });
+    choice
 }
 
 /// The checkboxes' text, also the window's column headers.

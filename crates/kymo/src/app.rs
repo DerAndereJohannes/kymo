@@ -327,6 +327,7 @@ impl KymoApp {
             typing: ctx.egui_wants_keyboard_input(),
             editing: viewer.is_some_and(Viewer::editing),
             selected: viewer.is_some_and(|v| v.selected().is_some()),
+            channels_selected: viewer.is_some_and(|v| !v.view().selected().is_empty()),
             dragging: viewer.is_some_and(Viewer::dragging),
             can_undo: viewer.is_some_and(|v| v.history().can_undo()),
             can_redo: viewer.is_some_and(|v| v.history().can_redo()),
@@ -1116,6 +1117,8 @@ struct AppMenuState {
     /// Whether annotation mode is on, and an annotation selected.
     editing: bool,
     selected: bool,
+    /// Whether channels are selected in the channel list, for Esc to clear.
+    channels_selected: bool,
     /// Whether a drag is changing an annotation: until it ends, nothing else may, and Esc
     /// takes it back.
     dragging: bool,
@@ -1143,7 +1146,7 @@ impl MenuState for AppMenuState {
             Action::Redo => self.can_redo && !self.dragging || self.typing,
             Action::DeleteAnnotation => self.selected && !self.dragging,
             Action::MergeAnnotations => self.mergeable && !self.dragging,
-            Action::Deselect => self.selected || self.dragging,
+            Action::Deselect => self.selected || self.dragging || self.channels_selected,
             Action::ExportShownAnnotations => self.shown,
             Action::OpenRecent(index) => usize::from(index) < self.recent.len(),
             Action::ClearRecent => !self.recent.is_empty(),

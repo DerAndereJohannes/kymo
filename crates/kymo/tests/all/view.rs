@@ -737,6 +737,9 @@ enum Step {
     Show(u32, bool),
     ShowGroup(Option<usize>, ChannelKind, bool),
     ScrollTo(u32),
+    /// Gives the channels a type (stim refused); a custom name is one no file has.
+    Retype(Vec<u32>, ChannelKind),
+    FromFile(Vec<u32>),
 }
 
 fn steps() -> impl Strategy<Value = Step> {
@@ -764,6 +767,12 @@ fn steps() -> impl Strategy<Value = Step> {
         (proptest::option::of(0usize..5), kinds(), any::<bool>())
             .prop_map(|(s, k, on)| Step::ShowGroup(s, k, on)),
         (0u32..45).prop_map(Step::ScrollTo),
+        (
+            proptest::collection::vec(0u32..45, 0..6),
+            prop_oneof![kinds(), Just(ChannelKind::named("Pulse"))]
+        )
+            .prop_map(|(cs, k)| Step::Retype(cs, k)),
+        proptest::collection::vec(0u32..45, 0..6).prop_map(Step::FromFile),
     ]
 }
 
@@ -802,15 +811,20 @@ proptest! {
         let duration = rec.duration();
         let channels = rec.channels().len();
         let of = streams_of(&rec);
-        let group = |c: ChannelId| (of[c.0 as usize], rec.channel(c).kind.clone());
-        let mut first_seen = std::collections::HashMap::new();
-        for (c, channel) in rec.channels().iter().enumerate() {
-            first_seen.entry(channel.kind.clone()).or_insert(c);
-        }
-        let mut order: Vec<ChannelId> = (0..channels as u32).map(ChannelId).collect();
-        order.sort_by_key(|&c| {
-            (of[c.0 as usize], types::rank(&rec.channel(c).kind, &first_seen), c)
-        });
+        let file_kinds: Vec<ChannelKind> = rec.channels().iter().map(|c| c.kind.clone()).collect();
+        // Each channel's type as the steps gave it.
+        let mut kinds = file_kinds.clone();
+        // The order by definition: the streams in file order, each by type, the types kymo
+        // doesn't know by their first channel in the file, a type's channels in file order.
+        let sorted = |kinds: &[ChannelKind]| {
+            let mut first_seen = std::collections::HashMap::new();
+            for (c, kind) in kinds.iter().enumerate() {
+                first_seen.entry(kind.clone()).or_insert(c);
+            }
+            let mut order: Vec<ChannelId> = (0..channels as u32).map(ChannelId).collect();
+            order.sort_by_key(|&c| (of[c.0 as usize], types::rank(&kinds[c.0 as usize], &first_seen), c));
+            order
+        };
         for step in steps {
             match step {
                 Step::Act(action) => {
@@ -821,7 +835,34 @@ proptest! {
                 Step::Zoom(factor, anchor) => view.zoom(factor, anchor),
                 Step::Rows(n) => view.set_rows(n),
                 Step::Show(c, on) => view.set_shown(ChannelId(c), on),
+                Step::Retype(cs, kind) => {
+                    let ids: Vec<ChannelId> = cs.iter().map(|&c| ChannelId(c)).collect();
+                    let before = view.kinds_revision();
+                    let mut changed = false;
+                    if !kind.is_stim() {
+                        for &c in &cs {
+                            if let Some(k) = kinds.get_mut(c as usize) && *k != kind {
+                                *k = kind.clone();
+                                changed = true;
+                            }
+                        }
+                    }
+                    prop_assert_eq!(view.set_kind(&ids, &kind), changed);
+                    prop_assert_eq!(view.kinds_revision() != before, changed);
+                }
+                Step::FromFile(cs) => {
+                    let ids: Vec<ChannelId> = cs.iter().map(|&c| ChannelId(c)).collect();
+                    let mut changed = false;
+                    for &c in &cs {
+                        if let Some(k) = kinds.get_mut(c as usize) && *k != file_kinds[c as usize] {
+                            *k = file_kinds[c as usize].clone();
+                            changed = true;
+                        }
+                    }
+                    prop_assert_eq!(view.kinds_from_file(&ids), changed);
+                }
                 Step::ShowGroup(s, kind, on) => {
+                    let group = |c: ChannelId| (of[c.0 as usize], kinds[c.0 as usize].clone());
                     let shown_before: Vec<bool> = (0..channels as u32).map(|c| view.is_shown(ChannelId(c))).collect();
                     view.set_group_shown(s, &kind, on);
                     for c in 0..channels as u32 {
@@ -840,8 +881,13 @@ proptest! {
                     }
                 }
             }
-            // Every channel, the streams in file order, each by type, a type in file order.
-            prop_assert_eq!(view.order(), &order[..]);
+            prop_assert_eq!(view.order(), &sorted(&kinds)[..]);
+            for c in 0..channels {
+                let id = ChannelId(c as u32);
+                prop_assert_eq!(view.kind_of(id), &kinds[c]);
+                prop_assert_eq!(view.group_of(id), (of[c], kinds[c].clone()));
+                prop_assert_eq!(view.retyped(id), kinds[c] != file_kinds[c]);
+            }
             // The rows are the shown channels in that order.
             let shown: Vec<_> = view.order().iter().copied().filter(|&c| view.is_shown(c)).collect();
             prop_assert_eq!(view.row_count(), shown.len());

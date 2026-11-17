@@ -83,6 +83,22 @@ fn stream_of(recording: &Recording) -> Vec<Option<usize>> {
     of
 }
 
+/// Every channel in the order: the streams in file order, each by type (see
+/// [`types::rank`], the types kymo doesn't know in the order their first channel has in the
+/// file), a type's channels in file order.
+fn sorted(stream_of: &[Option<usize>], kinds: &[ChannelKind]) -> Vec<ChannelId> {
+    let mut first_seen = HashMap::new();
+    for (c, kind) in kinds.iter().enumerate() {
+        first_seen.entry(kind.clone()).or_insert(c);
+    }
+    let mut order: Vec<ChannelId> = (0..kinds.len() as u32).map(ChannelId).collect();
+    order.sort_unstable_by_key(|c| {
+        let c = c.0 as usize;
+        (stream_of[c], types::rank(&kinds[c], &first_seen), c)
+    });
+    order
+}
+
 /// The viewer's display state for one recording.
 #[derive(Clone, Debug)]
 pub struct ViewState {
@@ -102,6 +118,14 @@ pub struct ViewState {
     hidden: Vec<bool>,
     /// Per channel (by id): its type, its unit's factor to SI and what its unit measures.
     kinds: Vec<ChannelKind>,
+    /// Per channel (by id): its type as the file gives it.
+    file_kinds: Vec<ChannelKind>,
+    /// Counts the changes of channels' types, for [`kinds_revision`](Self::kinds_revision).
+    kinds_revision: u64,
+    /// The channels selected in the channel list, and the one a range selection starts
+    /// from (the last clicked).
+    selected: BTreeSet<ChannelId>,
+    anchor: Option<ChannelId>,
     to_si: Vec<Option<f64>>,
     units: Vec<UnitKey>,
     start: f64,
@@ -140,18 +164,9 @@ impl ViewState {
     pub fn with_default_span(recording: &Recording, seconds: f64) -> Self {
         let channels = recording.channels();
         let rate = recording.sfreq();
-        // The streams in file order, each by type (see `types::rank`), a type's channels
-        // in file order.
         let stream_of = stream_of(recording);
-        let mut first_seen = HashMap::new();
-        for (c, channel) in channels.iter().enumerate() {
-            first_seen.entry(channel.kind.clone()).or_insert(c);
-        }
-        let mut order: Vec<ChannelId> = (0..channels.len() as u32).map(ChannelId).collect();
-        order.sort_unstable_by_key(|c| {
-            let c = c.0 as usize;
-            (stream_of[c], types::rank(&channels[c].kind, &first_seen), c)
-        });
+        let kinds: Vec<ChannelKind> = channels.iter().map(|c| c.kind.clone()).collect();
+        let order = sorted(&stream_of, &kinds);
         let mut place = vec![0; channels.len()];
         for (i, c) in order.iter().enumerate() {
             place[c.0 as usize] = i;
@@ -168,7 +183,11 @@ impl ViewState {
             place,
             stream_of,
             hidden: vec![false; channels.len()],
-            kinds: channels.iter().map(|c| c.kind.clone()).collect(),
+            file_kinds: kinds.clone(),
+            kinds,
+            kinds_revision: 0,
+            selected: BTreeSet::new(),
+            anchor: None,
             to_si: channels.iter().map(|c| c.unit.to_si).collect(),
             units: channels.iter().map(|c| UnitKey::of(&c.unit)).collect(),
             start: 0.0,
@@ -333,6 +352,128 @@ impl ViewState {
             }
         }
         kinds
+    }
+
+    /// A channel's type as the file gives it (misc for a channel not in the recording).
+    pub fn file_kind(&self, channel: ChannelId) -> &ChannelKind {
+        self.file_kinds
+            .get(channel.0 as usize)
+            .unwrap_or(&ChannelKind::MISC)
+    }
+
+    /// Whether a channel's type differs from the file's.
+    pub fn retyped(&self, channel: ChannelId) -> bool {
+        self.kind_of(channel) != self.file_kind(channel)
+    }
+
+    /// Counts the changes of channels' types: it differs after any change.
+    pub fn kinds_revision(&self) -> u64 {
+        self.kinds_revision
+    }
+
+    /// Gives `channels` the type `kind`, never stim (only [`kinds_from_file`] makes a channel
+    /// stim again, as only the readers make one). The order follows: each changed channel
+    /// moves to its new type's channels in its stream, by its place in the file. The first
+    /// row on screen stays first unless it changed. Returns whether a type changed.
+    ///
+    /// [`kinds_from_file`]: Self::kinds_from_file
+    pub fn set_kind(&mut self, channels: &[ChannelId], kind: &ChannelKind) -> bool {
+        if kind.is_stim() {
+            return false;
+        }
+        let changes: Vec<_> = channels.iter().map(|&c| (c, kind.clone())).collect();
+        self.retype(changes)
+    }
+
+    /// Returns `channels` to the types the file gives them, as [`set_kind`](Self::set_kind).
+    pub fn kinds_from_file(&mut self, channels: &[ChannelId]) -> bool {
+        let changes: Vec<_> = channels
+            .iter()
+            .map(|&c| (c, self.file_kind(c).clone()))
+            .collect();
+        self.retype(changes)
+    }
+
+    fn retype(&mut self, changes: Vec<(ChannelId, ChannelKind)>) -> bool {
+        let mut changed = BTreeSet::new();
+        for (c, kind) in changes {
+            if let Some(old) = self.kinds.get_mut(c.0 as usize)
+                && *old != kind
+            {
+                *old = kind;
+                changed.insert(c);
+            }
+        }
+        if changed.is_empty() {
+            return false;
+        }
+        self.kinds_revision += 1;
+        // The first channel on screen that keeps its type stays where it is.
+        let anchor = self.rows_order[self.visible_rows()]
+            .iter()
+            .copied()
+            .find(|c| !changed.contains(c));
+        let fraction = self.top - self.top.floor();
+        self.order = sorted(&self.stream_of, &self.kinds);
+        for (i, c) in self.order.iter().enumerate() {
+            self.place[c.0 as usize] = i;
+        }
+        self.rows_order = self.shown_in_order();
+        if let Some(row) = anchor.and_then(|c| self.row_of(c)) {
+            self.top = row as f64 + fraction;
+        }
+        self.clamp();
+        true
+    }
+
+    /// Whether a channel is selected in the channel list.
+    pub fn is_selected(&self, channel: ChannelId) -> bool {
+        self.selected.contains(&channel)
+    }
+
+    /// The selected channels, in the order.
+    pub fn selected(&self) -> Vec<ChannelId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|c| self.selected.contains(c))
+            .collect()
+    }
+
+    /// Selects `channel` alone.
+    pub fn select(&mut self, channel: ChannelId) {
+        self.selected = BTreeSet::from([channel]);
+        self.anchor = Some(channel);
+    }
+
+    /// Adds `channel` to the selection or takes it out (⌘-click).
+    pub fn toggle_selected(&mut self, channel: ChannelId) {
+        if !self.selected.remove(&channel) {
+            self.selected.insert(channel);
+        }
+        self.anchor = Some(channel);
+    }
+
+    /// Selects the channels of `listed` (the list's rows, in its order) from the last clicked
+    /// one to `channel` (⇧-click), or `channel` alone if the last clicked isn't listed.
+    pub fn select_range(&mut self, listed: &[ChannelId], channel: ChannelId) {
+        let from = self
+            .anchor
+            .and_then(|a| listed.iter().position(|&c| c == a));
+        let (Some(from), Some(to)) = (from, listed.iter().position(|&c| c == channel)) else {
+            self.select(channel);
+            return;
+        };
+        self.selected = listed[from.min(to)..=from.max(to)]
+            .iter()
+            .copied()
+            .collect();
+    }
+
+    /// Clears the selection; returns whether anything was selected.
+    pub fn clear_selection(&mut self) -> bool {
+        self.anchor = None;
+        !std::mem::take(&mut self.selected).is_empty()
     }
 
     pub fn dc_removed(&self) -> bool {

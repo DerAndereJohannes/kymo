@@ -28,6 +28,8 @@ pub struct StimAnnotations {
     /// The build's samples done and the time at the last update; `None` before the first,
     /// and after a rule change.
     last: Option<(u64, f64)>,
+    /// The channels' types' revision at the last update.
+    kinds: u64,
 }
 
 impl StimAnnotations {
@@ -35,6 +37,7 @@ impl StimAnnotations {
         StimAnnotations {
             options,
             last: None,
+            kinds: 0,
         }
     }
 
@@ -52,16 +55,22 @@ impl StimAnnotations {
 
     /// Replaces `store`'s stim annotations with the annotations of `changes()` if the build has
     /// moved on (`done` samples, read before the changes) and the last update is at least
-    /// [`INTERVAL`] before `now` (seconds); at once for the first update and after a rule
-    /// change. Other annotations stay as they are.
+    /// [`INTERVAL`] before `now` (seconds); at once for the first update, after a rule
+    /// change and when `kinds` (the channels' types' revision, which decides whose changes
+    /// `changes()` gives) differs from the last update's. Other annotations stay as they
+    /// are.
     pub fn update(
         &mut self,
         store: &mut AnnotationStore,
         recording: &Recording,
-        done: u64,
+        (done, kinds): (u64, u64),
         now: f64,
         changes: impl FnOnce() -> Vec<StimChanges>,
     ) -> Update {
+        if self.kinds != kinds {
+            self.kinds = kinds;
+            self.last = None;
+        }
         if let Some((last_done, at)) = self.last {
             if last_done == done {
                 return Update::Unchanged;

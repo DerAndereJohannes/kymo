@@ -19,7 +19,7 @@ use kymo::settings::{Settings, Theme, load_annotation_colors};
 use kymo::types::TypeSettings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
-use kymo::ui::types::ALL_TYPES;
+use kymo::ui::types::{ALL_TYPES, CHANGE_TYPE, FROM_FILE, NEW_TYPE, OTHER_TYPES};
 use kymo::viewer::Viewer;
 use kymo_core::ChannelKind;
 use kymo_testgen::{TempDir, TempFile};
@@ -369,8 +369,8 @@ fn the_channel_list_shows_display_units() {
 }
 
 /// Without a type row whose channels differ in unit there is no unit column: a long name has
-/// all the room up to its Bad toggle, so it stays whole in a sidebar just wide enough for it,
-/// and is shortened only in a narrower one.
+/// all the room between its Bad toggle and its menu, so it stays whole in a sidebar just wide
+/// enough for it, and is shortened only in a narrower one.
 #[test]
 fn without_units_in_channel_rows_names_take_their_room() {
     use kymo_testgen::{ChannelSpec, Spec, XdfFormat};
@@ -388,13 +388,13 @@ fn without_units_in_channel_rows_names_take_their_room() {
     };
     sidebar_to(&mut harness, 600.0);
     let whole = name(&harness).width();
-    // The room past its Bad toggle, up to the row's end (where the type rows' menus end).
+    // The room past its Bad toggle, up to the gap before its menu, which lines up with the
+    // type rows' menus.
     let bad = harness.get_by_label(&format!("{long} bad")).rect().right();
-    let end = harness
-        .get_by_label("Options for EEG channels")
-        .rect()
-        .right();
-    let free = end - bad;
+    let menu = harness.get_by_label(&format!("Options for {long}")).rect();
+    let type_menu = harness.get_by_label("Options for EEG channels").rect();
+    assert!((menu.right() - type_menu.right()).abs() < 0.5);
+    let free = menu.left() - 8.0 - bad;
     assert!(free > 20.0, "{free}");
     let edge = viewer(&harness).layout().unwrap().names.left() - 8.0;
     sidebar_to(&mut harness, edge - (free - 3.0));
@@ -1861,6 +1861,346 @@ fn channels_scaled_on_their_own_each_have_a_scale_bar() {
     harness.run_steps(2);
     assert_eq!(harness.state().settings().types, TypeSettings::default());
     assert_eq!(bars(&harness, ChannelKind::EEG), 1);
+}
+
+/// Opens the menu ("⋯") at the end of channel `name`'s row in the channel list.
+fn channel_options(harness: &mut Harness<'_, KymoApp>, name: &str) {
+    type_options(harness, name);
+}
+
+/// Clicks the menu items `path` one after another (submenus, then an item), in a menu that
+/// is open.
+fn menu_path(harness: &mut Harness<'_, KymoApp>, path: &[&str]) {
+    for item in path {
+        menu_item(harness, item).click();
+        harness.run_steps(2);
+    }
+}
+
+/// The open menu's item `label`: not a label, as the sidebar's names and types are.
+fn menu_item<'h>(harness: &'h Harness<'_, KymoApp>, label: &'h str) -> egui_kittest::Node<'h> {
+    let mut items = harness
+        .query_all_by_label(label)
+        .filter(|n| n.accesskit_node().role() != egui::accesskit::Role::Label);
+    let item = items
+        .next()
+        .unwrap_or_else(|| panic!("no menu item {label}"));
+    assert!(items.next().is_none(), "two menu items {label}");
+    item
+}
+
+/// Changes the type of channel `name` (and those selected with it) by its menu: Change Type
+/// To, then `path` ("EEG", or "Other Types" and a type).
+fn change_type(harness: &mut Harness<'_, KymoApp>, name: &str, path: &[&str]) {
+    channel_options(harness, name);
+    menu_path(harness, &[CHANGE_TYPE]);
+    menu_path(harness, path);
+}
+
+/// A channel given another type follows it everywhere: its type, its place in the order
+/// (the traces and the list, under its new type's row, by its place in the file), the
+/// amplitude it shares with its new type's channels, its color and DC removal; the type it
+/// leaves goes from the list. From File, enabled only then, gives the file's type back.
+#[test]
+fn a_channel_given_a_type_follows_it() {
+    use egui::accesskit::Role;
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let [a1, ecg] = [0, 3].map(kymo_core::ChannelId);
+    assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
+    channel_options(&mut harness, "ECG");
+    menu_path(&mut harness, &[CHANGE_TYPE]);
+    let from_file = harness.get_by_label("From File (ECG)");
+    assert!(from_file.accesskit_node().is_disabled());
+    // The recording's types but stim, ECG's own checked.
+    let checked = |h: &Harness<'_, KymoApp>, item: &str| {
+        menu_item(h, item).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(checked(&harness, "ECG"));
+    assert!(!checked(&harness, "EEG"));
+    assert!(
+        harness
+            .query_by_role_and_label(Role::RadioButton, "Stim")
+            .is_none()
+    );
+    menu_path(&mut harness, &["EEG"]);
+    assert!(
+        harness.query_by_label(CHANGE_TYPE).is_none(),
+        "the menu stayed open"
+    );
+
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(ecg), ChannelKind::EEG);
+    assert_eq!(*view.file_kind(ecg), ChannelKind::ECG);
+    assert_eq!(view.group_of(ecg), (None, ChannelKind::EEG));
+    assert_eq!(view.scale_group(ecg), view.scale_group(a1));
+    assert_eq!(view.channel_amplitude(ecg), view.channel_amplitude(a1));
+    assert!(view.dc_applies(ecg));
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
+    assert_eq!(shown(&harness), [0, 1, 3, 2, 4]);
+    let state = harness.state();
+    let types = &state.settings().types;
+    let colors = |h: &Harness<'_, KymoApp>| {
+        let view = viewer(h).view();
+        let visuals = h.ctx.global_style().visuals.clone();
+        [a1, ecg].map(|c| kymo::ui::palette::type_color(view.kind_of(c), types, &visuals))
+    };
+    let [eeg_color, ecg_color] = colors(&harness);
+    assert_eq!(eeg_color, ecg_color);
+    // In the list under EEG, which has three channels, and ECG's row is gone.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::CheckBox, "Show ECG channels")
+            .is_none()
+    );
+    let eeg = harness.get_by_label("Show EEG channels").rect().center().y;
+    let row = |label: &str| harness.get_by_label(label).rect().center().y;
+    assert!(eeg < row("Show A2") && row("Show A2") < row("Show ECG"));
+    assert!(row("Show ECG") < row("Show EOG channels"));
+    harness.get_by_label("3 \u{b7} 512 Hz");
+
+    change_type(&mut harness, "ECG", &["From File (ECG)"]);
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(ecg), ChannelKind::ECG);
+    assert!(!view.retyped(ecg));
+    assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
+    harness.get_by_label("Show ECG channels");
+}
+
+/// A click on a channel's name selects it, ⌘-click adds or takes one out, ⇧-click selects
+/// the rows from the last clicked; a selected row's menu acts on every selected channel
+/// (Other Types, filtered), a type's menu on its channels. Esc and a click below the rows
+/// clear the selection.
+#[test]
+fn selected_channels_change_type_together() {
+    use egui::accesskit::Role;
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let selected = |h: &Harness<'_, KymoApp>| -> Vec<u32> {
+        viewer(h).view().selected().iter().map(|c| c.0).collect()
+    };
+    click_in_list(&mut harness, Role::Label, "A1");
+    assert_eq!(selected(&harness), [0]);
+    harness
+        .get_by_role_and_label(Role::Label, "EOG L")
+        .click_modifiers(Modifiers::SHIFT);
+    harness.run_steps(2);
+    assert_eq!(selected(&harness), [0, 1, 2]);
+    harness
+        .get_by_role_and_label(Role::Label, "A2")
+        .click_modifiers(command());
+    harness.run_steps(2);
+    assert_eq!(selected(&harness), [0, 2]);
+    // A row out of the selection acts on itself alone.
+    channel_options(&mut harness, "A2");
+    let titled = |h: &Harness<'_, KymoApp>, title: &str| {
+        h.query_all_by_role_and_label(Role::Label, title).count()
+    };
+    // Its name in the list (and the traces), and the menu's title.
+    assert_eq!(titled(&harness, "A2"), titled(&harness, "A1") + 1);
+    assert_eq!(titled(&harness, "2 channels"), 0);
+    close_menu(&mut harness);
+    assert_eq!(selected(&harness), [0, 2]);
+
+    channel_options(&mut harness, "A1");
+    harness.get_by_label("2 channels");
+    menu_path(&mut harness, &[CHANGE_TYPE, OTHER_TYPES]);
+    harness.get_by_label("Filter Other Types").type_text("temp");
+    harness.run_steps(2);
+    // Not the recording's types.
+    let filtered = |h: &Harness<'_, KymoApp>, label: &str| {
+        h.query_all_by_role_and_label(Role::Button, label).count()
+    };
+    assert_eq!(filtered(&harness, "Temperature"), 1);
+    harness.get_by_label("Filter Other Types").focus();
+    for _ in 0..4 {
+        harness.key_press(Key::Backspace);
+    }
+    harness.get_by_label("Filter Other Types").type_text("e");
+    harness.run_steps(2);
+    assert_eq!(filtered(&harness, "EMG"), 1);
+    assert_eq!(filtered(&harness, "EEG") + filtered(&harness, "ECG"), 0);
+    harness.get_by_label("Filter Other Types").type_text("mp");
+    harness.run_steps(2);
+    menu_path(&mut harness, &["Temperature"]);
+    let temperature = ChannelKind::named("Temperature");
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(kymo_core::ChannelId(0)), temperature);
+    assert_eq!(*view.kind_of(kymo_core::ChannelId(2)), temperature);
+    assert_eq!(*view.kind_of(kymo_core::ChannelId(1)), ChannelKind::EEG);
+    // Temperature comes after the types EEG, EOG (now none) and ECG.
+    assert_eq!(order(&harness), [1, 3, 0, 2, 4]);
+
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(selected(&harness).is_empty());
+    click_in_list(&mut harness, Role::Label, "A2");
+    assert_eq!(selected(&harness), [1]);
+    // The last row, Status, and below it.
+    let last = harness.get_by_label("Show Status").rect();
+    click(&mut harness, last.center() + egui::vec2(0.0, 30.0));
+    assert!(selected(&harness).is_empty());
+
+    // The type's menu returns them both, its file's type differing.
+    type_options(&mut harness, "Temperature channels");
+    menu_path(&mut harness, &[CHANGE_TYPE, FROM_FILE]);
+    assert_eq!(order(&harness), [0, 1, 2, 3, 4]);
+}
+
+/// A channel row's menu ("⋯") shows only while the pointer is on its row or the row is
+/// selected; it takes its room either way, in line with the type rows' menus.
+#[test]
+fn a_channels_menu_shows_on_its_row_hovered_or_selected() {
+    use egui::accesskit::Role;
+    let file = typed_preset();
+    let mut harness = fonts_window(file.path(), options());
+    ready(&mut harness);
+    // How much brighter the button's brightest pixel is than the row beside it, the pointer
+    // at `pointer`.
+    let contrast = |h: &mut Harness<'_, KymoApp>, pointer: egui::Pos2| {
+        hover(h, pointer);
+        h.run_steps(2);
+        let r = h.get_by_label("Options for A2").rect();
+        let image = h.render().unwrap();
+        let value = |x: u32, y: u32| i32::from(*image.get_pixel(x, y).0[..3].iter().max().unwrap());
+        let beside = value(r.left() as u32 - 4, r.center().y as u32);
+        let dots = (r.left() as u32..r.right() as u32)
+            .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .map(|(x, y)| value(x, y))
+            .max()
+            .unwrap();
+        dots - beside
+    };
+    let away = egui::pos2(900.0, 650.0);
+    assert!(contrast(&mut harness, away) < 5);
+    let row = harness.get_by_label("Show A2").rect().center() + egui::vec2(60.0, 0.0);
+    assert!(contrast(&mut harness, row) > 40);
+    let menu = harness.get_by_label("Options for A2").rect();
+    let type_menu = harness.get_by_label("Options for EEG channels").rect();
+    assert!((menu.right() - type_menu.right()).abs() < 0.5);
+    click_in_list(&mut harness, Role::Label, "A2");
+    assert!(contrast(&mut harness, away) > 40);
+}
+
+/// Closes an open menu, as Esc does.
+fn close_menu(harness: &mut Harness<'_, KymoApp>) {
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(
+        harness.query_by_label(CHANGE_TYPE).is_none(),
+        "the menu stayed open"
+    );
+}
+
+/// New Type… names a type: a known spelling is the known type ("ekg" as ECG), stim can't be
+/// named, and a name kymo doesn't know is kept, so Other Types offers it from then on.
+#[test]
+fn a_new_type_is_named_and_kept() {
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    channel_options(&mut harness, "A2");
+    menu_path(&mut harness, &[CHANGE_TYPE, NEW_TYPE]);
+    let change =
+        |h: &Harness<'_, KymoApp>| !h.get_by_label("Change").accesskit_node().is_disabled();
+    assert!(!change(&harness));
+    harness.get_by_label("New Type Name").type_text("stim");
+    harness.run_steps(2);
+    harness.get_by_label("Stim channels come from the file.");
+    assert!(!change(&harness));
+    harness.get_by_label("New Type Name").focus();
+    for _ in 0..4 {
+        harness.key_press(Key::Backspace);
+    }
+    harness.get_by_label("New Type Name").type_text("ekg");
+    harness.run_steps(2);
+    harness.get_by_label("As ECG");
+    harness.get_by_label("New Type Name").focus();
+    for _ in 0..3 {
+        harness.key_press(Key::Backspace);
+    }
+    harness.get_by_label("New Type Name").type_text("Pulse");
+    harness.run_steps(2);
+    assert!(change(&harness));
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert!(
+        harness.query_by_label(CHANGE_TYPE).is_none(),
+        "the menu stayed open"
+    );
+    let pulse = ChannelKind::named("pulse");
+    assert_eq!(
+        *viewer(&harness).view().kind_of(kymo_core::ChannelId(1)),
+        pulse
+    );
+    assert_eq!(
+        viewer(&harness)
+            .view()
+            .kind_of(kymo_core::ChannelId(1))
+            .name(),
+        "Pulse"
+    );
+    assert!(harness.state().settings().types.stored(&pulse));
+    harness.get_by_label("Show Pulse channels");
+
+    // Offered under Other Types for another channel, until it is the recording's.
+    change_type(&mut harness, "A2", &["From File (EEG)"]);
+    change_type(&mut harness, "A1", &[OTHER_TYPES]);
+    harness.get_by_label("Filter Other Types").type_text("pul");
+    harness.run_steps(2);
+    menu_path(&mut harness, &["Pulse"]);
+    assert_eq!(
+        *viewer(&harness).view().kind_of(kymo_core::ChannelId(0)),
+        pulse
+    );
+}
+
+/// A stim channel given another type is drawn as a signal (a scale bar of its own, its DC
+/// removed if its type's is) and its stim annotations go; From File makes it stim again,
+/// with them.
+#[test]
+fn a_stim_channel_made_misc_loses_its_annotations_until_from_file() {
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let status = channel_named(&harness, "Status");
+    let before = stim_annotations(&harness);
+    assert!(!before.is_empty());
+    let bars = |h: &Harness<'_, KymoApp>| {
+        viewer(h)
+            .scale_bars()
+            .iter()
+            .filter(|(b, _)| b.kind == ChannelKind::MISC)
+            .count()
+    };
+    assert_eq!(bars(&harness), 0);
+
+    change_type(&mut harness, "Status", &[OTHER_TYPES]);
+    harness.get_by_label("Filter Other Types").type_text("misc");
+    harness.run_steps(2);
+    menu_path(&mut harness, &["Misc"]);
+    harness.run_steps(2);
+    assert_eq!(*viewer(&harness).view().kind_of(status), ChannelKind::MISC);
+    assert!(stim_annotations(&harness).is_empty());
+    assert_eq!(bars(&harness), 1);
+    // Stim is never offered, not even under Other Types.
+    channel_options(&mut harness, "Status");
+    menu_path(&mut harness, &[CHANGE_TYPE]);
+    assert!(harness.query_by_label("Stim").is_none());
+    menu_path(&mut harness, &[OTHER_TYPES]);
+    harness.get_by_label("Filter Other Types").type_text("stim");
+    harness.run_steps(2);
+    harness.get_by_label("No channel types match.");
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+
+    change_type(&mut harness, "Status", &["From File (Stim)"]);
+    harness.run_steps(2);
+    assert!(viewer(&harness).view().kind_of(status).is_stim());
+    assert_stim(&stim_annotations(&harness), &before);
+    assert_eq!(bars(&harness), 0);
 }
 
 /// File → Recording Info…, ⌘I and the format's button open the Recording Info window; ⌘I
