@@ -374,7 +374,8 @@ fn presets_open_with_their_channels_and_events() {
             uv(Eeg),
             uv(Eeg),
             ch(Ecg, "mV", &filtered),
-            ch(Eeg, "%", "LP:1Hz"),
+            // Not a voltage, without a type prefix: Misc.
+            ch(Misc, "%", "LP:1Hz"),
             ch(Stim, "Boolean", ""),
         ]
     );
@@ -580,12 +581,15 @@ fn units_from_codes_and_texts() {
     );
     assert_eq!(
         unit(512, b""),
-        (String::new(), None, ChannelKind::EEG, vec![])
+        (String::new(), None, ChannelKind::MISC, vec![])
     );
-    assert_eq!(unit(544, b""), ("%".into(), None, ChannelKind::EEG, vec![]));
+    assert_eq!(
+        unit(544, b""),
+        ("%".into(), None, ChannelKind::MISC, vec![])
+    );
     assert_eq!(
         unit(6048, b""),
-        ("\u{b0}C".into(), None, ChannelKind::EEG, vec![])
+        ("\u{b0}C".into(), None, ChannelKind::MISC, vec![])
     );
     // No code: the obsolete text field.
     assert_eq!(

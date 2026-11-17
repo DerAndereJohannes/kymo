@@ -188,8 +188,9 @@ fn infers_kinds_and_units_from_labels() {
     let h = parse(&bytes).header;
     let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind.clone()).collect();
     use crate::kinds::*;
-    // EDF+ separates the type from the name with a space; "EOG-L" has none, so it is EEG.
-    assert_eq!(kinds, [Stim, Stim, Eeg, Ecg, Eeg]);
+    // EDF+ separates the type from the name with a space; "EOG-L" has none, and no unit, so
+    // it is Misc.
+    assert_eq!(kinds, [Stim, Stim, Eeg, Ecg, Misc]);
     let units: Vec<(&str, Option<f64>)> = h
         .channels
         .iter()
@@ -205,6 +206,25 @@ fn infers_kinds_and_units_from_labels() {
             ("", None)
         ]
     );
+}
+
+/// A channel without a type prefix is EEG only with a voltage unit (EDF's "UV" too); with
+/// another unit or none it is Misc; a prefix wins over the unit.
+#[test]
+fn a_channel_without_a_prefix_is_eeg_only_in_volts() {
+    let s = spec(Format::Edf);
+    let mut bytes = generated(&s);
+    let ns = s.signal_count();
+    let labels: [&[u8]; 5] = [b"DC03", b"Fz", b"Temp body", b"Pulse", b"Cz"];
+    let dimensions: [&[u8]; 5] = [b"BPM", b"uV", b"degC", b"", b"UV"];
+    for i in 0..5 {
+        set_signal(&mut bytes, ns, 0, i, labels[i]);
+        set_signal(&mut bytes, ns, 2, i, dimensions[i]);
+    }
+    let h = parse(&bytes).header;
+    let kinds: Vec<ChannelKind> = h.channels.iter().map(|c| c.kind.clone()).collect();
+    use crate::kinds::*;
+    assert_eq!(kinds, [Misc, Eeg, ChannelKind::named("Temp"), Misc, Eeg]);
 }
 
 #[test]

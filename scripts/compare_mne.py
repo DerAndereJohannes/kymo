@@ -45,6 +45,9 @@ Known differences between the readers, which the comparison accounts for:
   compared with mne.find_events(consecutive=True, shortest_event=1, mask=0xFFFF for
   BDF), at their position in MNE's joined data. MNE counts only positive codes there,
   so Kymo's events with negative codes (possible in EDF only) are left out.
+- MNE makes every EDF, BDF and GDF channel without a type prefix in its label EEG; Kymo
+  only those in a voltage unit, the others misc (BPM, %, G, no unit), as BrainVision's
+  rule does. Channel kinds are not compared for these formats.
 - Float samples may be NaN (BrainVision float32); they must be NaN in both readers.
 - Kymo scales units MNE reads as they are (MNE scales only the units in MNE_SCALED):
   in EDF, nV and the magnetic units (fT, fT/cm, ...); in BrainVision, units with the Greek

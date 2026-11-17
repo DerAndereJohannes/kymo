@@ -374,7 +374,9 @@ fn usable_records(
 /// EOG, ERG, EMG, MCG, EP, Temp, Resp, SaO2, Light, Sound, Event) and MNE's others (EKG,
 /// sEEG, ECoG, DBS, Bio, Misc, Stim), in any case, and BioSemi's status channel. A magnetic
 /// unit makes a MEG channel whatever the label (T: magnetometer, T/m: gradiometer). Anything
-/// else is EEG, as in MNE.
+/// else is EEG if its unit is a voltage and Misc otherwise (a pulse in BPM, a saturation in
+/// %, an accelerometer in G, a channel without a unit), as BrainVision's and EEGLAB's
+/// channels are; MNE makes them all EEG.
 ///
 /// TODO(later): also recognize the type prefix without a space ("EOG-L", "EMG_chin",
 /// "ECGII"), and decide whether the channel name keeps the full label or drops the prefix
@@ -395,7 +397,8 @@ pub(crate) fn kind(label: &str, unit: &Unit) -> ChannelKind {
             | "RESP" | "SAO2" | "LIGHT" | "SOUND" | "EVENT" | "SEEG" | "ECOG" | "DBS"
             | "BIO" | "MISC" | "STIM"),
         ) => ChannelKind::named(prefix),
-        _ => ChannelKind::EEG,
+        _ if unit.quantity() == Some(Quantity::Voltage) => ChannelKind::EEG,
+        _ => ChannelKind::MISC,
     }
 }
 
