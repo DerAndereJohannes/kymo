@@ -337,7 +337,8 @@ fn clicking_a_name_toggles_bad() {
 }
 
 /// The channel list shows units as the readout does: µV for EEG, mV for sEEG, whatever the
-/// file stores (uV for both here).
+/// file stores (uV for both here), in the type's row, as each type's channels share theirs;
+/// the channels' rows show none.
 #[test]
 fn the_channel_list_shows_display_units() {
     use egui::accesskit::Role;
@@ -352,21 +353,117 @@ fn the_channel_list_shows_display_units() {
             .click();
         harness.run_steps(2);
     }
-    let unit_of = |name: &str| {
-        let y = harness
-            .get_by_role_and_label(Role::Label, name)
-            .rect()
-            .center()
-            .y;
+    let unit_in_row = |label: &str| {
+        let y = harness.get_by_label(label).rect().center().y;
         ["\u{b5}V", "mV", "uV"].into_iter().find(|unit| {
             harness
                 .query_all_by_role_and_label(Role::Label, unit)
                 .any(|n| (n.rect().center().y - y).abs() < 1.0)
         })
     };
-    assert_eq!(unit_of("EEG Fz"), Some("\u{b5}V"));
-    assert_eq!(unit_of("SEEG LA1"), Some("mV"));
+    assert_eq!(unit_in_row("Show EEG channels"), Some("\u{b5}V"));
+    assert_eq!(unit_in_row("Show sEEG channels"), Some("mV"));
+    assert_eq!(unit_in_row("Show EEG Fz"), None);
+    assert_eq!(unit_in_row("Show SEEG LA1"), None);
     assert!(harness.query_by_label("uV").is_none());
+}
+
+/// Without a type row whose channels differ in unit there is no unit column: a long name has
+/// all the room up to its Bad toggle, so it stays whole in a sidebar just wide enough for it,
+/// and is shortened only in a narrower one.
+#[test]
+fn without_units_in_channel_rows_names_take_their_room() {
+    use kymo_testgen::{ChannelSpec, Spec, XdfFormat};
+    let long = "Interpupillary distance, both eyes";
+    let channels = vec![
+        ChannelSpec::xdf("Fz", "EEG", "microvolts", 100, XdfFormat::F32),
+        ChannelSpec::xdf(long, "EEG", "microvolts", 100, XdfFormat::F32),
+    ];
+    let file = TempFile::written(&Spec::new(kymo_testgen::Format::Xdf, channels, 1.0, 30));
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let name = |h: &Harness<'_, KymoApp>| {
+        h.get_by_role_and_label(egui::accesskit::Role::Label, long)
+            .rect()
+    };
+    sidebar_to(&mut harness, 600.0);
+    let whole = name(&harness).width();
+    // The room past its Bad toggle, up to the row's end (where the type rows' menus end).
+    let bad = harness.get_by_label(&format!("{long} bad")).rect().right();
+    let end = harness
+        .get_by_label("Options for EEG channels")
+        .rect()
+        .right();
+    let free = end - bad;
+    assert!(free > 20.0, "{free}");
+    let edge = viewer(&harness).layout().unwrap().names.left() - 8.0;
+    sidebar_to(&mut harness, edge - (free - 3.0));
+    assert_eq!(name(&harness).width(), whole);
+    sidebar_to(&mut harness, edge - (free + 12.0));
+    assert!(name(&harness).width() < whole);
+}
+
+/// A type row whose channels differ in unit (Misc in V, % and none, as OpenSignals streams
+/// have) shows none, and each of its channels shows its own, in one column; the other type
+/// rows show theirs, their channels none.
+#[test]
+fn channels_of_a_type_differing_in_unit_show_theirs() {
+    use egui::accesskit::Role;
+    use kymo_testgen::{ChannelSpec, Spec, XdfFormat, XdfStream};
+    let channel = |label: &str, kind: &str, unit: &str| {
+        ChannelSpec::xdf(label, kind, unit, 100, XdfFormat::F32)
+    };
+    let channels = vec![
+        channel("Fz", "EEG", "microvolts"),
+        channel("Cz", "EEG", "microvolts"),
+        channel("EDA", "Misc", "V"),
+        channel("SpO2", "Misc", "percent"),
+        channel("Count", "Misc", ""),
+        channel("Fire", "Button", ""),
+    ];
+    let mut spec = Spec::new(kymo_testgen::Format::Xdf, channels, 1.0, 30);
+    spec.xdf.streams = vec![
+        XdfStream::new(1, "Amp", "EEG", vec![0, 1]),
+        XdfStream::new(2, "OpenSignals", "Misc", vec![2, 3, 4, 5]),
+    ];
+    let file = TempFile::written(&spec);
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let in_row = |h: &Harness<'_, KymoApp>, label: &str| -> Vec<String> {
+        let y = h.get_by_label(label).rect().center().y;
+        h.query_all_by_role(Role::Label)
+            .filter(|n| (n.rect().center().y - y).abs() < 1.0)
+            .filter_map(|n| n.accesskit_node().value())
+            .collect()
+    };
+    assert_eq!(
+        in_row(&harness, "Show EEG channels in Amp"),
+        ["EEG", "\u{b5}V", "2"]
+    );
+    assert_eq!(in_row(&harness, "Show Fz"), ["Fz"]);
+    assert_eq!(
+        in_row(&harness, "Show Misc channels in OpenSignals"),
+        ["Misc", "3"]
+    );
+    assert_eq!(in_row(&harness, "Show EDA"), ["EDA", "V"]);
+    assert_eq!(in_row(&harness, "Show SpO2"), ["SpO2", "%"]);
+    assert_eq!(in_row(&harness, "Show Count"), ["Count"]);
+    // A type whose channels have no unit shows none.
+    assert_eq!(
+        in_row(&harness, "Show Button channels in OpenSignals"),
+        ["Button", "1"]
+    );
+    let left = |text: &str| {
+        harness
+            .get_by_role_and_label(Role::Label, text)
+            .rect()
+            .left()
+    };
+    assert_eq!(left("V"), left("%"));
+    // The type row's whole text on hover gives its unit.
+    let eeg = kind_name_rect_in(&harness, "EEG", "Amp").center();
+    hover(&mut harness, eeg);
+    assert!(tooltip(&mut harness, "EEG\n2 channels \u{b7} \u{b5}V"));
 }
 
 #[test]
@@ -1149,16 +1246,17 @@ fn kind_name_rect(harness: &Harness<'_, KymoApp>, name: &str) -> egui::Rect {
         .unwrap_or_else(|| panic!("no name in {name}'s row"))
 }
 
-/// The left edges of the sidebar list's labels `label`; panics unless there are some and
-/// they are all the same.
-fn column_left(harness: &Harness<'_, KymoApp>, role: egui::accesskit::Role, label: &str) -> f32 {
-    let lefts: Vec<f32> = harness
-        .query_all_by_role_and_label(role, label)
-        .map(|n| n.rect().left())
-        .collect();
-    assert!(!lefts.is_empty(), "no {label}");
-    assert!(lefts.iter().all(|&x| x == lefts[0]), "{label}: {lefts:?}");
-    lefts[0]
+/// As [`kind_name_rect`], for the type row of `name` in `stream`.
+fn kind_name_rect_in(harness: &Harness<'_, KymoApp>, name: &str, stream: &str) -> egui::Rect {
+    use egui::accesskit::Role;
+    let checkbox = harness
+        .get_by_role_and_label(Role::CheckBox, &format!("Show {name} channels in {stream}"))
+        .rect();
+    harness
+        .query_all_by_role_and_label(Role::Label, name)
+        .map(|n| n.rect())
+        .find(|r| (r.center().y - checkbox.center().y).abs() < 1.0)
+        .unwrap_or_else(|| panic!("no name in {name}'s row in {stream}"))
 }
 
 #[test]
@@ -1183,7 +1281,6 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
     ready(&mut harness);
     assert!(harness.query_by_label("LONGCHANNELNAME1").is_none());
     let bad = harness.get_by_label("A1 bad").rect().left();
-    let uv = column_left(&harness, Role::Label, "\u{b5}V");
 
     // Scrolled to the end, where the long name and Status are.
     let a1 = harness
@@ -1205,7 +1302,6 @@ fn the_channel_list_keeps_its_columns_while_scrolling() {
         long.right() < bad,
         "{long:?} reaches the bad toggles at {bad}"
     );
-    assert_eq!(column_left(&harness, Role::Label, "\u{b5}V"), uv);
     // Codes have no unit, whatever the file says.
     assert!(harness.query_by_label("Boolean").is_none());
 }
@@ -1250,7 +1346,7 @@ fn types_rows_give_their_rates() {
     hover(&mut harness, eeg.center());
     assert!(tooltip(
         &mut harness,
-        "EEG\n5 channels \u{b7} 256 to 512 Hz"
+        "EEG\n5 channels \u{b7} \u{b5}V \u{b7} 256 to 512 Hz"
     ));
     // A row too narrow (the narrowest sidebar, in a large font) leaves the count and rate
     // out, and still shows them on hover.
@@ -1274,7 +1370,7 @@ fn types_rows_give_their_rates() {
     hover(&mut harness, egui::pos2(menu - 10.0, row));
     assert!(tooltip(
         &mut harness,
-        "EEG\n5 channels \u{b7} 256 to 512 Hz"
+        "EEG\n5 channels \u{b7} \u{b5}V \u{b7} 256 to 512 Hz"
     ));
     hover(&mut harness, egui::pos2(900.0, 650.0));
     harness.ctx.all_styles_mut(|s| {
@@ -5851,12 +5947,44 @@ fn streams_of_several_types_group_their_channels_by_type() {
         left(&harness, &format!("Show {ipd}")) - tracker,
         2.0 * level
     ));
-    // Units line up across the levels.
+    // AUX's channels differ in unit, so each shows its own, in one column; Gaze's one
+    // channel's is in its type's row.
     sidebar_to(&mut harness, 600.0);
-    let unit = |h: &Harness<'_, KymoApp>, text: &str| {
-        h.get_by_role_and_label(Role::Label, text).rect().left()
+    // The label `text` in the row of `of`.
+    let unit = |h: &Harness<'_, KymoApp>, of: &str, text: &str| {
+        let y = h.get_by_label(of).rect().center().y;
+        h.query_all_by_role_and_label(Role::Label, text)
+            .map(|n| n.rect())
+            .find(|r| (r.center().y - y).abs() < 1.0)
+            .unwrap()
     };
-    assert_eq!(unit(&harness, "mm"), unit(&harness, "normalized_signed"));
+    let por = "POR X - (Point of regard), left eye";
+    assert_eq!(
+        unit(&harness, "Show AUX1", "\u{b5}V").left(),
+        unit(&harness, &format!("Show {por}"), "normalized_signed").left()
+    );
+    let gaze = harness
+        .get_by_label("Show Gaze channels in Tracker")
+        .rect()
+        .center()
+        .y;
+    let ipd = format!("Show {ipd}");
+    assert!(
+        (unit(&harness, "Show Gaze channels in Tracker", "mm")
+            .center()
+            .y
+            - gaze)
+            .abs()
+            < 1.0
+    );
+    assert!(
+        harness
+            .query_all_by_role_and_label(Role::Label, "mm")
+            .all(
+                |n| (n.rect().center().y - harness.get_by_label(&ipd).rect().center().y).abs()
+                    >= 1.0
+            )
+    );
 
     // Its box shows and hides only its channels in this stream.
     click_in_list(&mut harness, Role::CheckBox, "Show AUX channels in Amp");

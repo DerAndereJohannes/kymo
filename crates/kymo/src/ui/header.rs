@@ -1,6 +1,6 @@
 //! The sidebar: the file's header and its channels.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use eframe::egui::{
     self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
@@ -820,10 +820,17 @@ struct Measured {
 
 impl Columns {
     /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
-    /// font, scale and set of units shown (which follow the channels' types in `view`), and
-    /// again after [`forget_text_widths`]; `grouped`, the names within their streams (see
-    /// [`list_name`]).
-    fn of(ui: &Ui, document: &Document, view: &ViewState, grouped: bool) -> Columns {
+    /// font, scale and set of units shown, and again after [`forget_text_widths`]; `grouped`,
+    /// the names within their streams (see [`list_name`]). Only channels of a type row whose
+    /// channels differ in unit show theirs (see [`shared_units`]); without any, the unit
+    /// column is 0 wide.
+    fn of(
+        ui: &Ui,
+        document: &Document,
+        view: &ViewState,
+        grouped: bool,
+        shared: &HashMap<Group, Option<String>>,
+    ) -> Columns {
         let font = TextStyle::Body.resolve(ui.style());
         let pixels_per_point = ui.ctx().pixels_per_point();
         let rec = &document.recording;
@@ -831,7 +838,11 @@ impl Columns {
         let units: BTreeSet<String> = channels
             .iter()
             .enumerate()
-            .map(|(c, channel)| display_unit(view.kind_of(ChannelId(c as u32)), &channel.unit).0)
+            .filter_map(|(c, channel)| {
+                let id = ChannelId(c as u32);
+                let mixed = shared.get(&view.group_of(id)).is_some_and(Option::is_none);
+                mixed.then(|| display_unit(view.kind_of(id), &channel.unit).0)
+            })
             .collect();
         let key = Id::unique((
             "kymo channel columns",
@@ -881,6 +892,12 @@ impl Columns {
     /// is under.) `fixed` is what every row has besides (the checkbox, the Bad toggle and
     /// the gaps between them and the name). Without `rated` rows have no rate column.
     fn fit(&self, width: f32, fixed: f32, gap: f32, min_name: f32, min_unit: f32) -> RowColumns {
+        if self.unit == 0.0 {
+            return RowColumns {
+                name: (width - fixed).clamp(0.0, self.name),
+                unit: None,
+            };
+        }
         let min_name = min_name.min(self.name);
         let min_unit = min_unit.min(self.unit);
         // The room for the name and the unit.
@@ -950,6 +967,25 @@ fn group_rate(document: &Document, view: &ViewState, group: &Group) -> GroupRate
 /// A channel's group in the order: its stream (by its index in the recording; `None`
 /// without streams) and its type (see [`ViewState::group_of`]).
 type Group = (Option<usize>, ChannelKind);
+
+/// Per type row (group), the unit its channels share as shown (see [`display_unit`]; empty
+/// for none), or `None` where they differ: then each channel's row shows its own.
+fn shared_units(document: &Document, view: &ViewState) -> HashMap<Group, Option<String>> {
+    let mut shared: HashMap<Group, Option<String>> = HashMap::new();
+    for (c, channel) in document.recording.channels().iter().enumerate() {
+        let id = ChannelId(c as u32);
+        let unit = display_unit(view.kind_of(id), &channel.unit).0;
+        shared
+            .entry(view.group_of(id))
+            .and_modify(|s| {
+                if s.as_ref() != Some(&unit) {
+                    *s = None;
+                }
+            })
+            .or_insert(Some(unit));
+    }
+    shared
+}
 
 /// One row of the channel list.
 #[derive(Clone, Debug, PartialEq)]
@@ -1070,7 +1106,8 @@ fn channel_list(
     let items = list_items(document, view, grouped, &closed);
     let mut toggled = None;
     let mut all_types = false;
-    let columns = Columns::of(ui, document, view, grouped);
+    let shared = shared_units(document, view);
+    let columns = Columns::of(ui, document, view, grouped, &shared);
     let row_height = ui.spacing().interact_size.y;
     let gap = LIST_GAP;
     let body = TextStyle::Body.resolve(ui.style());
@@ -1160,8 +1197,14 @@ fn channel_list(
                         let rate = in_stream
                             .is_none()
                             .then(|| group_rate(document, view, &group));
+                        let unit = shared
+                            .get(&group)
+                            .cloned()
+                            .flatten()
+                            .filter(|u| !u.is_empty());
                         let kind = KindRow {
                             group,
+                            unit,
                             label: name,
                             open: !closed.contains(&fold),
                             // Under a stream, the stream's row has the rate.
@@ -1188,17 +1231,20 @@ fn channel_list(
                 let listed = list_name(channel, grouped);
                 let grid = rec.grid(channel.grid);
                 let (unit, _) = display_unit(view.kind_of(id), &channel.unit);
+                // Its own unit only where its type row's channels differ in unit; otherwise
+                // the type row shows it.
+                let own_unit = shared.get(&group).is_some_and(Option::is_none);
+                let unit_width = fit.unit.filter(|_| own_unit);
                 let short_name = elide_middle(ui.ctx(), listed, &body, name_width);
-                let short_unit = fit
-                    .unit
-                    .and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
+                let short_unit =
+                    unit_width.and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
                 // The row's whole text where some of it is shortened or left out, or its
                 // rate isn't its type's alone.
                 let mixed = mixed_rates.contains(&group);
                 let full = (short_name.is_some()
                     || listed != name
                     || short_unit.is_some()
-                    || fit.unit.is_none()
+                    || (own_unit && unit_width.is_none())
                     || mixed)
                     .then(|| {
                         let unit = if unit.is_empty() {
@@ -1279,7 +1325,7 @@ fn channel_list(
                 // Each cell shows the row's whole text too, as the name hides the row from
                 // the pointer.
                 let mut cells = vec![row_response];
-                if let Some(width) = fit.unit {
+                if let Some(width) = unit_width {
                     let response = cell(
                         ui,
                         width,
@@ -1525,6 +1571,8 @@ fn kind_label(kind: &ChannelKind, stream: Option<&str>) -> String {
 /// A type's row in the channel list, as [`kind_row`] shows it.
 struct KindRow {
     group: Group,
+    /// The unit its channels share, if they share one.
+    unit: Option<String>,
     /// What its controls are named (see [`kind_label`]).
     label: String,
     open: bool,
@@ -1535,10 +1583,11 @@ struct KindRow {
 /// A type's row in the channel list: a chevron that shows or hides its channels' rows, a
 /// checkbox that shows or hides them in the traces (mixed while some are shown), its swatch
 /// (see [`type_swatch`]), its name in its trace color (a click scrolls the traces to its
-/// first shown channel), at the right its number of channels and, unless a stream's row
+/// first shown channel), the unit its channels share, if they do (see [`shared_units`]), at
+/// the right its number of channels and, unless a stream's row
 /// above gives it, their rate ("2 · 512 Hz"), as a stream's row has them, and its menu at
-/// the end (see [`type_menu`]); a narrow row leaves the count and rate out, and hovering
-/// shows it all. Returns whether the chevron was clicked, and whether the menu asked for the
+/// the end (see [`type_menu`]); a narrow row leaves the count and rate out, then the unit,
+/// and hovering shows it all. Returns whether the chevron was clicked, and whether the menu asked for the
 /// Channel Types window.
 fn kind_row(
     ui: &mut Ui,
@@ -1549,6 +1598,7 @@ fn kind_row(
 ) -> (bool, bool) {
     let KindRow {
         group,
+        unit,
         label,
         open,
         rate,
@@ -1577,20 +1627,34 @@ fn kind_row(
         })
     };
     let channels = format!("{all} channel{}", plural(all));
+    let in_unit = unit
+        .as_ref()
+        .map(|u| format!(" \u{b7} {u}"))
+        .unwrap_or_default();
     let (count, full) = match &rate {
         Some(rate) => (
             format!("{all} \u{b7} {}", rate.list),
-            format!("{name}\n{channels} \u{b7} {}", rate.full),
+            format!("{name}\n{channels}{in_unit} \u{b7} {}", rate.full),
         ),
-        None => (all.to_string(), format!("{name}\n{channels}")),
+        None => (all.to_string(), format!("{name}\n{channels}{in_unit}")),
     };
     let gap = ui.spacing().item_spacing.x;
     // The menu at the end of the row, always.
     let menu = menu_width(row_height);
     let room = (ui.available_width() - menu - gap).max(0.0);
     let name_width = width(name);
-    let show_count = name_width + gap + width(&count) <= room;
-    let name_room = if show_count {
+    // With too little room the count goes first, then the unit.
+    let unit_width = unit.as_deref().map_or(0.0, |u| gap + width(u));
+    let count_width = gap + width(&count);
+    let (show_unit, show_count) = [(true, true), (true, false), (false, false)]
+        .into_iter()
+        .find(|&(u, c)| {
+            name_width + f32::from(u8::from(u)) * unit_width + f32::from(u8::from(c)) * count_width
+                <= room
+        })
+        .unwrap_or((false, false));
+    let show_unit = show_unit && unit.is_some();
+    let name_room = if show_unit || show_count {
         name_width
     } else {
         room.clamp(0.0, name_width)
@@ -1624,8 +1688,18 @@ fn kind_row(
     } else {
         response.on_hover_text(&full);
     }
-    // The name hides the row from the pointer: the count shows the row's whole text too.
+    // The name hides the row from the pointer: the unit and count show the row's whole text
+    // too.
     let mut cells = vec![row];
+    if let Some(unit) = unit.filter(|_| show_unit) {
+        cells.push(
+            ui.add(
+                Label::new(RichText::new(unit).weak())
+                    .selectable(false)
+                    .extend(),
+            ),
+        );
+    }
     let all_types = ui
         .with_layout(Layout::right_to_left(Align::Center), |ui| {
             let all_types = type_menu(ui, &kind, &label, types, row_height);
