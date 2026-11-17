@@ -20,7 +20,8 @@ use crate::annotations::{self, Legend, Marks};
 use crate::annotations::{AnnotationColor, AnnotationColors};
 use crate::document::{Document, Summary, format_duration};
 use crate::history::{self, Change, History};
-use crate::keymap::Keymap;
+use crate::keymap::{Keymap, Platform};
+use crate::measure::{self, Measurement, Span};
 use crate::render::{Frame, Scene};
 use crate::scale;
 use crate::scale_bar::{ScaleBar, reading_unit, scale_bars};
@@ -82,6 +83,12 @@ const PREFETCH_SHARE: usize = 2;
 const MIN_DRAG: f32 = 3.0;
 /// How near an edge of the selected annotation, in points, a drag resizes it.
 const EDGE_GRIP: f32 = 4.0;
+/// How opaque the measurement's band is.
+const MEASURE_ALPHA: f32 = 0.12;
+/// Between the measurement's label and its line, in points.
+const MEASURE_LABEL_GAP: f32 = 4.0;
+/// Below the annotation labels, the measurement's label's top, in points.
+const MEASURE_LABEL_TOP: f32 = 4.0;
 /// Width of the selected annotation's outline, in points.
 const OUTLINE_WIDTH: f32 = 2.0;
 /// The description new annotations start with: MNE treats descriptions starting with
@@ -244,6 +251,14 @@ pub struct Viewer {
     saved_to: Option<std::path::PathBuf>,
     /// Where the channels were saved or loaded from last.
     channels_path: Option<std::path::PathBuf>,
+    /// The measurement on screen, and the one a ⇧-drag is making (shown once it reaches
+    /// [`MIN_DRAG`]).
+    measurement: Option<Measurement>,
+    measuring: Option<Measurement>,
+    /// The measurement's label's width at the last frame, to place it beside the band.
+    measure_label_width: f32,
+    /// What the status line suggests while ⇧ is held over the traces.
+    shift_hint: Option<&'static str>,
 }
 
 impl Viewer {
@@ -296,6 +311,10 @@ impl Viewer {
             typing: false,
             saved_to: None,
             channels_path: None,
+            measurement: None,
+            measuring: None,
+            measure_label_width: 0.0,
+            shift_hint: None,
             history: History::default(),
             can_merge: Cell::new(None),
         }
@@ -634,9 +653,13 @@ impl Viewer {
                 }
                 return true;
             }
-            // Esc first takes back a drag, then deselects the annotation, then the channels.
+            // Esc first takes back a drag, then removes the measurement, then deselects the
+            // annotation, then the channels.
             Action::Deselect => {
-                if !self.cancel_drag() && self.selected.take().is_none() {
+                if !self.cancel_drag()
+                    && !self.clear_measurement()
+                    && self.selected.take().is_none()
+                {
                     self.view.clear_selection();
                 }
                 return true;
@@ -680,6 +703,24 @@ impl Viewer {
     /// Whether a drag is creating, moving or resizing an annotation.
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// The measurement on screen, while a ⇧-drag makes it too.
+    pub fn measurement(&self) -> Option<Measurement> {
+        self.measurement
+    }
+
+    /// Whether a measurement is on screen or being made, for Esc to remove.
+    pub fn measured(&self) -> bool {
+        self.measurement.is_some() || self.measuring.is_some()
+    }
+
+    /// Removes the measurement, ending a ⇧-drag making one; returns whether there was one.
+    fn clear_measurement(&mut self) -> bool {
+        let measured = self.measured();
+        self.measurement = None;
+        self.measuring = None;
+        measured
     }
 
     /// Ends a drag, recording it (see [`record`](Self::record)).
@@ -996,7 +1037,8 @@ impl Viewer {
             ),
             None => "Editing annotations".to_owned(),
         });
-        let left = [mode.unwrap_or_default(), left, self.pointed.clone()]
+        let hint = self.shift_hint.unwrap_or_default().to_owned();
+        let left = [mode.unwrap_or_default(), hint, left, self.pointed.clone()]
             .into_iter()
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
@@ -1265,6 +1307,7 @@ impl Viewer {
         } else {
             Vec::new()
         };
+        let label_width = self.draw_measurement(ui, id, &overlay, traces, size_px[0]);
 
         // Channel names, centered on their rows, shortened in the middle where too long.
         let names_painter = painter.with_clip_rect(names);
@@ -1288,6 +1331,93 @@ impl Viewer {
             );
         }
         self.scale_bars = bars;
+        self.measure_label_width = label_width.unwrap_or(0.0);
+    }
+
+    /// The measurement over the traces: a shaded band between a line at either end, on
+    /// whole pixels, and its label in an area of its own (text that screen readers read)
+    /// at the band's top, beside its later end or, without room there, its earlier one.
+    /// Returns the label's width, if it is shown.
+    fn draw_measurement(
+        &self,
+        ui: &Ui,
+        id: egui::Id,
+        painter: &egui::Painter,
+        traces: Rect,
+        width_px: u32,
+    ) -> Option<f32> {
+        let measurement = self.measurement?;
+        let rec = &self.document.recording;
+        let span = measurement.span(rec);
+        let width = f64::from(traces.width());
+        let ppp = ui.pixels_per_point();
+        let x = |t: f64| {
+            let x = traces.left() + self.view.x_at(t, width) as f32;
+            (x * ppp).round() / ppp
+        };
+        let (left, right) = (x(span.start), x(span.end));
+        if right < traces.left() || left > traces.right() {
+            return None;
+        }
+        let visuals = ui.visuals();
+        let color = visuals.strong_text_color();
+        let band = Rect::from_x_y_ranges(left..=right, traces.y_range());
+        painter.rect_filled(band, 0.0, color.gamma_multiply(MEASURE_ALPHA));
+        for x in [left, right] {
+            let line = Rect::from_x_y_ranges(x..=x + 1.0 / ppp, traces.y_range());
+            painter.rect_filled(line, 0.0, color);
+        }
+
+        let [interval, values] = self.measurement_text(measurement, &span, width_px);
+        let small = TextStyle::Small.resolve(ui.style());
+        let top = traces.top() + ui.fonts_mut(|f| f.row_height(&small)) + MEASURE_LABEL_TOP;
+        let room = self.measure_label_width + MEASURE_LABEL_GAP;
+        let (pivot, at) = if right + room <= traces.right() {
+            (Align2::LEFT_TOP, right + MEASURE_LABEL_GAP)
+        } else if left - room >= traces.left() {
+            (Align2::RIGHT_TOP, left - MEASURE_LABEL_GAP)
+        } else {
+            (Align2::RIGHT_TOP, right - MEASURE_LABEL_GAP)
+        };
+        let plate = visuals.extreme_bg_color.gamma_multiply(LABEL_PLATE_ALPHA);
+        let stroke = visuals.widgets.noninteractive.bg_stroke;
+        let shown = egui::Area::new(id.with("measurement"))
+            .pivot(pivot)
+            .fixed_pos(pos2(at, top))
+            .constrain_to(traces)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(plate)
+                    .stroke(stroke)
+                    .corner_radius(2.0)
+                    .inner_margin(vec2(4.0, 2.0))
+                    .show(ui, |ui| {
+                        ui.style_mut().interaction.selectable_labels = false;
+                        ui.label(egui::RichText::new(interval).small().color(color));
+                        ui.label(egui::RichText::new(values).small().color(color));
+                    });
+            });
+        Some(shown.response.rect.width())
+    }
+
+    /// A measurement's label: its interval, and its channel's readings at both ends as the
+    /// status line reads them (measured from the window's mean with DC removal, in the
+    /// scale bar's unit).
+    fn measurement_text(&self, m: Measurement, span: &Span, width_px: u32) -> [String; 2] {
+        let rec = &self.document.recording;
+        let view = self.view.tile_view(width_px);
+        let (unit, factor) = reading_unit(rec, &self.view, m.channel);
+        let baseline = self.baseline(m.channel);
+        let read = |t: f64| {
+            readout::read(rec, self.service().cache(), &view, m.channel, t)
+                .map(|r| r.relative_to(baseline).scaled(factor))
+        };
+        let name = &rec.channel(m.channel).name;
+        [
+            measure::interval_text(span),
+            measure::values_text(name, &unit, read(span.start), read(span.end)),
+        ]
     }
 
     /// The scale bars, at the right edge of `traces`: a line one physical pixel wide in its
@@ -1383,12 +1513,56 @@ impl Viewer {
         if response.is_pointer_button_down_on() {
             ui.memory_mut(|m| m.stop_text_input());
         }
-        if self.editing {
+        let shift = ui.input(|i| i.modifiers.shift);
+        if response.drag_started()
+            && shift
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        {
+            self.finish_drag();
+            self.measurement = None;
+            self.measuring = self
+                .channel_near(f64::from(origin.y - traces.top()), area.height)
+                .map(|channel| {
+                    let press = self.time_at_x(f64::from(origin.x - traces.left()), area.width);
+                    Measurement {
+                        channel,
+                        press,
+                        reach: press,
+                    }
+                });
+        }
+        // Any click removes the measurement (and in annotation mode selects as ever).
+        if response.clicked() {
+            self.measurement = None;
+        }
+        if let Some(making) = &mut self.measuring {
+            if response.dragged()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                let x = f64::from(p.x - traces.left());
+                let duration = self.view.duration();
+                making.reach = self.view.time_at(x, area.width).clamp(0.0, duration);
+                let reach = x - self.view.x_at(making.press, area.width);
+                self.measurement = (reach.abs() >= f64::from(MIN_DRAG)).then_some(*making);
+            }
+            if response.drag_stopped() {
+                self.measuring = None;
+            }
+        } else if self.editing {
             self.edit_input(ui, &response, traces, width_px);
         } else if response.dragged() {
             self.view
                 .pan_points(f64::from(response.drag_delta().x), area.width);
         }
+        let over_traces = response.hovered() || self.measuring.is_some();
+        if self.measuring.is_some() || shift && response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        }
+        self.shift_hint =
+            (shift && over_traces && self.measuring.is_none()).then(|| match keymap.platform() {
+                Platform::Mac => "\u{21e7}-drag to measure",
+                Platform::Windows | Platform::Linux => "Shift-drag to measure",
+            });
         // A click on a name marks the channel bad or good.
         let names_response = ui.interact(names, id.with("names"), Sense::click());
         let channel_at = |p: Pos2| {
@@ -1560,6 +1734,20 @@ impl Viewer {
         if let Some(cursor) = cursor {
             ui.ctx().set_cursor_icon(cursor);
         }
+    }
+
+    /// The time `x` points from the trace area's left edge (`width` wide), within the
+    /// recording.
+    fn time_at_x(&self, x: f64, width: f64) -> f64 {
+        self.view.time_at(x, width).clamp(0.0, self.view.duration())
+    }
+
+    /// The channel row at `y` points from the trace area's top (`height` high), or the
+    /// last row shown below the rows.
+    fn channel_near(&self, y: f64, height: f64) -> Option<ChannelId> {
+        self.view
+            .channel_at(y.max(0.0), height)
+            .or_else(|| self.view.visible_channels().last().copied())
     }
 
     fn hover_at(&self, pointer: Option<Pos2>, traces: Rect, names: Rect) -> Hover {

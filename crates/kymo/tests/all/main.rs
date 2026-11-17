@@ -14,6 +14,7 @@ mod axis;
 mod frame;
 mod history;
 mod keymap;
+mod measure;
 mod menu;
 mod native_menu;
 mod palette;

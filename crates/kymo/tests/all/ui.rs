@@ -7620,3 +7620,273 @@ fn channels_are_named_within_their_streams() {
             >= 2
     );
 }
+
+/// Two EEG channels, Cz and Pz, at 20 Hz for a minute: 20 s on screen draw every sample.
+fn slow_preset() -> TempFile {
+    use kymo_testgen::{ChannelSpec, Format, Spec};
+    let channels = ["Cz", "Pz"]
+        .map(|label| ChannelSpec::eeg(label, 20, Format::Edf))
+        .to_vec();
+    TempFile::written(&Spec::new(Format::Edf, channels, 1.0, 60))
+}
+
+/// A ⇧-drag from `from` to `to`, through the middle.
+fn shift_drag(harness: &mut Harness<'_, KymoApp>, from: egui::Pos2, to: egui::Pos2) {
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    drag(harness, from, to);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.step();
+}
+
+/// The middle of the first row's height, from the traces' top.
+fn first_row(harness: &Harness<'_, KymoApp>) -> f32 {
+    let traces = viewer(harness).layout().unwrap().traces;
+    0.5 * traces.height() / viewer(harness).view().rows() as f32
+}
+
+/// The measurement label's two lines: its interval, and its readings.
+fn measurement_label(harness: &Harness<'_, KymoApp>) -> Option<[String; 2]> {
+    let line = |text: &str| {
+        harness
+            .query_by_label_contains(text)
+            .and_then(|n| n.accesskit_node().value())
+    };
+    Some([line("\u{394}t ")?, line(" \u{2192} ")?])
+}
+
+/// The measurement's label once both ends read, as tiles may still be arriving.
+fn settled_measurement(harness: &mut Harness<'_, KymoApp>) -> [String; 2] {
+    let start = Instant::now();
+    loop {
+        if let Some(label) = measurement_label(harness)
+            && !label[1].contains(kymo::measure::NO_READING)
+        {
+            return label;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "timed out waiting for the measurement's readings: {:?}",
+            measurement_label(harness)
+        );
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The numbers of a measurement's readings line ("Cz: 1.5 µV → −2 µV · Δ −3.5 µV"), with
+/// the unit of the first.
+fn measured_numbers(line: &str) -> (Vec<f64>, String) {
+    let values = line.split_once(": ").unwrap().1;
+    let mut unit = String::new();
+    let numbers = values
+        .split([' ', '\u{2192}', '\u{b7}', '\u{394}', '\u{2026}'])
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| match part.replace('\u{2212}', "-").parse() {
+            Ok(x) => Some(x),
+            Err(_) => {
+                if unit.is_empty() {
+                    unit = part.to_owned();
+                }
+                None
+            }
+        })
+        .collect();
+    (numbers, unit)
+}
+
+#[test]
+fn shift_dragging_measures_time_and_values() {
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    dc_off(&mut harness);
+    let start = viewer(&harness).view().time();
+    let dy = first_row(&harness);
+    // Off the samples, as a pointer is: 2.05 s and 5.25 s are the nearest, 64 samples
+    // apart. Leftward, to show the order doesn't matter.
+    let from = at_time(&harness, 5.249, dy);
+    let to = at_time(&harness, 2.051, dy);
+    shift_drag(&mut harness, from, to);
+    let measurement = viewer(&harness).measurement().unwrap();
+    assert_eq!(measurement.channel, kymo_core::ChannelId(0));
+    // It doesn't pan.
+    assert_eq!(viewer(&harness).view().time(), start);
+    let [interval, values] = settled_measurement(&mut harness);
+    assert_eq!(
+        interval,
+        "\u{394}t 3.20 s \u{b7} 64 samples \u{b7} 0.3125 Hz"
+    );
+    // Cz's samples 41 and 105, in the readout's unit, and their difference.
+    let shown = viewer(&harness);
+    let rec = &shown.document().recording;
+    let id = kymo_core::ChannelId(0);
+    let sample = |s: u64| {
+        let mut out = [0.0f32];
+        rec.read_physical(rec.channel(id).grid, &[id], s..s + 1, &mut out)
+            .unwrap();
+        f64::from(out[0])
+    };
+    let (unit, factor) = kymo::scale_bar::reading_unit(rec, shown.view(), id);
+    let (a, b) = (sample(41) * factor, sample(105) * factor);
+    assert!(values.starts_with("Cz: "), "{values}");
+    let (numbers, shown_unit) = measured_numbers(&values);
+    assert_eq!(shown_unit, unit);
+    assert_eq!(numbers.len(), 3, "{values}");
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs().max(1e-9);
+    for (got, want) in numbers.iter().zip([a, b, b - a]) {
+        // Four significant digits.
+        assert!(close(*got, want), "{values}: {got} vs {want}");
+    }
+
+    // With DC removal, as drawn: from the window's mean; the difference stays.
+    press(&mut harness, command(), Key::D);
+    let baseline = viewer(&harness).baseline(id) * factor;
+    assert!(baseline.abs() > 0.01, "{baseline}");
+    let [_, values] = settled_measurement(&mut harness);
+    let (numbers, _) = measured_numbers(&values);
+    for (got, want) in numbers.iter().zip([a - baseline, b - baseline, b - a]) {
+        assert!(close(*got, want), "{values}: {got} vs {want}");
+    }
+}
+
+#[test]
+fn measuring_in_annotation_mode_creates_no_annotation() {
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::E);
+    assert!(viewer(&harness).editing());
+    let dy = first_row(&harness);
+    let (from, to) = (at_time(&harness, 2.0, dy), at_time(&harness, 6.0, dy));
+    shift_drag(&mut harness, from, to);
+    assert!(made(&harness).is_empty());
+    let m = viewer(&harness).measurement().unwrap();
+    assert_eq!((m.press.round(), m.reach.round()), (2.0, 6.0));
+    assert!(measurement_label(&harness).is_some());
+    // A plain drag still creates one; the measurement stays.
+    let (from, to) = (at_time(&harness, 8.0, dy), at_time(&harness, 9.0, dy));
+    drag(&mut harness, from, to);
+    assert_eq!(made(&harness).len(), 1);
+    assert!(viewer(&harness).measurement().is_some());
+    // A click removes it, and selects as ever.
+    click_at_time(&mut harness, 8.5);
+    assert!(viewer(&harness).measurement().is_none());
+    assert!(measurement_label(&harness).is_none());
+    assert!(viewer(&harness).selected().is_some());
+}
+
+#[test]
+fn esc_and_clicks_remove_the_measurement_and_drags_keep_it() {
+    use egui::accesskit::Role;
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let dy = first_row(&harness);
+    let measure = |harness: &mut Harness<'_, KymoApp>| {
+        let (from, to) = (at_time(harness, 4.0, dy), at_time(harness, 7.0, dy));
+        shift_drag(harness, from, to);
+        assert!(viewer(harness).measured());
+    };
+    measure(&mut harness);
+    // Too short a ⇧-drag measures nothing, and takes the old one away: out and back to
+    // a point from where it started (a press that doesn't move is a click).
+    let from = at_time(&harness, 10.0, dy);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    hover(&mut harness, from);
+    harness.drag_at(from);
+    harness.step();
+    hover(&mut harness, from + egui::vec2(30.0, 0.0));
+    assert!(viewer(&harness).measurement().is_some());
+    hover(&mut harness, from + egui::vec2(1.0, 0.0));
+    assert!(viewer(&harness).measurement().is_none());
+    harness.drop_at(from + egui::vec2(1.0, 0.0));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.step();
+    assert!(!viewer(&harness).measured());
+
+    // A plain drag pans, the band staying at its times.
+    measure(&mut harness);
+    let traces = viewer(&harness).layout().unwrap().traces;
+    let from = traces.center();
+    drag(
+        &mut harness,
+        from,
+        from - egui::vec2(traces.width() / 10.0, 0.0),
+    );
+    assert!(viewer(&harness).view().time().start > 1.0);
+    let m = viewer(&harness).measurement().unwrap();
+    assert_eq!((m.press.round(), m.reach.round()), (4.0, 7.0));
+
+    // Esc removes it, alone or before deselecting the channels, then deselects them.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(!viewer(&harness).measured());
+    measure(&mut harness);
+    click_in_list(&mut harness, Role::Label, "Cz");
+    assert_eq!(viewer(&harness).view().selected().len(), 1);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(!viewer(&harness).measured());
+    assert_eq!(viewer(&harness).view().selected().len(), 1);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(viewer(&harness).view().selected().is_empty());
+
+    // A click in the traces removes it too.
+    measure(&mut harness);
+    click_at_time(&mut harness, 12.0);
+    assert!(!viewer(&harness).measured());
+}
+
+#[test]
+fn zoomed_out_ends_read_envelopes_and_count_every_sample() {
+    // 512 Hz: the whole recording on screen is envelopes.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::Num9);
+    step_until(&mut harness, "the tiles", |app| {
+        app.viewer().unwrap().complete()
+    });
+    let dy = first_row(&harness);
+    let (from, to) = (at_time(&harness, 3.3, dy), at_time(&harness, 11.7, dy));
+    shift_drag(&mut harness, from, to);
+    let viewer_now = viewer(&harness);
+    let span = viewer_now
+        .measurement()
+        .unwrap()
+        .span(&viewer_now.document().recording);
+    let samples = span.samples.unwrap();
+    assert_eq!(span.dt, samples as f64 / 512.0);
+    assert!((span.dt - 8.4).abs() < 0.05, "{span:?}");
+    let [interval, values] = settled_measurement(&mut harness);
+    assert!(
+        interval.contains(&format!(" {samples} samples ")),
+        "{interval}"
+    );
+    // Ranges at both ends, and no difference between them.
+    assert_eq!(values.matches('\u{2026}').count(), 2, "{values}");
+    assert!(!values.contains('\u{394}'), "{values}");
+}
+
+#[test]
+fn holding_shift_over_the_traces_suggests_measuring() {
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let hint = match Platform::current() {
+        Platform::Mac => "\u{21e7}-drag to measure",
+        Platform::Windows | Platform::Linux => "Shift-drag to measure",
+    };
+    let center = viewer(&harness).layout().unwrap().traces.center();
+    hover(&mut harness, center);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    harness.run_steps(2);
+    let left = viewer(&harness).status().left.clone();
+    assert!(left.starts_with(&format!("{hint} \u{b7} ")), "{left}");
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
+    assert!(!viewer(&harness).status().left.contains(hint));
+    // Not over the traces.
+    hover(&mut harness, egui::pos2(5.0, 300.0));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    harness.run_steps(2);
+    assert!(!viewer(&harness).status().left.contains(hint));
+}

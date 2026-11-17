@@ -98,6 +98,9 @@ fn gestures_use_the_platform_modifiers() {
         "Pinch or Ctrl + scroll"
     );
     assert!(keys(&linux, "Pan Time").contains("Shift + wheel"));
+    let measure = "Measure Time and Values";
+    assert_eq!(keys(&mac, measure), "⇧ + drag the traces");
+    assert_eq!(keys(&linux, measure), "Shift + drag the traces");
     let fold = "Collapse or Expand All Groups";
     assert_eq!(keys(&mac, fold), "⌥ + click a group's arrow in the sidebar");
     assert_eq!(

@@ -92,6 +92,10 @@ fn gestures(platform: Platform) -> Vec<Row> {
             format!("{alt} + pinch or {alt} + scroll"),
         ),
         row(
+            "Measure Time and Values",
+            format!("{shift} + drag the traces"),
+        ),
+        row(
             "Create an Annotation",
             "Drag the traces in annotation mode".into(),
         ),

@@ -11,6 +11,7 @@ pub mod cli;
 pub mod document;
 pub mod history;
 pub mod keymap;
+pub mod measure;
 pub mod menu;
 #[cfg(any(target_os = "macos", windows))]
 pub mod native_menu;
