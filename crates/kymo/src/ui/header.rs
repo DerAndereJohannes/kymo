@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{
     self, Align, Checkbox, Color32, CursorIcon, FontId, Frame, Id, Label, Layout, Margin, Response,
-    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, vec2,
+    RichText, ScrollArea, Sense, TextStyle, Ui, UiBuilder, style::ScrollStyle, vec2,
 };
 use kymo_core::{ChannelId, ChannelKind, Stream, StreamContent};
 
@@ -17,7 +17,7 @@ use crate::ui::axis::{Clock, format_time};
 use crate::ui::color::{Choice, swatch};
 use crate::ui::palette::{annotation_color, bad_color, type_color};
 use crate::ui::readout::display_unit;
-use crate::ui::types::type_swatch;
+use crate::ui::types::{menu_width, type_menu, type_swatch};
 use crate::ui::{elide_middle, text_button};
 use crate::view::ViewState;
 
@@ -76,7 +76,8 @@ pub struct HeaderSource<'a> {
 
 /// File header, channels by type, and the annotation legend at the bottom. The channel
 /// list shows and hides channels and marks them bad in `view`, in their types' colors, and
-/// its types' swatches set `types` (see [`type_swatch`]); the legend shows and hides annotations by description in `annotations.legend`, and picks
+/// its types' swatches and menus set `types` (see [`type_swatch`] and [`type_menu`]); the
+/// legend shows and hides annotations by description in `annotations.legend`, and picks
 /// their colors in `annotations.colors`. In annotation mode, `annotations.field` edits the
 /// description new annotations get, or the selected annotation's, above the legend, which
 /// then shows even without annotations. The Format row's value and an ⓘ button after it
@@ -204,7 +205,7 @@ pub struct HeaderResponse {
     pub relabel: Option<String>,
     /// Whether the Recording Info window was asked for.
     pub info: bool,
-    /// Whether a type's popup asked for the Channel Types window.
+    /// Whether a type's menu asked for the Channel Types window.
     pub all_types: bool,
 }
 
@@ -1046,7 +1047,8 @@ fn stream_name(stream: &Stream) -> String {
 /// Streams the file has but doesn't show are listed at the end, grayed, with the reason on
 /// hover. Nothing of streams shows for other recordings.
 ///
-/// A type's row has the type's swatch, whose popup sets `types` (see [`type_swatch`]).
+/// A type's row has the type's swatch and menu, which set `types` (see [`type_swatch`] and
+/// [`type_menu`]).
 /// Returns whether one asked for the Channel Types window.
 fn channel_list(
     ui: &mut Ui,
@@ -1102,6 +1104,9 @@ fn channel_list(
         })
         .collect();
     let mut measured = None;
+    // A solid scroll bar, which egui makes room for while the list scrolls: a floating one
+    // lies over the rows' ends and takes the clicks meant for the types' menus.
+    let scroll = std::mem::replace(&mut ui.spacing_mut().scroll, ScrollStyle::solid());
     let area = from_top(ui, "channels", recording, ScrollArea::vertical())
         .auto_shrink(false)
         .show_rows(ui, row_height, items.len(), |ui, rows| {
@@ -1294,6 +1299,7 @@ fn channel_list(
             }
         })
         .inner_rect;
+    ui.spacing_mut().scroll = scroll;
     if let Some(width) = measured
         && width != fixed
     {
@@ -1398,7 +1404,9 @@ fn stream_row(
     let kind = stream.kind.trim();
     let count = format!("{all} \u{b7} {}", grid_rate(grid));
     let gap = ui.spacing().item_spacing.x;
-    let room = ui.available_width();
+    // The room of its types' menus, so the counts line up.
+    let menu = menu_width(row_height);
+    let room = (ui.available_width() - menu - gap).max(0.0);
     let (name_width, kind_width, count_width) = (width(&name), width(kind), width(&count));
     let least = name_width.min(LIST_MIN_NAME_EMS * body.size);
     let beside = |kind: bool, count: bool| {
@@ -1471,6 +1479,8 @@ fn stream_row(
     if show_count {
         let response = ui
             .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // The menu and the gap after it, which spaces aren't given.
+                ui.add_space(menu + gap);
                 ui.add(weak(&count))
             })
             .inner;
@@ -1525,10 +1535,11 @@ struct KindRow {
 /// A type's row in the channel list: a chevron that shows or hides its channels' rows, a
 /// checkbox that shows or hides them in the traces (mixed while some are shown), its swatch
 /// (see [`type_swatch`]), its name in its trace color (a click scrolls the traces to its
-/// first shown channel), and at the right its number of channels and, unless a stream's row
-/// above gives it, their rate ("2 · 512 Hz"), as a stream's row has them; a narrow row
-/// leaves those out, and hovering shows it all. Returns whether the chevron was clicked, and
-/// whether the swatch's popup asked for the Channel Types window.
+/// first shown channel), at the right its number of channels and, unless a stream's row
+/// above gives it, their rate ("2 · 512 Hz"), as a stream's row has them, and its menu at
+/// the end (see [`type_menu`]); a narrow row leaves the count and rate out, and hovering
+/// shows it all. Returns whether the chevron was clicked, and whether the menu asked for the
+/// Channel Types window.
 fn kind_row(
     ui: &mut Ui,
     view: &mut ViewState,
@@ -1555,7 +1566,7 @@ fn kind_row(
     if response.changed() {
         view.set_group_shown(stream, &kind, checked);
     }
-    let all_types = type_swatch(ui, &kind, &label, types, swatch_size(ui));
+    type_swatch(ui, &kind, &label, types, swatch_size(ui));
 
     let body = TextStyle::Body.resolve(ui.style());
     let width = |text: &str| {
@@ -1574,7 +1585,9 @@ fn kind_row(
         None => (all.to_string(), format!("{name}\n{channels}")),
     };
     let gap = ui.spacing().item_spacing.x;
-    let room = ui.available_width();
+    // The menu at the end of the row, always.
+    let menu = menu_width(row_height);
+    let room = (ui.available_width() - menu - gap).max(0.0);
     let name_width = width(name);
     let show_count = name_width + gap + width(&count) <= room;
     let name_room = if show_count {
@@ -1613,18 +1626,21 @@ fn kind_row(
     }
     // The name hides the row from the pointer: the count shows the row's whole text too.
     let mut cells = vec![row];
-    if show_count {
-        let response = ui
-            .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add(
-                    Label::new(RichText::new(count).weak())
-                        .selectable(false)
-                        .extend(),
-                )
-            })
-            .inner;
-        cells.push(response);
-    }
+    let all_types = ui
+        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let all_types = type_menu(ui, &kind, &label, types, row_height);
+            if show_count {
+                cells.push(
+                    ui.add(
+                        Label::new(RichText::new(count).weak())
+                            .selectable(false)
+                            .extend(),
+                    ),
+                );
+            }
+            all_types
+        })
+        .inner;
     for cell in cells {
         cell.on_hover_text(&full);
     }

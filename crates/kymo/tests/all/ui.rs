@@ -1265,10 +1265,13 @@ fn types_rows_give_their_rates() {
             .query_by_label_contains("256\u{2013}512 Hz")
             .is_none()
     );
-    // The row's right end.
+    // The row's right end, before its menu.
     let row = harness.get_by_label("Show EEG channels").rect().center().y;
-    let sidebar = viewer(&harness).layout().unwrap().names.left() - 8.0;
-    hover(&mut harness, egui::pos2(sidebar - 30.0, row));
+    let menu = harness
+        .get_by_label("Options for EEG channels")
+        .rect()
+        .left();
+    hover(&mut harness, egui::pos2(menu - 10.0, row));
     assert!(tooltip(
         &mut harness,
         "EEG\n5 channels \u{b7} 256 to 512 Hz"
@@ -1667,8 +1670,8 @@ fn channel_named(harness: &Harness<'_, KymoApp>, name: &str) -> kymo_core::Chann
     kymo_core::ChannelId(i as u32)
 }
 
-/// Opens the popup of the type row (or stream row of one type) whose controls are named
-/// `label` ("EEG channels", "EEG channels in Amp").
+/// Opens the menu ("⋯") of the type row whose controls are named `label` ("EEG channels",
+/// "EEG channels in Amp").
 fn type_options(harness: &mut Harness<'_, KymoApp>, label: &str) {
     let label = format!("Options for {label}");
     harness
@@ -1685,7 +1688,10 @@ fn close_popup(harness: &mut Harness<'_, KymoApp>) {
     harness.key_press(Key::Escape);
     harness.run_steps(3);
     assert!(
-        harness.query_by_label(kymo::ui::types::ALL_TYPES).is_none(),
+        harness.query_by_label(kymo::ui::types::ALL_TYPES).is_none()
+            && harness
+                .query_by_role_and_label(egui::accesskit::Role::SpinButton, "R")
+                .is_none(),
         "the popup stayed open"
     );
 }
@@ -1717,7 +1723,6 @@ fn dc_removal_centers_only_the_types_ticked() {
             .remove_dc(&ChannelKind::EEG)
     );
     assert_eq!(viewer(&harness).baseline(fz), 0.0);
-    close_popup(&mut harness);
     type_options(&mut harness, "Temperature channels");
     harness.get_by_label("Remove DC of Temperature").click();
     harness.run_steps(2);
@@ -1753,7 +1758,6 @@ fn channels_scaled_on_their_own_each_have_a_scale_bar() {
     harness.get_by_label("Scale Each EEG Channel").click();
     harness.run_steps(2);
     assert_eq!(bars(&harness, ChannelKind::EEG), 5);
-    close_popup(&mut harness);
     harness.key_press_modifiers(command(), Key::Comma);
     // Until the window has faded in, which takes no clicks before.
     harness.run_steps(10);
@@ -4216,7 +4220,7 @@ fn traces_take_picked_type_colors() {
     assert!(before.0 > 200 && before.1 == 0, "{before:?}");
     assert_eq!(sidebar(&mut harness), [0, 0]);
 
-    pick(&mut harness, "Options for EOG channels", [10, 200, 30]);
+    pick(&mut harness, "Color of EOG channels", [10, 200, 30]);
     close_popup(&mut harness);
     let after = (count(&mut harness, blue), count(&mut harness, green));
     assert!(
@@ -5893,7 +5897,7 @@ fn joystick_xdf() -> TempFile {
 
 /// Grouped by stream, every stream's channels are under their types' rows, whether the
 /// stream has one type or one per channel (a joystick typing each axis), each type row with
-/// its swatch; the channels two levels in.
+/// its swatch and menu, its count lined up with the stream's; the channels two levels in.
 #[test]
 fn every_stream_has_type_rows() {
     let file = joystick_xdf();
@@ -5913,6 +5917,22 @@ fn every_stream_has_type_rows() {
     for kind in ["EEG channels in Amp", "Button channels in Joystick"] {
         harness.get_by_label(&format!("Options for {kind}"));
     }
+    // A stream's count ends where its types' counts do, before their menus.
+    let in_row = |h: &Harness<'_, KymoApp>, of: &str, text: &str| {
+        let y = h.get_by_label(of).rect().center().y;
+        h.query_all_by_role(egui::accesskit::Role::Label)
+            .filter(|n| n.accesskit_node().value().is_some_and(|l| l.contains(text)))
+            .map(|n| n.rect())
+            .find(|r| (r.center().y - y).abs() < 2.0)
+            .unwrap()
+    };
+    let stream = in_row(&harness, "Show Amp", " Hz").right();
+    let kind = in_row(&harness, "Show EEG channels in Amp", "3").right();
+    assert!((stream - kind).abs() <= 0.5, "{stream} {kind}");
+    let menu = harness
+        .get_by_label("Options for EEG channels in Amp")
+        .rect();
+    assert!(kind < menu.left(), "{kind} {menu:?}");
     let left = |h: &Harness<'_, KymoApp>, label: &str| h.get_by_label(label).rect().left();
     for (channel, stream) in [("Fz", "Amp"), ("X", "Joystick")] {
         let level =
@@ -5921,41 +5941,94 @@ fn every_stream_has_type_rows() {
     }
 }
 
-/// A type's popup in the sidebar: its Remove DC and Scale Each Channel as they are, which
-/// act at once; Reset while something differs from the type's start, which puts it back;
-/// stim's without the two boxes; All Types… opens the Channel Types window and closes the
-/// popup.
+/// A type's menu in the sidebar ("⋯"): its Remove DC and Scale Each Channel checked as they
+/// are, each acting at once and closing the menu, as menu items do; Reset while anything
+/// differs from the type's start (its color too), which puts it back; the button gray until
+/// DC removal or scaling differs, a color alone leaving it so; stim's without the two items; All Types… opens the Channel
+/// Types window and closes the menu. The swatch sets only the color.
 #[test]
-fn a_types_popup_sets_it_and_opens_all_types() {
+fn a_types_menu_sets_it_and_opens_all_types() {
     use egui::accesskit::{Role, Toggled};
     let file = typed_preset();
     let mut harness = fonts_window(file.path(), options());
     ready(&mut harness);
     let types = |h: &Harness<'_, KymoApp>| h.state().settings().types.clone();
     let eog = ChannelKind::EOG;
-    type_options(&mut harness, "EOG channels");
     let remove_dc = "Remove DC of EOG";
     let own_scale = "Scale Each EOG Channel";
-    assert_eq!(toggled(&harness, Role::CheckBox, remove_dc), Toggled::True);
-    assert_eq!(toggled(&harness, Role::CheckBox, own_scale), Toggled::False);
     let reset_off =
         |h: &Harness<'_, KymoApp>| h.get_by_label("Reset EOG").accesskit_node().is_disabled();
+    // The brightest channel value of the menu button's dots, the pointer away from it.
+    let dots = |h: &mut Harness<'_, KymoApp>| {
+        hover(h, egui::pos2(900.0, 650.0));
+        h.run_steps(2);
+        let r = h.get_by_label("Options for EOG channels").rect();
+        let image = h.render().unwrap();
+        (r.left() as u32..r.right() as u32)
+            .flat_map(|x| (r.top() as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .map(|(x, y)| image.get_pixel(x, y).0[..3].iter().copied().max().unwrap())
+            .max()
+            .unwrap()
+    };
+    let gray = dots(&mut harness);
+
+    // The swatch: a color picker with Reset, nothing else.
+    harness.get_by_label("Color of EOG channels").click();
+    harness.run_steps(2);
+    harness.get_by_role_and_label(Role::SpinButton, "R");
+    assert!(harness.query_by_label(remove_dc).is_none());
+    assert!(harness.query_by_label(ALL_TYPES).is_none());
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+
+    type_options(&mut harness, "EOG channels");
+    assert_eq!(toggled(&harness, Role::CheckBox, remove_dc), Toggled::True);
+    assert_eq!(toggled(&harness, Role::CheckBox, own_scale), Toggled::False);
     assert!(reset_off(&harness));
     harness.get_by_label(own_scale).click();
     harness.run_steps(2);
     assert!(types(&harness).own_scale(&eog));
     assert!(viewer(&harness).view().type_settings().own_scale(&eog));
+    assert!(
+        harness.query_by_label(own_scale).is_none(),
+        "the menu stayed open"
+    );
+    // Brighter while a setting differs from the type's start.
+    let changed = dots(&mut harness);
+    assert!(changed > gray + 20, "{gray} {changed}");
+    type_options(&mut harness, "EOG channels");
     assert_eq!(toggled(&harness, Role::CheckBox, own_scale), Toggled::True);
     assert!(!reset_off(&harness));
     harness.get_by_label(remove_dc).click();
     harness.run_steps(2);
     assert!(!types(&harness).remove_dc(&eog));
+    type_options(&mut harness, "EOG channels");
     harness.get_by_label("Reset EOG").click();
     harness.run_steps(2);
     assert_eq!(types(&harness), TypeSettings::default());
     assert!(!viewer(&harness).view().type_settings().own_scale(&eog));
-    assert!(reset_off(&harness));
-    close_popup(&mut harness);
+
+    // A picked color alone enables Reset, which puts it back too.
+    pick(&mut harness, "Color of EOG channels", [10, 200, 30]);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(types(&harness).color(&eog).is_some());
+    // A color alone leaves it gray, as the swatch shows it.
+    assert_eq!(dots(&mut harness), gray);
+    // The swatch's Reset puts the color back.
+    harness.get_by_label("Color of EOG channels").click();
+    harness.run_steps(2);
+    harness.get_by_label("Reset").click();
+    harness.run_steps(2);
+    assert_eq!(types(&harness), TypeSettings::default());
+    pick(&mut harness, "Color of EOG channels", [10, 200, 30]);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    type_options(&mut harness, "EOG channels");
+    assert!(!reset_off(&harness));
+    harness.get_by_label("Reset EOG").click();
+    harness.run_steps(2);
+    assert_eq!(types(&harness), TypeSettings::default());
 
     type_options(&mut harness, "Stim channels");
     harness.get_by_label("Reset Stim");
@@ -6018,9 +6091,11 @@ fn the_channel_types_window_lists_filters_and_forgets() {
         h.get_by_label(field).type_text(text);
         h.run_steps(2);
     };
+    // The window's swatches, not the sidebar's ("Color of EEG channels in Amp").
     let listed = |h: &Harness<'_, KymoApp>| -> Vec<String> {
         h.query_all_by_label_contains("Color of ")
             .filter_map(|n| n.accesskit_node().label())
+            .filter(|l| !l.contains(" channels"))
             .map(|l| l.trim_start_matches("Color of ").to_owned())
             .collect()
     };

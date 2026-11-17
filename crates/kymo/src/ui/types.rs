@@ -1,15 +1,17 @@
-//! What sets channel types' settings: a type's swatch in the sidebar, whose popup sets its
-//! color, DC removal and scaling, and the Channel Types window, which lists every type kymo
-//! knows, those set and the open recording's.
+//! What sets channel types' settings: in the sidebar a type's swatch, which sets its color,
+//! and its menu ("⋯"), which sets its DC removal and scaling, and the Channel Types window,
+//! which lists every type kymo knows, those set and the open recording's.
 
 use eframe::egui::{
-    self, Align, Button, Checkbox, Layout, Popup, PopupCloseBehavior, RichText, TextEdit, Ui, Vec2,
+    self, Align, Button, Checkbox, CursorIcon, Layout, Popup, PopupCloseBehavior, RichText, Sense,
+    TextEdit, Ui, Vec2,
 };
 use kymo_core::{ChannelKind, KNOWN_KINDS};
 
 use crate::types::TypeSettings;
 use crate::ui::Overlay;
-use crate::ui::color::{picker, swatch_button};
+use crate::ui::color::{Choice, picker, swatch, swatch_button};
+use crate::ui::menus::check_item;
 use crate::ui::palette::type_color;
 
 /// The window's title, and the button that opens it.
@@ -28,67 +30,93 @@ pub fn own_scale_label(kind: &ChannelKind) -> String {
     format!("Scale Each {} Channel", kind.name())
 }
 
-/// A swatch of `size` in `kind`'s color, named "Options for {label}" for screen readers
-/// (`label` names the row, as "EEG channels in Amp"). A click opens a popup with the type's
-/// name, a color picker, Remove DC and Scale Each Channel (neither for stim channels),
-/// Reset, enabled while something differs from the type's start, and All Types…, which asks
-/// for the Channel Types window. Returns whether it was asked for.
+/// A swatch of `size` in `kind`'s color, named "Color of {label}" for screen readers (`label`
+/// names the row, as "EEG channels in Amp"): a click opens a color picker with Reset, as the
+/// legend's swatches do. The type's other settings are in its [`type_menu`].
 pub fn type_swatch(
     ui: &mut Ui,
     kind: &ChannelKind,
     label: &str,
     types: &mut TypeSettings,
     size: Vec2,
-) -> bool {
+) {
     let color = type_color(kind, types, ui.visuals());
-    let name = kind.name();
-    let response = swatch_button(ui, &format!("Options for {label}"), color, size)
-        .on_hover_text(format!("{name}: Color, Remove DC and Scaling"));
-    let mut all_types = false;
-    Popup::menu(&response)
-        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.label(RichText::new(name).strong());
-            if let Some(c) = picker(ui, color) {
-                types.set_color(kind, Some(c));
-            }
-            if !kind.is_stim() {
-                ui.add_space(4.0);
-                flags(ui, kind, types);
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                let reset = ui.add_enabled(types.changed(kind), Button::new("Reset"));
-                label_for(ui, &reset, format!("Reset {name}"));
-                if reset.clicked() {
-                    types.reset(kind);
-                }
-                if ui.button(ALL_TYPES).clicked() {
-                    all_types = true;
-                    ui.close();
-                }
-            });
-        });
-    all_types
+    let picked = types.color(kind).is_some();
+    match swatch(ui, &format!("Color of {label}"), color, picked, size) {
+        Some(Choice::Picked(c)) => types.set_color(kind, Some(c)),
+        Some(Choice::Reset) => types.set_color(kind, None),
+        None => {}
+    }
 }
 
-/// `kind`'s Remove DC and Scale Each Channel checkboxes, applied to `types` as they change.
-fn flags(ui: &mut Ui, kind: &ChannelKind, types: &mut TypeSettings) {
-    let mut remove_dc = types.remove_dc(kind);
-    let mut own_scale = types.own_scale(kind);
-    for (flag, shown, label) in [
-        (&mut remove_dc, REMOVE_DC, remove_dc_label(kind)),
-        (&mut own_scale, OWN_SCALE, own_scale_label(kind)),
-    ] {
-        let response = ui.add(Checkbox::new(flag, shown));
-        label_for(ui, &response, label);
+/// The width of a [`type_menu`] button in a row `height` high.
+pub fn menu_width(height: f32) -> f32 {
+    height
+}
+
+/// A "⋯" button `height` high at the end of a type's row, named "Options for {label}" for
+/// screen readers: gray, or in the text color while `kind`'s DC removal or scaling differs
+/// from its start. A click opens a menu with the type's name, Remove DC and Scale Each
+/// Channel as checkable items (neither for stim channels), Reset, enabled while anything
+/// differs from the type's start (its color too; a custom type keeps its entry), and All
+/// Types…, which asks for the Channel Types window. Returns whether it was asked for.
+pub fn type_menu(
+    ui: &mut Ui,
+    kind: &ChannelKind,
+    label: &str,
+    types: &mut TypeSettings,
+    height: f32,
+) -> bool {
+    let name = kind.name();
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(menu_width(height), height), Sense::click());
+    label_for(ui, &response, format!("Options for {label}"));
+    let visuals = ui.visuals();
+    let color = if response.hovered() || response.is_pointer_button_down_on() {
+        visuals.strong_text_color()
+    } else if types.options_changed(kind) {
+        visuals.text_color()
+    } else {
+        visuals.weak_text_color()
+    };
+    if response.hovered() {
+        let fill = visuals.widgets.hovered.weak_bg_fill;
+        ui.painter().rect_filled(rect.shrink(1.0), 3.0, fill);
     }
-    if remove_dc != types.remove_dc(kind) {
-        types.set_remove_dc(kind, remove_dc);
+    let radius = (height / 14.0).max(1.0);
+    for dx in [-1.0, 0.0, 1.0] {
+        let center = rect.center() + Vec2::new(dx * radius * 3.2, 0.0);
+        ui.painter().circle_filled(center, radius, color);
     }
-    if own_scale != types.own_scale(kind) {
-        types.set_own_scale(kind, own_scale);
-    }
+    let response = response
+        .on_hover_text(format!("Options for {name}"))
+        .on_hover_cursor(CursorIcon::PointingHand);
+    let mut all_types = false;
+    Popup::menu(&response).show(|ui| {
+        ui.label(RichText::new(name).strong());
+        if !kind.is_stim() {
+            let (remove_dc, own_scale) = (types.remove_dc(kind), types.own_scale(kind));
+            let item = check_item(ui, true, remove_dc, false, REMOVE_DC, None);
+            label_for(ui, &item, remove_dc_label(kind));
+            if item.clicked() {
+                types.set_remove_dc(kind, !remove_dc);
+            }
+            let item = check_item(ui, true, own_scale, false, OWN_SCALE, None);
+            label_for(ui, &item, own_scale_label(kind));
+            if item.clicked() {
+                types.set_own_scale(kind, !own_scale);
+            }
+        }
+        ui.separator();
+        let reset = ui.add_enabled(types.changed(kind), Button::new(format!("Reset {name}")));
+        if reset.clicked() {
+            types.reset(kind);
+        }
+        if ui.button(ALL_TYPES).clicked() {
+            all_types = true;
+        }
+    });
+    all_types
 }
 
 /// The checkboxes' text, also the window's column headers.

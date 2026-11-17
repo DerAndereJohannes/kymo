@@ -113,7 +113,7 @@ fn menu_items(
 /// shortcut: a button, so it highlights as the other items do, with the box drawn into room
 /// left at its start (egui's selectable buttons only change their background, and its
 /// checkboxes and radio buttons have no shortcut).
-fn check_item(
+pub(crate) fn check_item(
     ui: &mut Ui,
     enabled: bool,
     on: bool,

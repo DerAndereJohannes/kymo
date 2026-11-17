@@ -158,6 +158,13 @@ impl TypeSettings {
             .is_some_and(|s| s.color.is_some() || s.remove_dc.is_some() || s.own_scale.is_some())
     }
 
+    /// Whether `kind`'s DC removal or scaling differs from its start (not its color, which
+    /// its swatch shows).
+    pub fn options_changed(&self, kind: &ChannelKind) -> bool {
+        self.get(kind)
+            .is_some_and(|s| s.remove_dc.is_some() || s.own_scale.is_some())
+    }
+
     /// Whether `kind` has an entry: a known type that something differs for, or a type kymo
     /// doesn't know that something was ever set for (until it is forgotten).
     pub fn stored(&self, kind: &ChannelKind) -> bool {
