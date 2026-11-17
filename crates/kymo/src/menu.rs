@@ -160,6 +160,9 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
         a(Action::LoadAnnotations),
         a(Action::SaveAnnotations),
         a(Action::ExportShownAnnotations),
+        Item::Separator,
+        a(Action::LoadChannels),
+        a(Action::SaveChannels),
     ];
     if !mac {
         file.extend([Item::Separator, a(Action::Quit)]);

@@ -9,11 +9,11 @@ use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
     StrokeKind, TextStyle, Ui, pos2, vec2,
 };
-use kymo_core::annotation_file;
 use kymo_core::service::TileService;
 use kymo_core::stim::EventOptions;
 use kymo_core::tile::query;
 use kymo_core::{AnnotationData, AnnotationId, ChannelId, ChannelKind, GridId, Origin};
+use kymo_core::{annotation_file, channel_file};
 
 use crate::action::Action;
 use crate::annotations::{self, Legend, Marks};
@@ -242,6 +242,8 @@ pub struct Viewer {
     can_merge: Cell<Option<(u64, u64, bool)>>,
     /// Where the annotations were saved last.
     saved_to: Option<std::path::PathBuf>,
+    /// Where the channels were saved or loaded from last.
+    channels_path: Option<std::path::PathBuf>,
 }
 
 impl Viewer {
@@ -293,6 +295,7 @@ impl Viewer {
             draft: None,
             typing: false,
             saved_to: None,
+            channels_path: None,
             history: History::default(),
             can_merge: Cell::new(None),
         }
@@ -401,6 +404,55 @@ impl Viewer {
                 .map_or("annotations".into(), |s| s.to_string_lossy());
             path.with_file_name(format!("{stem}-annot.tsv"))
         })
+    }
+
+    /// Writes every channel's type (as shown) and bad mark as a BIDS `channels.tsv` (see
+    /// [`kymo_core::channel_file`]).
+    pub fn write_channels(&self, out: impl std::io::Write) -> std::io::Result<()> {
+        let recording = &self.document.recording;
+        let kinds: Vec<ChannelKind> = (0..recording.channels().len())
+            .map(|i| self.view.kind_of(ChannelId(i as u32)).clone())
+            .collect();
+        let entries = channel_file::entries(recording, &kinds, |c| self.view.is_bad(c));
+        channel_file::write(out, entries)
+    }
+
+    /// Where to suggest saving the channels: where they were saved or loaded from last, or
+    /// next to the recording, named as BIDS names it (`sub-01_task-rest_eeg.edf` gives
+    /// `sub-01_task-rest_channels.tsv`, any other `<recording>_channels.tsv`).
+    pub fn channels_path(&self) -> std::path::PathBuf {
+        if let Some(path) = &self.channels_path {
+            return path.clone();
+        }
+        let path = &self.document.path;
+        let stem = path
+            .file_stem()
+            .map_or("recording".into(), |s| s.to_string_lossy());
+        let base = match stem.rsplit_once('_') {
+            Some((entities, suffix))
+                if stem.starts_with("sub-")
+                    && BIDS_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()) =>
+            {
+                entities
+            }
+            _ => &stem,
+        };
+        path.with_file_name(format!("{base}_channels.tsv"))
+    }
+
+    /// Remembers `path` as where the channels were saved or loaded from.
+    pub fn set_channels_path(&mut self, path: std::path::PathBuf) {
+        self.channels_path = Some(path);
+    }
+
+    /// Takes the types and bad marks of a loaded `channels.tsv` (see
+    /// [`ViewState::apply_kinds`]); how many changes to stim were left out.
+    pub fn load_channels(&mut self, loaded: &channel_file::Loaded) -> usize {
+        let (_, refused) = self.view.apply_kinds(&loaded.kinds);
+        for &(channel, bad) in &loaded.bad {
+            self.view.set_bad(channel, bad);
+        }
+        refused
     }
 
     /// Adds `annotations` (read from a file) as one step, as they are: no merging.
@@ -1620,3 +1672,6 @@ fn annotation_text_color(color: Color32, visuals: &egui::Visuals) -> Color32 {
         color.lerp_to_gamma(Color32::BLACK, 0.4)
     }
 }
+
+/// BIDS' suffixes of recordings, which a `channels.tsv`'s name replaces.
+const BIDS_SUFFIXES: [&str; 6] = ["eeg", "meg", "ieeg", "nirs", "physio", "motion"];

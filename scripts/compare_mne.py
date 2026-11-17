@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["mne", "mnextend", "numpy", "pandas", "pybvrf", "pyxdf"]
+# dependencies = ["mne", "mne-bids", "mnextend", "numpy", "pandas", "pybvrf", "pyxdf"]
 # ///
 """Compare Kymo's reading of EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF files with
 MNE-Python's (XDF: with pyxdf's and mnextend's; BVRF: with pybvrf's).
@@ -10,8 +10,9 @@ Usage:
     scripts/compare_mne.py FILE_OR_DIR [...]   # directories are searched recursively
     scripts/compare_mne.py --testgen           # files from kymo-testgen presets
     scripts/compare_mne.py --annotations ...   # also annotation files, both ways
+    scripts/compare_mne.py --channels ...      # also channels.tsv files, both ways
 
-Needs numpy, mne, pandas (only with --annotations), pyxdf and mnextend (only for XDF), and pybvrf
+Needs numpy, mne, pandas (only with --annotations), mne-bids (only with --channels), pyxdf and mnextend (only for XDF), and pybvrf
 (only for BVRF). The dependencies are
 declared inline (PEP 723), so uv installs them on its own. Run the script directly or
 through uv:
@@ -234,6 +235,25 @@ with `read_events_table` (the snippet in the docs) equal MNE's own reading of th
 and MNE's CSV of them (`Annotations.save`) loaded by Kymo equals Kymo's own reading.
 For XDF, only the CSV way: MNE's CSV of mnextend's reading (whose meas_date is the file's
 datetime in UTC, so the CSV holds UTC times) loaded by Kymo gives mnextend's onsets.
+
+With --channels, BIDS channels.tsv files are checked both ways (`kymo-core --example
+channels`), for every format but XDF and BVRF, which MNE-BIDS doesn't read: the file's
+channels saved by Kymo and read onto MNE's recording by MNE-BIDS (as read_raw_bids does)
+give MNE Kymo's types (by MNE's name) and bad channels, its names unchanged; and the
+channels.tsv MNE-BIDS writes for MNE's recording (one channel marked bad more) loaded by
+Kymo gives Kymo MNE's types and bad channels. Where BIDS or MNE-BIDS has no type for one,
+the difference is expected and listed as a note:
+- MNE-BIDS reads MISC as misc, so Kymo's Bio, SaO2 and other types without a BIDS type
+  (kept in Kymo's kymo_type column) are misc in MNE; it reads no PPG (BIDS has it), which
+  becomes misc too, and leaves MEG types and HLU (cHPI) as the file has them.
+- MNE-BIDS writes bio as MISC (Kymo reads Misc) and syst, ias and exci as MEGOTHER (Kymo
+  keeps the file's type for it).
+- Kymo makes no channel stim that its file doesn't have as stim: TRIG on another channel
+  is left out.
+- MNE-BIDS takes MEG types from the coil by its own table, which has Neuromag-122's planar
+  gradiometers (grad in MNE) as MEGMAG; Kymo reads MEGMAG as a magnetometer.
+Where Kymo's and MNE's channel names differ (MNE renames duplicates), the check is
+skipped with a note.
 """
 
 import argparse
@@ -531,6 +551,190 @@ def compare_annotation_files(path, raw, annotations, first_onset, tmp, sample=No
                 problems.append(f"MNE's CSV in Kymo: {a}, Kymo has {b}")
                 break
     return problems
+
+
+def kymo_channels(path, tsv):
+    """Kymo's channels after loading `tsv` onto the recording at `path`."""
+    out = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "-q",
+            "--release",
+            "-p",
+            "kymo-core",
+            "--example",
+            "channels",
+            "--",
+            "load",
+            str(path),
+            str(tsv),
+        ],
+        check=True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return json.loads(out)
+
+
+# BIDS' MEG types and the MNE type each stands for (axial gradiometers are MNE's mag).
+MEG_TYPES = {
+    "MEGMAG": "mag",
+    "MEGGRADPLANAR": "grad",
+    "MEGGRADAXIAL": "mag",
+    "MEGREFMAG": "ref_meg",
+    "MEGREFGRADAXIAL": "ref_meg",
+    "MEGREFGRADPLANAR": "ref_meg",
+}
+
+# MNE types MNE-BIDS writes as a BIDS type Kymo reads otherwise.
+MNE_BIDS_WRITES_AS = {"bio": "misc"}
+
+
+def kymo_table_in_mne(ours, table, raw, copy, notes):
+    """Problems with Kymo's channels.tsv `table` read by MNE-BIDS onto `copy` of `raw`."""
+    problems = []
+    # MNE gets Kymo's type wherever MNE-BIDS reads the BIDS type Kymo wrote: not MISC with
+    # Kymo's own name in kymo_type, not types MNE-BIDS has no mapping for (PPG), not MEG
+    # types and HLU (cHPI), which MNE-BIDS leaves as the file has them.
+    from mne_bids.utils import _get_ch_type_mapping
+
+    reads = _get_ch_type_mapping(fro="bids", to="mne")
+    written = [line.split("\t")[1] for line in table.read_text().splitlines()[1:]]
+    lost = []
+    for c, bids, before, after in zip(
+        ours["channels"], written, raw.get_channel_types(), copy.get_channel_types()
+    ):
+        if bids.startswith("MEG") or bids == "HLU":
+            want = before
+        elif bids in reads:
+            want = reads[bids]
+        else:
+            want = "misc"
+        if after != want:
+            problems.append(
+                f"Kymo's channels.tsv in MNE: {c['name']} ({bids}) is {after}, "
+                f"MNE-BIDS reads {want}"
+            )
+            break
+        if after != c["mne"]:
+            lost.append(f"{c['name']} ({c['type']} as {bids}: {after})")
+    if lost:
+        notes.append(
+            f"types MNE-BIDS doesn't read from Kymo's channels.tsv: {summary(lost)}"
+        )
+    ours_bad = [c["name"] for c in ours["channels"] if c["bad"]]
+    if sorted(copy.info["bads"]) != sorted(ours_bad):
+        problems.append(
+            f"Kymo's channels.tsv in MNE: bad {copy.info['bads']}, Kymo's {ours_bad}"
+        )
+
+    return problems
+
+
+def compare_channel_files(path, raw, tmp, notes):
+    """Problems with channels.tsv files saved by one side and loaded by the other."""
+    from mne_bids.read import _handle_channels_reading
+    from mne_bids.write import _channels_tsv
+
+    problems = []
+    table = tmp / "kymo_channels.tsv"
+    cargo(
+        "run", "-q", "--release", "-p", "kymo-core", "--example", "channels", "--",
+        "save", str(path), str(table),
+    )
+    # Kymo's own reading of its file: the file's types and bad channels.
+    ours = kymo_channels(path, table)
+    names = [c["name"] for c in ours["channels"]]
+    if names != raw.ch_names:
+        notes.append("channels.tsv not compared: Kymo's and MNE's channel names differ")
+        return problems
+    if ours["unknown"] or ours["refused"] or ours["units_differ"]:
+        problems.append(f"Kymo's channels.tsv in Kymo: {ours}")
+
+    # Kymo's file in MNE. MNE refuses to set the type of a channel whose unit it doesn't
+    # know, whatever the type: FIFF's unitless (0) STI 014 as kymo-testgen writes it gets
+    # MNE's "no unit" first.
+    copy = raw.copy()
+    unitless = [c["ch_name"] for c in copy.info["chs"] if c["unit"] == 0]
+    for c in copy.info["chs"]:
+        if c["unit"] == 0:
+            c["unit"] = mne.io.constants.FIFF.FIFF_UNIT_NONE
+    if unitless:
+        notes.append(f"unitless in MNE, given no unit for MNE-BIDS: {summary(unitless)}")
+    with mne.utils.use_log_level("error"), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            _handle_channels_reading(table, copy)
+        except ValueError as e:
+            notes.append(f"MNE-BIDS can't read Kymo's channels.tsv onto it: {e}")
+            copy = None
+    if copy is None:
+        pass
+    elif copy.ch_names != names:
+        problems.append("Kymo's channels.tsv in MNE: MNE-BIDS renamed channels")
+    else:
+        problems += kymo_table_in_mne(ours, table, raw, copy, notes)
+
+    # MNE-BIDS' file in Kymo, one more channel marked bad.
+    copy = raw.copy()
+    extra = next((n for n in copy.ch_names if n not in copy.info["bads"]), None)
+    if extra is not None:
+        copy.info["bads"] = [*copy.info["bads"], extra]
+    theirs_table = tmp / "mne_channels.tsv"
+    with mne.utils.use_log_level("error"), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _channels_tsv(copy, theirs_table, convert_fmt=None, overwrite=True)
+    loaded = kymo_channels(path, theirs_table)
+    if loaded["unknown"] or loaded["units_differ"]:
+        notes.append(
+            f"MNE-BIDS' channels.tsv in Kymo: {loaded['unknown']} unknown, "
+            f"{loaded['units_differ']} units differ"
+        )
+    refused, kept, meg_written = [], [], []
+    written = [line.split("\t")[1] for line in theirs_table.read_text().splitlines()[1:]]
+    for c, theirs, bids in zip(loaded["channels"], copy.get_channel_types(), written):
+        want = MNE_BIDS_WRITES_AS.get(theirs, theirs)
+        file_type = next(o for o in ours["channels"] if o["name"] == c["name"])
+        if theirs == "stim" and c["mne"] != "stim":
+            refused.append(c["name"])
+            continue
+        if bids in MEG_TYPES and MEG_TYPES[bids] != theirs:
+            # MNE-BIDS takes the type from the coil, by its own table, which can disagree
+            # with MNE's (Neuromag-122's planar gradiometers as MEGMAG).
+            meg_written.append(f"{c['name']} ({theirs} as {bids})")
+            continue
+        if theirs in ("syst", "ias", "exci"):
+            want = file_type["mne"]
+        if want != theirs:
+            kept.append(f"{c['name']} ({theirs})")
+        if c["mne"] != want:
+            problems.append(
+                f"MNE-BIDS' channels.tsv in Kymo: {c['name']} is {c['type']} "
+                f"({c['mne']}), MNE's {theirs}"
+            )
+            break
+    if refused:
+        notes.append(f"stim in MNE, not made stim by its channels.tsv: {summary(refused)}")
+    if kept:
+        notes.append(f"types BIDS has no name for: {summary(kept)}")
+    if meg_written:
+        notes.append(
+            f"MEG types MNE-BIDS writes otherwise than MNE has them: {summary(meg_written)}"
+        )
+    their_bad = [c["name"] for c in loaded["channels"] if c["bad"]]
+    if sorted(their_bad) != sorted(copy.info["bads"]):
+        problems.append(
+            f"MNE-BIDS' channels.tsv in Kymo: bad {their_bad}, MNE's {copy.info['bads']}"
+        )
+    return problems
+
+
+def summary(items, limit=5):
+    """`items` joined, at most `limit` of them."""
+    more = f" and {len(items) - limit} more" if len(items) > limit else ""
+    return ", ".join(items[:limit]) + more
 
 
 XDF_EVENT_TYPES = {"marker", "markers", "event", "events", "trigger", "triggers", "stim"}
@@ -991,7 +1195,7 @@ def compare_xdf_csv(path, raw, tmp, duration, notes):
     return problems
 
 
-def compare(path, max_values=None, annotation_files=False):
+def compare(path, max_values=None, annotation_files=False, channel_files=False):
     """Returns a list of problems (empty if the readers agree), or None for a file
     neither reader reads, and prints a summary."""
     problems, notes = [], []
@@ -1349,6 +1553,8 @@ def compare(path, max_values=None, annotation_files=False):
                 tmp,
                 1 / raw.info["sfreq"] if brainvision or gdf else None,
             )
+        if channel_files and not bvrf:
+            problems += compare_channel_files(path, raw, tmp, notes)
         events = json.loads((tmp / "events.json").read_text())
         if eeglab:
             if events:
@@ -1944,6 +2150,11 @@ def main():
         help="also check annotation files, both ways",
     )
     parser.add_argument(
+        "--channels",
+        action="store_true",
+        help="also check channels.tsv files, both ways (not for XDF and BVRF)",
+    )
+    parser.add_argument(
         "--max-values",
         type=int,
         help="compare windows of at most this many values per grid "
@@ -1967,7 +2178,7 @@ def main():
                 print(f"SKIPPED: {path}\n  MAT v7.3 (HDF5), which Kymo doesn't read")
                 skipped += 1
                 continue
-            problems = compare(path, args.max_values, args.annotations)
+            problems = compare(path, args.max_values, args.annotations, args.channels)
             if problems is None:
                 skipped += 1
             else:

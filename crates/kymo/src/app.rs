@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use eframe::egui::{self, Align, Color32, Event, Layout, RichText, Ui};
 use kymo_core::annotation_file::{self, Format};
+use kymo_core::channel_file;
 use kymo_core::pyramid::Sidecar;
 use kymo_core::service::{PyramidStore, ServiceOptions, TileService};
 use kymo_core::stim::EventOptions;
@@ -139,6 +140,10 @@ enum Dialog {
     /// Where to export the shown annotations, suggesting a path.
     Export(PathBuf),
     Load,
+    /// Where to save the channels, suggesting a path.
+    SaveChannels(PathBuf),
+    /// Which `channels.tsv` to load, suggesting a path.
+    LoadChannels(PathBuf),
 }
 
 /// A recording ready to show, as the loading thread hands it over.
@@ -634,6 +639,20 @@ impl KymoApp {
                     self.load_annotations_from(&path);
                 }
             }
+            Action::SaveChannels => {
+                if let Some(path) = self.viewer().map(Viewer::channels_path)
+                    && let Some(path) = self.ask(Dialog::SaveChannels(path))
+                {
+                    self.save_channels_to(&path);
+                }
+            }
+            Action::LoadChannels => {
+                if let Some(path) = self.viewer().map(Viewer::channels_path)
+                    && let Some(path) = self.ask(Dialog::LoadChannels(path))
+                {
+                    self.load_channels_from(&path);
+                }
+            }
             Action::Quit => self.leave(ctx, Leave::Quit),
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::RecordingInfo => self.info_open = !self.info_open,
@@ -764,11 +783,33 @@ impl KymoApp {
                 .set_title("Load Annotations")
                 .add_filter("Events Table or MNE CSV", &["tsv", "csv", "TSV", "CSV"])
                 .pick_file(),
+            Dialog::SaveChannels(suggested) => {
+                let mut files = files
+                    .set_title("Save Channels")
+                    .add_filter("Channels Table", &["tsv"]);
+                if let Some(dir) = suggested.parent() {
+                    files = files.set_directory(dir);
+                }
+                if let Some(name) = suggested.file_name() {
+                    files = files.set_file_name(name.to_string_lossy());
+                }
+                files.save_file()
+            }
+            Dialog::LoadChannels(suggested) => {
+                let mut files = files
+                    .set_title("Load Channels")
+                    .add_filter("Channels Table", &["tsv", "TSV"]);
+                if let Some(dir) = suggested.parent() {
+                    files = files.set_directory(dir);
+                }
+                files.pick_file()
+            }
         }
     }
 
-    /// Opens a file dropped on the window (the first, if several): an annotation file (by
-    /// its extension, as Load Annotations… takes them) is loaded into the open recording,
+    /// Opens a file dropped on the window (the first, if several): a BIDS `channels.tsv`
+    /// (by its name, `…_channels.tsv`) is loaded as Load Channels… does, an annotation file
+    /// (by its extension, as Load Annotations… takes them) into the open recording,
     /// anything else opened as a recording, as if picked with Open…. Ignored while a
     /// question or notice is shown.
     fn take_dropped(&mut self, ctx: &egui::Context) {
@@ -781,8 +822,18 @@ impl KymoApp {
         }
         if Format::of(&path).is_none() {
             self.leave(ctx, Leave::OpenPath(path));
+        } else if self.viewer().is_some() && is_channels_file(&path) {
+            self.load_channels_from(&path);
         } else if self.viewer().is_some() {
             self.load_annotations_from(&path);
+        } else if is_channels_file(&path) {
+            self.notice = Some((
+                "Could Not Load the Channels".to_owned(),
+                format!(
+                    "{} holds channel types. Open a recording first, then drop it on it.",
+                    file_name(&path)
+                ),
+            ));
         } else {
             self.notice = Some((
                 "Could Not Load the Annotations".to_owned(),
@@ -803,7 +854,10 @@ impl KymoApp {
             return;
         };
         let annotations = path.as_deref().is_some_and(|p| Format::of(p).is_some());
-        let text = if annotations && self.viewer().is_some() {
+        let channels = path.as_deref().is_some_and(is_channels_file);
+        let text = if channels && self.viewer().is_some() {
+            "Drop to Load Channels"
+        } else if annotations && self.viewer().is_some() {
             "Drop to Load Annotations"
         } else {
             "Drop to Open"
@@ -1044,6 +1098,102 @@ impl KymoApp {
         true
     }
 
+    /// Saves every channel's type and bad mark to `path` as a BIDS `channels.tsv` (with the
+    /// extension `.tsv`, so the recording is never overwritten); whether it did. An error
+    /// shows in a notice.
+    pub fn save_channels_to(&mut self, path: &Path) -> bool {
+        let path = with_tsv(path);
+        let State::Ready(viewer) = &mut self.state else {
+            return false;
+        };
+        match write_file(&path, |out| viewer.write_channels(out)) {
+            Ok(()) => {
+                viewer.set_channels_path(path);
+                true
+            }
+            Err(error) => {
+                self.notice = Some((
+                    "Could Not Save the Channels".into(),
+                    format!("{}: {error}", path.display()),
+                ));
+                false
+            }
+        }
+    }
+
+    /// Takes the channel types and bad marks of the `channels.tsv` at `path`; whether it
+    /// did. A type kymo doesn't know, given to a channel, is kept as New Type… keeps one. A
+    /// notice tells of an error, and of rows or types left out and units that differ.
+    pub fn load_channels_from(&mut self, path: &Path) -> bool {
+        let State::Ready(viewer) = &mut self.state else {
+            return false;
+        };
+        let name = file_name(path);
+        let context = channel_file::Context::of(&viewer.document().recording);
+        let read = File::open(path)
+            .map_err(annotation_file::FileError::from)
+            .and_then(|f| channel_file::read(BufReader::new(f), &context));
+        let loaded = match read {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.notice = Some((
+                    "Could Not Load the Channels".into(),
+                    format!("{name}: {error}"),
+                ));
+                return false;
+            }
+        };
+        let refused = viewer.load_channels(&loaded);
+        viewer.set_channels_path(path.to_owned());
+        let mut kept = false;
+        for (channel, kind) in &loaded.kinds {
+            let custom = kind.known().is_none() && !kind.is_stim();
+            let given = viewer.view().kind_of(*channel) == kind;
+            let types = &mut self.options.settings.types;
+            if custom && given && viewer.view().retyped(*channel) && !types.stored(kind) {
+                types.insert(crate::types::TypeSet {
+                    name: kind.name().to_owned(),
+                    ..Default::default()
+                });
+                kept = true;
+            }
+        }
+        if kept {
+            viewer.set_type_settings(self.options.settings.types.clone());
+        }
+        let mut notes = Vec::new();
+        if loaded.unknown > 0 {
+            notes.push(format!(
+                "Skipped {} row{} naming channels the recording doesn't have.",
+                loaded.unknown,
+                plural(loaded.unknown)
+            ));
+        }
+        if refused > 0 {
+            notes.push(format!(
+                "Left {refused} channel{} as {}: only the file makes a channel Stim.",
+                plural(refused),
+                if refused == 1 { "it is" } else { "they are" }
+            ));
+        }
+        if loaded.units_differ > 0 {
+            let n = loaded.units_differ;
+            notes.push(format!(
+                "{n} channel{} {} other units in {name}; their values come from the \
+                 recording.",
+                plural(n),
+                if n == 1 { "has" } else { "have" }
+            ));
+        }
+        if loaded.kinds.is_empty() && loaded.bad.is_empty() {
+            notes.insert(0, format!("{name} names none of the recording's channels."));
+        }
+        if !notes.is_empty() {
+            self.notice = Some(("Channels Loaded".into(), notes.join(" ")));
+        }
+        true
+    }
+
     fn current_path(&self) -> Option<&Path> {
         match &self.state {
             State::Empty => None,
@@ -1196,6 +1346,14 @@ pub fn text_field_key(action: Action) -> Option<Event> {
 }
 
 /// `path` with the extension `.tsv`, unless it has it (in any case).
+/// Whether `path` is named as a BIDS `channels.tsv` (`…_channels.tsv`, in any case).
+fn is_channels_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|n| n == "channels.tsv" || n.ends_with("_channels.tsv"))
+}
+
 fn with_tsv(path: &Path) -> PathBuf {
     if Format::of(path) == Some(Format::Table) {
         path.to_owned()

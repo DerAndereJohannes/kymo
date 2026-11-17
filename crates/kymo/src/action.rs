@@ -19,6 +19,10 @@ pub enum Action {
     SaveAnnotations,
     /// Saves the annotations of the descriptions shown, stim ones included.
     ExportShownAnnotations,
+    /// Takes channel types and bad channels from a BIDS `channels.tsv`.
+    LoadChannels,
+    /// Saves channel types and bad channels as a BIDS `channels.tsv`.
+    SaveChannels,
     /// Shows or hides the Recording Info window: everything `--info` prints.
     RecordingInfo,
     Settings,
@@ -88,7 +92,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 49] = [
+    pub const ALL: [Action; 51] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -97,6 +101,8 @@ impl Action {
         Action::LoadAnnotations,
         Action::SaveAnnotations,
         Action::ExportShownAnnotations,
+        Action::LoadChannels,
+        Action::SaveChannels,
         Action::RecordingInfo,
         Action::Settings,
         Action::Shortcuts,
@@ -152,6 +158,8 @@ impl Action {
             Action::LoadAnnotations => "Load Annotations…",
             Action::SaveAnnotations => "Save Annotations…",
             Action::ExportShownAnnotations => "Export Shown Annotations…",
+            Action::LoadChannels => "Load Channels…",
+            Action::SaveChannels => "Save Channels…",
             Action::RecordingInfo => "Recording Info…",
             Action::Settings => "Settings…",
             Action::Shortcuts => "Keyboard Shortcuts",

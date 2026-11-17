@@ -12,7 +12,7 @@ Phase 3's plan, `docs/phase3-plan.md`, and phase 2's, `docs/phase2-plan.md`, hol
 
 Phases 1 to 4 (see "Plan" in `docs/design.md`) are done; phase 3 added viewer features (anti-aliasing, automatic scale, colors, annotation editing with saving and loading, theme selection), phase 4 file formats, part 1 (BrainVision, EEGLAB, GDF, FIFF, XDF with regular and irregular streams, BVRF with several participants as streams; `docs/phase4-plan.md`), an independent review of every algorithm against specifications and first principles (`docs/review.md`, with write-ups for upstream that only the user decides to report) and the measurements ("Phase 4 measurements" in `docs/design.md`); its open points stay in its plan. Phase 5 (channels and measuring: a recording info window, channel types as names (no fixed list) with DC removal and scaling per type, changed by hand and saved to a BIDS `channels.tsv`, zooming a single channel, measuring by ⇧-dragging) is next; its scope is agreed in `docs/phase5-plan.md`. Phase 6 (display filters, `docs/phase6-plan.md`) follows. Each step's details are proposed before it starts. The crates:
 
-1. `crates/kymo-core`: recording model, EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF readers, index, pyramid with DC sums, tile cache, fixed-grid query.
+1. `crates/kymo-core`: recording model, EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF readers, annotation and `channels.tsv` files, index, pyramid with DC sums, tile cache, fixed-grid query.
 2. `crates/kymo`: egui + wgpu binary on top of `kymo-core`.
 
 Out of scope for now: formats beyond EDF/BDF, BrainVision, EEGLAB, GDF, FIFF, XDF and BVRF until later parts add them (`docs/phase4-plan.md`), filters (phase 6, `docs/phase6-plan.md`), re-referencing (later), Python packaging (phase 7). SSP and bipolar montages are out of scope altogether.
@@ -73,6 +73,7 @@ cargo bench -p kymo --bench frames -- file.bdf [--fresh] [--antialias] [--edit] 
 scripts/compare_mne.py file.bdf      # validation against MNE (needs uv); EDF, BDF, BrainVision (.vhdr), EEGLAB (.set), GDF, FIFF, XDF (against pyxdf and mnextend) and BVRF (.bvrh, against pybvrf); also takes directories
 scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 scripts/compare_mne.py --annotations ...   # also annotation files both ways
+scripts/compare_mne.py --channels ...      # also channels.tsv files both ways, against MNE-BIDS
 gh workflow run binaries.yml            # release binaries as artifacts (macOS arm64, Windows, Linux x86_64 and arm64), each its .tar.gz (.zip on Windows), not zipped again
 gh api repos/cbrnr/kymo/actions/runs/RUN/artifacts --jq '.artifacts[] | "\(.id) \(.name)"'   # their ids; then
 gh api repos/cbrnr/kymo/actions/artifacts/ID/zip > NAME   # fetches one as is (`gh run download` expects a zip and fails)

@@ -13,6 +13,7 @@ mod annotations;
 mod brainvision;
 mod bvrf;
 mod channel;
+mod channel_file;
 mod decode;
 mod edf_header;
 mod edf_plus;

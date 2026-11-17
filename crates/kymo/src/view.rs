@@ -394,6 +394,18 @@ impl ViewState {
         self.retype(changes)
     }
 
+    /// Gives each channel of `changes` its type, as a loaded `channels.tsv` says, in one
+    /// change: stim only where the file gives the channel stim (as only the readers make a
+    /// channel stim). Returns whether a type changed, and how many changes to stim were
+    /// left out.
+    pub fn apply_kinds(&mut self, changes: &[(ChannelId, ChannelKind)]) -> (bool, usize) {
+        let (taken, refused): (Vec<_>, Vec<_>) = changes
+            .iter()
+            .cloned()
+            .partition(|(c, kind)| !kind.is_stim() || self.file_kind(*c).is_stim());
+        (self.retype(taken), refused.len())
+    }
+
     fn retype(&mut self, changes: Vec<(ChannelId, ChannelKind)>) -> bool {
         let mut changed = BTreeSet::new();
         for (c, kind) in changes {
@@ -604,7 +616,9 @@ impl ViewState {
             | Action::Deselect
             | Action::LoadAnnotations
             | Action::SaveAnnotations
-            | Action::ExportShownAnnotations => return false,
+            | Action::ExportShownAnnotations
+            | Action::LoadChannels
+            | Action::SaveChannels => return false,
         }
         true
     }
@@ -683,6 +697,15 @@ impl ViewState {
 
     pub fn default_span(&self) -> f64 {
         self.default_span
+    }
+
+    /// Marks a channel bad or good.
+    pub fn set_bad(&mut self, channel: ChannelId, bad: bool) {
+        if !bad {
+            self.bad.remove(&channel);
+        } else if (channel.0 as usize) < self.kinds.len() {
+            self.bad.insert(channel);
+        }
     }
 
     pub fn toggle_bad(&mut self, channel: ChannelId) {

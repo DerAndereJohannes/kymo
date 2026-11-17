@@ -2203,6 +2203,152 @@ fn a_stim_channel_made_misc_loses_its_annotations_until_from_file() {
     assert_eq!(bars(&harness), 0);
 }
 
+/// File → Save Channels… writes every channel's type as shown and its bad mark as a BIDS
+/// `channels.tsv`, suggested next to the recording; Load Channels… in a new window gives
+/// them back, in the list's order too.
+#[test]
+fn channels_save_and_load_through_the_file_menu() {
+    let file = typed_preset();
+    let dir = TempDir::new();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let [a2, ecg] = [1, 3].map(kymo_core::ChannelId);
+    let suggested = viewer(&harness).channels_path();
+    let stem = file.path().file_stem().unwrap().to_str().unwrap();
+    assert_eq!(
+        suggested,
+        file.path().with_file_name(format!("{stem}_channels.tsv"))
+    );
+
+    change_type(&mut harness, "ECG", &["EEG"]);
+    click_in_list(&mut harness, egui::accesskit::Role::Button, "A2 bad");
+    assert!(viewer(&harness).view().is_bad(a2));
+    // Without an extension, .tsv is added.
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(dir.path().join("mine"))]);
+    choose(&mut harness, "File", "Save Channels…");
+    let saved = dir.path().join("mine.tsv");
+    assert!(harness.state().notice().is_none());
+    let text = std::fs::read_to_string(&saved).unwrap();
+    let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+    assert_eq!(
+        rows[0],
+        ["name", "type", "units", "sampling_frequency", "status"]
+    );
+    let row = |name: &str| rows.iter().find(|r| r[0] == name).unwrap().clone();
+    assert_eq!(row("A2")[1..], ["EEG", "\u{b5}V", "512", "bad"]);
+    assert_eq!(row("ECG")[1..2], ["EEG"]);
+    assert_eq!(row("EOG L")[1..2], ["EOG"]);
+    assert_eq!(row("Status")[1..2], ["TRIG"]);
+    assert_eq!(rows.len(), 6);
+    // The next save suggests the same file.
+    assert_eq!(viewer(&harness).channels_path(), saved);
+    drop(harness);
+
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    harness
+        .state_mut()
+        .answer_file_dialogs([Some(saved.clone())]);
+    choose(&mut harness, "File", "Load Channels…");
+    assert!(harness.state().notice().is_none());
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(ecg), ChannelKind::EEG);
+    assert!(view.retyped(ecg));
+    assert!(view.is_bad(a2));
+    assert_eq!(order(&harness), [0, 1, 3, 2, 4]);
+    assert!(harness.query_by_label("Show ECG channels").is_none());
+}
+
+/// A loaded `channels.tsv` changes only what it says: rows naming no channel are skipped,
+/// a channel made stim stays as it is (only the file makes one), a stim channel made Misc
+/// loses its annotations, a name kymo doesn't know is kept as a type; the notice says what
+/// was left out. A broken file changes nothing and says where it broke.
+#[test]
+fn loading_channels_takes_what_it_can_and_says_what_it_left() {
+    let file = typed_preset();
+    let dir = TempDir::new();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let [a1, a2, ecg] = [0, 1, 3].map(kymo_core::ChannelId);
+    let status = channel_named(&harness, "Status");
+    assert!(!stim_annotations(&harness).is_empty());
+    click_in_list(&mut harness, egui::accesskit::Role::Button, "A2 bad");
+
+    let path = dir.path().join("sub-01_channels.tsv");
+    std::fs::write(
+        &path,
+        "name\ttype\tunits\tstatus\tkymo_type\n\
+         A1\tTRIG\tuV\tn/a\tn/a\n\
+         ECG\tMISC\tn/a\tgood\tWheel\n\
+         X9\tEEG\tuV\tgood\tn/a\n\
+         A2\tEEG\tmS\tgood\tn/a\n\
+         Status\tMISC\tn/a\tn/a\tn/a\n",
+    )
+    .unwrap();
+    assert!(harness.state_mut().load_channels_from(&path));
+    harness.run_steps(2);
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(a1), ChannelKind::EEG);
+    assert_eq!(view.kind_of(ecg).name(), "Wheel");
+    assert_eq!(*view.kind_of(status), ChannelKind::MISC);
+    assert!(!view.is_bad(a2));
+    assert!(stim_annotations(&harness).is_empty());
+    assert!(
+        harness
+            .state()
+            .settings()
+            .types
+            .stored(&ChannelKind::named("wheel"))
+    );
+    let (title, text) = harness.state().notice().unwrap();
+    assert_eq!(title, "Channels Loaded");
+    assert_eq!(
+        text,
+        "Skipped 1 row naming channels the recording doesn't have. Left 1 channel as it \
+         is: only the file makes a channel Stim. 1 channel has other units in \
+         sub-01_channels.tsv; their values come from the recording."
+    );
+    harness.run_steps(2);
+    harness.get_by_label("OK").click();
+    harness.run_steps(2);
+
+    // Dropped, it loads as channels too: back to the file's types.
+    std::fs::write(&path, "name\ttype\nECG\tECG\nStatus\tTRIG\n").unwrap();
+    drop_files(&mut harness, &[&path]);
+    assert!(harness.state().notice().is_none());
+    let view = viewer(&harness).view();
+    assert_eq!(*view.kind_of(ecg), ChannelKind::ECG);
+    assert!(view.kind_of(status).is_stim());
+    harness.run_steps(2);
+    assert!(!stim_annotations(&harness).is_empty());
+
+    // A broken file changes nothing.
+    let broken = dir.path().join("broken.tsv");
+    std::fs::write(&broken, "name\tunits\nECG\tmV\n").unwrap();
+    assert!(!harness.state_mut().load_channels_from(&broken));
+    let (title, text) = harness.state().notice().unwrap();
+    assert_eq!(title, "Could Not Load the Channels");
+    assert_eq!(text, "broken.tsv: no column \"type\"");
+    assert_eq!(*viewer(&harness).view().kind_of(ecg), ChannelKind::ECG);
+}
+
+/// Save Channels… suggests BIDS' name for a recording named as BIDS names them.
+#[test]
+fn channels_are_suggested_by_bids_name() {
+    let dir = TempDir::new();
+    let path = dir.path().join("sub-01_task-rest_eeg.bdf");
+    let spec = kymo_testgen::Spec::preset("bdf+c-small").unwrap();
+    kymo_testgen::write(&spec, &path).unwrap();
+    let mut harness = window(&path);
+    ready(&mut harness);
+    assert_eq!(
+        viewer(&harness).channels_path(),
+        dir.path().join("sub-01_task-rest_channels.tsv")
+    );
+}
+
 /// File → Recording Info…, ⌘I and the format's button open the Recording Info window; ⌘I
 /// and Esc close it.
 #[test]

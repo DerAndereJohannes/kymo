@@ -53,6 +53,8 @@ fn every_item_has_a_label_and_appears_once() {
             Action::LoadAnnotations,
             Action::SaveAnnotations,
             Action::ExportShownAnnotations,
+            Action::LoadChannels,
+            Action::SaveChannels,
         ] {
             assert!(seen.contains(&action), "{platform:?}: no {action:?}");
         }

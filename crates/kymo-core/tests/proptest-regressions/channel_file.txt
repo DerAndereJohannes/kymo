@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2cabcf9d868785de82920d4ef50b7984da269ee6c648567697fbda8722e509f8 # shrinks to channels = [("F", accel, false)]
+cc d34591483fe9c83b65aa47040dbadbfdfe360161b273e8315ac78251de8d6607 # shrinks to channels = [("F", Stim, false)]
+cc ddfa585e331f021d76245907aff19f0dca20ce61086671030cf7379fdf6d2c2a # shrinks to channels = [("-", EEG, false), ("-", EEG, false)]

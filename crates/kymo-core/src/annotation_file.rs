@@ -324,14 +324,14 @@ fn split_escaped(text: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-fn io_error(error: csv::Error) -> std::io::Error {
+pub(crate) fn io_error(error: csv::Error) -> std::io::Error {
     match error.into_kind() {
         csv::ErrorKind::Io(error) => error,
         other => std::io::Error::other(format!("{other:?}")),
     }
 }
 
-fn csv_error(error: csv::Error) -> FileError {
+pub(crate) fn csv_error(error: csv::Error) -> FileError {
     let line = error.position().map_or(0, |p| p.line());
     match error.into_kind() {
         csv::ErrorKind::Io(error) => FileError::Io(error),
