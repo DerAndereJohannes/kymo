@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, Event, FontId, Pos2, Rangef, Rect, Sense, Stroke,
-    StrokeKind, TextStyle, Ui, pos2, vec2,
+    StrokeKind, TextFormat, TextStyle, Ui, pos2, text::LayoutJob, vec2,
 };
 use kymo_core::service::TileService;
 use kymo_core::stim::EventOptions;
@@ -89,6 +89,12 @@ const MEASURE_ALPHA: f32 = 0.12;
 const MEASURE_LABEL_GAP: f32 = 4.0;
 /// Below the annotation labels, the measurement's label's top, in points.
 const MEASURE_LABEL_TOP: f32 = 4.0;
+/// Between the parts of a line of the measurement's label, beyond a space, in points.
+const MEASURE_LABEL_SPACE: f32 = 6.0;
+/// The room beside the text of the measurement's label, in points.
+const MEASURE_LABEL_MARGIN: f32 = 4.0;
+/// The radius of the dots where the measurement's ends cross its trace, in points.
+const MEASURE_DOT: f32 = 2.5;
 /// Width of the selected annotation's outline, in points.
 const OUTLINE_WIDTH: f32 = 2.0;
 /// The description new annotations start with: MNE treats descriptions starting with
@@ -1038,7 +1044,19 @@ impl Viewer {
             None => "Editing annotations".to_owned(),
         });
         let hint = self.shift_hint.unwrap_or_default().to_owned();
-        let left = [mode.unwrap_or_default(), hint, left, self.pointed.clone()]
+        // The measurement in full while it is made or the pointer is over its band, in
+        // place of the reading and the annotations under the pointer.
+        let measured = self.measurement.and_then(|m| {
+            let span = m.span(rec);
+            let over = |t: f64| span.start <= t && t <= span.end;
+            (self.measuring.is_some() || self.hover.time.is_some_and(over))
+                .then(|| self.measurement_details(m, &span))
+        });
+        let (left, pointed) = match measured {
+            Some(details) => (details, String::new()),
+            None => (left, self.pointed.clone()),
+        };
+        let left = [mode.unwrap_or_default(), hint, left, pointed]
             .into_iter()
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
@@ -1368,8 +1386,36 @@ impl Viewer {
             painter.rect_filled(line, 0.0, color);
         }
 
-        let [interval, values] = self.measurement_text(measurement, &span, width_px);
+        self.draw_measure_dots(painter, traces, measurement, &span, width_px, visuals);
+
+        // Two lines: the interval and its frequency at a glance, then the channel and its
+        // peak-to-peak amplitude in the band; the rest is in the status line.
+        let body = TextStyle::Body.resolve(ui.style());
         let small = TextStyle::Small.resolve(ui.style());
+        let weak = visuals.weak_text_color();
+        let mut interval = LayoutJob::default();
+        let duration = measure::duration_text(&span);
+        interval.append(&duration, 0.0, TextFormat::simple(body.clone(), color));
+        if let Some(frequency) = measure::frequency_text(&span) {
+            let format = TextFormat::simple(body, color);
+            interval.append(&format!(" {frequency}"), MEASURE_LABEL_SPACE, format);
+        }
+        let rec = &self.document.recording;
+        let (unit, factor) = reading_unit(rec, &self.view, measurement.channel);
+        let version = self.view.tile_view(width_px).version;
+        let peak_to_peak = self
+            .band_extremes(measurement.channel, &span, version)
+            .map(|(lo, hi)| (hi - lo) * factor.abs());
+        let mut values = LayoutJob::default();
+        let name = &rec.channel(measurement.channel).name;
+        values.append(name, 0.0, TextFormat::simple(small.clone(), weak));
+        let amplitude = format!(" {}", measure::amplitude_text(peak_to_peak, &unit));
+        values.append(
+            &amplitude,
+            MEASURE_LABEL_SPACE,
+            TextFormat::simple(small.clone(), color),
+        );
+
         let top = traces.top() + ui.fonts_mut(|f| f.row_height(&small)) + MEASURE_LABEL_TOP;
         let room = self.measure_label_width + MEASURE_LABEL_GAP;
         let (pivot, at) = if right + room <= traces.right() {
@@ -1380,44 +1426,127 @@ impl Viewer {
             (Align2::RIGHT_TOP, right - MEASURE_LABEL_GAP)
         };
         let plate = visuals.extreme_bg_color.gamma_multiply(LABEL_PLATE_ALPHA);
-        let stroke = visuals.widgets.noninteractive.bg_stroke;
         let shown = egui::Area::new(id.with("measurement"))
             .pivot(pivot)
             .fixed_pos(pos2(at, top))
             .constrain_to(traces)
             .interactable(false)
+            .accessible_name(self.measurement_details(measurement, &span))
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(plate)
-                    .stroke(stroke)
                     .corner_radius(2.0)
-                    .inner_margin(vec2(4.0, 2.0))
+                    .inner_margin(vec2(MEASURE_LABEL_MARGIN, 2.0))
                     .show(ui, |ui| {
+                        // Never wrapped: the area lays out in last frame's size, which a
+                        // longer text would otherwise wrap to.
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.style_mut().interaction.selectable_labels = false;
-                        ui.label(egui::RichText::new(interval).small().color(color));
-                        ui.label(egui::RichText::new(values).small().color(color));
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(interval);
+                        ui.label(values);
                     });
             });
         Some(shown.response.rect.width())
     }
 
-    /// A measurement's label: its interval, and its channel's readings at both ends as the
-    /// status line reads them (measured from the window's mean with DC removal, in the
-    /// scale bar's unit).
-    fn measurement_text(&self, m: Measurement, span: &Span, width_px: u32) -> [String; 2] {
+    /// Dots where the measurement's ends cross its channel's trace, where it is on screen
+    /// and the ends read values (not envelopes).
+    fn draw_measure_dots(
+        &self,
+        painter: &egui::Painter,
+        traces: Rect,
+        m: Measurement,
+        span: &Span,
+        width_px: u32,
+        visuals: &egui::Visuals,
+    ) {
+        let Some(row) = self.view.row_of(m.channel) else {
+            return;
+        };
+        if !self.view.visible_rows().contains(&row) {
+            return;
+        }
         let rec = &self.document.recording;
+        let height = f64::from(traces.height());
+        let row_height = self.view.row_height(height);
+        let center = self.view.y_of_row(row as f64 + 0.5, height);
+        let amplitude = self.view.channel_amplitude(m.channel);
+        if !(amplitude > 0.0 && amplitude.is_finite()) {
+            return;
+        }
+        let per_unit = row_height / (2.0 * amplitude);
+        let baseline = self.baseline(m.channel);
+        // Stim traces are clipped to their rows.
+        let rows = if self.view.kind_of(m.channel).is_stim() {
+            let top = traces.top() + (center - row_height / 2.0) as f32;
+            Rangef::new(top, top + row_height as f32)
+        } else {
+            traces.y_range()
+        };
         let view = self.view.tile_view(width_px);
+        let width = f64::from(traces.width());
+        for t in [span.start, span.end] {
+            let Some(readout::Reading::Value(v)) =
+                readout::read(rec, self.service().cache(), &view, m.channel, t)
+            else {
+                continue;
+            };
+            let y = traces.top() + (center - (v - baseline) * per_unit) as f32;
+            let x = traces.left() + self.view.x_at(t, width) as f32;
+            if rows.contains(y) && traces.x_range().contains(x) {
+                let at = pos2(x, y);
+                painter.circle(
+                    at,
+                    MEASURE_DOT,
+                    visuals.strong_text_color(),
+                    Stroke::new(1.0, visuals.extreme_bg_color),
+                );
+            }
+        }
+    }
+
+    /// The smallest and largest physical value of `channel` in the band, exact; `None`
+    /// while tiles are missing (asked for here) or where no sample has a value.
+    fn band_extremes(
+        &self,
+        channel: ChannelId,
+        span: &Span,
+        version: kymo_core::tile::SignalVersion,
+    ) -> Option<(f64, f64)> {
+        let service = self.service();
+        let rec = &self.document.recording;
+        match readout::extremes(rec, service.cache(), version, channel, span.inside.clone()) {
+            readout::Extremes::Ready(extremes) => extremes,
+            readout::Extremes::Missing(keys) => {
+                // Behind the view's own tiles; again each frame, as a new view's request
+                // drops what is still queued.
+                service.submit(self.view.generation(), keys);
+                None
+            }
+        }
+    }
+
+    /// The measurement in full for the status line and screen readers: its channel, the
+    /// ends' times, the interval with its samples, and the readings at both ends as the
+    /// status line reads them (measured from the window's mean with DC removal, in the
+    /// scale bar's unit) with their difference.
+    fn measurement_details(&self, m: Measurement, span: &Span) -> String {
+        let rec = &self.document.recording;
+        let view = self.view.tile_view(self.width_px.max(1));
         let (unit, factor) = reading_unit(rec, &self.view, m.channel);
         let baseline = self.baseline(m.channel);
         let read = |t: f64| {
             readout::read(rec, self.service().cache(), &view, m.channel, t)
                 .map(|r| r.relative_to(baseline).scaled(factor))
         };
-        let name = &rec.channel(m.channel).name;
-        [
-            measure::interval_text(span),
-            measure::values_text(name, &unit, read(span.start), read(span.end)),
-        ]
+        measure::details_text(
+            &rec.channel(m.channel).name,
+            span,
+            Clock::for_end(self.view.duration()),
+            &unit,
+            [read(span.start), read(span.end)],
+        )
     }
 
     /// The scale bars, at the right edge of `traces`: a line one physical pixel wide in its

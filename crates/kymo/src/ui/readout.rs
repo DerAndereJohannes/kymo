@@ -1,9 +1,11 @@
 //! The value under the pointer, from the tile cache alone: the UI thread never reads the
 //! file.
 
+use std::ops::Range;
+
 use kymo_core::tile::{
-    CHANNEL_BLOCK, ChannelBlock, Level, Tile, TileCache, TileData, TileKey, View, level_at,
-    max_level,
+    CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, Tile, TileCache, TileData,
+    TileKey, View, exact_cover, level_at, max_level,
 };
 use kymo_core::{ChannelId, ChannelKind, Grid, Quantity, Recording, Unit};
 
@@ -120,6 +122,77 @@ pub fn read(
                 max: a.max(b),
             })
         }
+    }
+}
+
+/// The smallest and largest physical value of `channel` over `samples` of its grid, gaps
+/// and NaN left out, exact whatever the zoom: from the tiles of
+/// [`exact_cover`](kymo_core::tile::exact_cover) at `version`, never a coarser tile's
+/// wider bucket.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Extremes {
+    /// Every tile needed is cached: the extremes, `None` if no sample has a value.
+    Ready(Option<(f64, f64)>),
+    /// The tiles still to compute (or that failed) first.
+    Missing(Vec<TileKey>),
+}
+
+pub fn extremes(
+    recording: &Recording,
+    cache: &TileCache,
+    version: SignalVersion,
+    channel: ChannelId,
+    samples: Range<u64>,
+) -> Extremes {
+    let Some(info) = recording.channels().get(channel.0 as usize) else {
+        return Extremes::Ready(None);
+    };
+    let grid = recording.grid(info.grid);
+    let Some(row) = grid.channels().iter().position(|&c| c == channel) else {
+        return Extremes::Ready(None);
+    };
+    let samples = samples.start.min(grid.len())..samples.end.min(grid.len());
+    let block = ChannelBlock {
+        grid: info.grid,
+        index: (row / CHANNEL_BLOCK) as u32,
+    };
+    let (gain, offset) = info.tile_scaling();
+    let mut missing = Vec::new();
+    let mut found: Option<(f64, f64)> = None;
+    for (level, items) in exact_cover(samples, max_level(grid.len())) {
+        for time in items.start / TILE_LEN..items.end.div_ceil(TILE_LEN) {
+            let key = TileKey {
+                version,
+                level,
+                block,
+                time,
+            };
+            let Some(tile) = cache.get(&key) else {
+                // Both edges of a level may lie in one tile.
+                if !missing.contains(&key) {
+                    missing.push(key);
+                }
+                continue;
+            };
+            let first = time * TILE_LEN;
+            let from = (items.start.max(first) - first) as usize;
+            let to = (items.end.min(first + TILE_LEN) - first) as usize;
+            for item in from..to {
+                let (a, b) = match native(&tile, row % CHANNEL_BLOCK, item) {
+                    Some(Native::Sample(v)) => (v, v),
+                    Some(Native::Bucket(lo, hi)) => (lo, hi),
+                    None => continue,
+                };
+                let (a, b) = (a * gain + offset, b * gain + offset);
+                let (lo, hi) = (a.min(b), a.max(b));
+                found = Some(found.map_or((lo, hi), |(l, h)| (l.min(lo), h.max(hi))));
+            }
+        }
+    }
+    if missing.is_empty() {
+        Extremes::Ready(found)
+    } else {
+        Extremes::Missing(missing)
     }
 }
 

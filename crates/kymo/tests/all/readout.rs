@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use crate::common::{Fixture, Rng, channel, f32_rows, grid, i16_rows, i32_rows, walk};
-use kymo::ui::readout::{Reading, read};
+use kymo::ui::readout::{Extremes, Reading, extremes, read};
 use kymo_core::tile::{
     Level, SignalVersion, TileCache, TileKey, View, level_for, max_level, tiles_for_view,
 };
@@ -181,6 +181,76 @@ fn gaps_and_nans_read_nothing() {
     let cache = fx.cache(tiles_for_view(&fx.recording, &v));
     assert_eq!(read(&fx.recording, &cache, &v, float, nan), None);
     assert!(read(&fx.recording, &cache, &v, float, nan + 1.0 / 250.0).is_some());
+}
+
+/// The extremes of `range` from the samples, gaps and NaN left out.
+fn brute_extremes(fx: &Fixture, id: ChannelId, range: std::ops::Range<u64>) -> Option<(f64, f64)> {
+    range
+        .filter_map(|i| fx.physical(id, i))
+        .fold(None, |acc, v| {
+            Some(acc.map_or((v, v), |(lo, hi): (f64, f64)| (lo.min(v), hi.max(v))))
+        })
+}
+
+#[test]
+fn extremes_match_the_samples_and_wait_for_every_tile() {
+    let fx = fixture();
+    let mut rng = Rng::new(23);
+    for case in 0..300 {
+        let id = ChannelId((rng.next() % 36) as u32);
+        let len = fx.grid_of(id).len();
+        // Short and long ranges, at the edges too, some past the end.
+        let n = (len as f64 * 10f64.powf(-5.0 * rng.uniform())) as u64;
+        let start = match case % 5 {
+            0 => 0,
+            1 => len.saturating_sub(n),
+            _ => rng.next() % len,
+        };
+        let range = start..start + n + u64::from(case % 7 == 0) * 10;
+        let none = TileCache::new(1 << 30);
+        let Extremes::Missing(keys) =
+            extremes(&fx.recording, &none, SignalVersion::RAW, id, range.clone())
+        else {
+            // Nothing to read: an empty range.
+            assert!(range.start.min(len) >= range.end.min(len), "{range:?}");
+            continue;
+        };
+        // Every tile asked for once; with all but one cached, still missing.
+        let unique: std::collections::BTreeSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "{keys:?}");
+        if keys.len() > 1 {
+            let partial = fx.cache(keys[1..].iter().copied());
+            let got = extremes(
+                &fx.recording,
+                &partial,
+                SignalVersion::RAW,
+                id,
+                range.clone(),
+            );
+            assert_eq!(got, Extremes::Missing(vec![keys[0]]), "{range:?}");
+        }
+        let cache = fx.cache(keys.iter().copied());
+        let got = extremes(&fx.recording, &cache, SignalVersion::RAW, id, range.clone());
+        let want = brute_extremes(fx, id, range.start..range.end.min(len));
+        assert_eq!(got, Extremes::Ready(want), "channel {id:?} over {range:?}");
+    }
+    // Within a gap: no value, once its tiles are there.
+    let gap = ChannelId(0);
+    let range = 61_000..69_000;
+    let Extremes::Missing(keys) = extremes(
+        &fx.recording,
+        &TileCache::new(1 << 30),
+        SignalVersion::RAW,
+        gap,
+        range.clone(),
+    ) else {
+        panic!("tiles needed");
+    };
+    let cache = fx.cache(keys);
+    assert_eq!(
+        extremes(&fx.recording, &cache, SignalVersion::RAW, gap, range),
+        Extremes::Ready(None)
+    );
 }
 
 #[test]

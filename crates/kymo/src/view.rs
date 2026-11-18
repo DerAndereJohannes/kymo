@@ -828,6 +828,12 @@ impl ViewState {
         }
     }
 
+    /// The generation of the last [`request`](Self::request), so other keys can join its
+    /// queue.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The tiles to ask for when the tile view changed since the last call: a new
     /// generation and the keys from [`prefetch`], looking ahead in the direction of the
     /// last pan. `None` while the view stays the same.

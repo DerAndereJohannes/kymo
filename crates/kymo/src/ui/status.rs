@@ -51,7 +51,12 @@ pub fn build_text(progress: &BuildProgress) -> Option<String> {
 
 /// `value` with [`DIGITS`] significant digits (whole numbers in full), and its unit.
 pub fn format_value(value: f64, unit: &str) -> String {
-    let number = format_number(value);
+    format_significant(value, DIGITS, unit)
+}
+
+/// `value` with `digits` significant digits (whole numbers in full), and its unit.
+pub fn format_significant(value: f64, digits: i32, unit: &str) -> String {
+    let number = format_number(value, digits);
     if unit.is_empty() {
         number
     } else {
@@ -59,14 +64,14 @@ pub fn format_value(value: f64, unit: &str) -> String {
     }
 }
 
-fn format_number(value: f64) -> String {
+fn format_number(value: f64, digits: i32) -> String {
     if !value.is_finite() {
         return format!("{value}");
     }
     let decimals = if value == 0.0 {
         0
     } else {
-        (DIGITS - 1 - value.abs().log10().floor() as i32).clamp(0, 12) as usize
+        (digits - 1 - value.abs().log10().floor() as i32).clamp(0, 12) as usize
     };
     let text = format!("{:.decimals$}", value.abs());
     // A rounded zero has no sign.

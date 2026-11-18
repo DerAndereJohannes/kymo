@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use kymo_core::GridId;
 use kymo_core::tile::{
     CHANNEL_BLOCK, ChannelBlock, Level, SignalVersion, TILE_LEN, TileKey, choose_level,
-    drawn_samples, level_for, max_level, samples_in, tiles_for_view,
+    drawn_samples, exact_cover, level_for, max_level, samples_in, tiles_for_view,
 };
 use proptest::prelude::*;
 
@@ -300,4 +300,53 @@ proptest! {
             }
         }
     }
+}
+
+proptest! {
+    /// The pieces cover the samples exactly once, each a whole bucket of its level, at most
+    /// two per level and none coarser than the top.
+    #[test]
+    fn exact_cover_covers_each_sample_once(
+        start in prop_oneof![0u64..5000, 0u64..100_000_000],
+        len in prop_oneof![0u64..200, 0u64..100_000, 0u64..100_000_000],
+        top in 0u8..12,
+    ) {
+        let top = level(top);
+        let samples = start..start + len;
+        let mut pieces: Vec<(u64, u64)> = Vec::new();
+        let mut per_level = std::collections::HashMap::<Level, usize>::new();
+        for (l, buckets) in exact_cover(samples.clone(), top) {
+            prop_assert!(l <= top);
+            prop_assert!(!buckets.is_empty());
+            *per_level.entry(l).or_default() += 1;
+            let b = l.bucket_len();
+            pieces.push((buckets.start * b, buckets.end * b));
+        }
+        prop_assert!(per_level.values().all(|&n| n <= 2), "{:?}", per_level);
+        pieces.sort_unstable();
+        let mut at = samples.start;
+        for (a, b) in pieces {
+            prop_assert_eq!(a, at);
+            at = b;
+        }
+        prop_assert_eq!(at, samples.end);
+    }
+}
+
+#[test]
+fn exact_cover_example() {
+    // Samples 5..1000: buckets 1..7 of level 2 (samples 128..896), then at the edges
+    // level 1's (32..128, 896..992) and samples (5..32, 992..1000).
+    assert_eq!(
+        exact_cover(5..1000, level(3)),
+        [
+            (level(2), 1..7),
+            (level(1), 1..4),
+            (level(1), 28..31),
+            (level(0), 5..32),
+            (level(0), 992..1000)
+        ]
+    );
+    // No coarser than the top.
+    assert_eq!(exact_cover(0..256, level(1)), [(level(1), 0..8)]);
 }

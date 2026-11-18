@@ -1,9 +1,12 @@
 //! Measurements: ends snapped to the nearest samples, Δt exact to the sample, and the
-//! label's texts.
+//! texts of the label and the status line.
 
 use std::sync::Arc;
 
-use kymo::measure::{Measurement, Span, interval_text, nearest_sample, values_text};
+use kymo::measure::{
+    Measurement, Span, amplitude_text, details_text, duration_text, frequency_text, nearest_sample,
+};
+use kymo::ui::axis::Clock;
 use kymo::ui::readout::Reading;
 use kymo_core::{ChannelId, Grid, Piece, SampleType, TimeTable, Timebase};
 use proptest::prelude::*;
@@ -40,13 +43,14 @@ proptest! {
     ) {
         let grid = regular(rate, start, len);
         let span = measure(&grid, press, reach);
-        prop_assert_eq!(span, measure(&grid, reach, press));
+        prop_assert_eq!(&span, &measure(&grid, reach, press));
         let first = nearest_sample(&grid, press.min(reach));
         let last = nearest_sample(&grid, press.max(reach));
         prop_assert_eq!(span.samples, Some(last - first));
         prop_assert_eq!(span.dt, (last - first) as f64 / rate);
         prop_assert_eq!(span.start, grid.time_of(first));
         prop_assert_eq!(span.end, grid.time_of(last));
+        prop_assert_eq!(span.inside, first..last + 1);
         // Nearest: no other sample is closer to the time.
         for (time, s) in [(press.min(reach), first), (press.max(reach), last)] {
             let off = |n: u64| (grid.time_of(n) - time).abs();
@@ -71,18 +75,27 @@ fn a_known_interval() {
     assert_eq!(span.end, 3.25);
     assert_eq!(span.dt, 1.25);
     assert_eq!(span.samples, Some(320));
-    assert_eq!(
-        interval_text(&span),
-        "\u{394}t 1.250 s \u{b7} 320 samples \u{b7} 0.8000 Hz"
-    );
+    assert_eq!(span.inside, 512..833);
+    assert_eq!(duration_text(&span), "1.250 s");
+    // Three significant digits.
+    assert_eq!(frequency_text(&span).unwrap(), "0.800 Hz");
     // Both ends on one sample: no frequency.
     let span = measure(&grid, 2.0001, 2.0002);
-    assert_eq!(interval_text(&span), "\u{394}t 0.000 s \u{b7} 0 samples");
+    assert_eq!(duration_text(&span), "0 ms");
+    assert_eq!(frequency_text(&span), None);
+    assert_eq!(span.inside, 512..513);
+    // Below a second in ms, to the sample: whole ms at 256 Hz.
+    let span = measure(&grid, 2.0, 2.0 + 12.0 / 256.0);
+    assert_eq!(duration_text(&span), "47 ms");
+    assert_eq!(frequency_text(&span).unwrap(), "21.3 Hz");
     let span = measure(&grid, 2.0, 2.0 + 1.0 / 256.0);
-    assert_eq!(
-        interval_text(&span),
-        "\u{394}t 0.004 s \u{b7} 1 sample \u{b7} 256.0 Hz"
-    );
+    assert_eq!(frequency_text(&span).unwrap(), "256 Hz");
+    // A tenth of a ms at 5 kHz.
+    let grid = regular(5000.0, 0.0, 5000 * 60);
+    let span = measure(&grid, 1.0, 1.0468);
+    assert_eq!(duration_text(&span), "46.8 ms");
+    let span = measure(&grid, 1.0, 13.5);
+    assert_eq!(duration_text(&span), "12.5000 s");
 }
 
 #[test]
@@ -132,27 +145,81 @@ fn irregular_grids_measure_the_pointer_times() {
     .unwrap();
     let span = measure(&grid, 0.9, 0.4);
     assert_eq!((span.start, span.end, span.samples), (0.4, 0.9, None));
-    assert_eq!(interval_text(&span), "\u{394}t 0.5 s \u{b7} 2.000 Hz");
+    assert_eq!(duration_text(&span), "500 ms");
+    assert_eq!(frequency_text(&span).unwrap(), "2.00 Hz");
+    // No sample between them.
+    assert!(span.inside.is_empty(), "{:?}", span.inside);
+    // The samples at times between the ends, both included.
+    assert_eq!(measure(&grid, 0.3, 1.0).inside, 1..4);
+    assert_eq!(measure(&grid, 0.31, 0.99).inside, 2..3);
+    assert_eq!(measure(&grid, 0.0, 2.0).inside, 0..4);
+    // Before the first sample, none.
+    let times = TimeTable::new(&[0.2, 0.3, 1.0], 1.1).unwrap();
+    let grid = Grid::continuous(
+        Timebase::Irregular {
+            rate: 3.0,
+            hold: false,
+            times: Arc::new(times),
+        },
+        3,
+        SampleType::F32,
+        vec![ChannelId(0)],
+    )
+    .unwrap();
+    assert!(measure(&grid, 0.0, 0.1).inside.is_empty());
+    assert_eq!(measure(&grid, 0.0, 0.25).inside, 0..1);
 }
 
 #[test]
-fn values_and_their_difference() {
+fn amplitudes() {
+    assert_eq!(amplitude_text(Some(86.4), "\u{b5}V"), "p-p 86.40 \u{b5}V");
+    assert_eq!(amplitude_text(Some(5.0), ""), "p-p 5.000");
+    assert_eq!(amplitude_text(None, "\u{b5}V"), "p-p \u{2013}");
+}
+
+#[test]
+fn details_name_the_ends_samples_and_values() {
+    let grid = regular(256.0, 0.0, 256 * 60);
+    let span = measure(&grid, 12.5, 13.75);
     let v = |x| Some(Reading::Value(x));
     assert_eq!(
-        values_text("Fz", "\u{b5}V", v(12.3), v(-4.1)),
-        "Fz: 12.30 \u{b5}V \u{2192} \u{2212}4.100 \u{b5}V \u{b7} \u{394} \u{2212}16.40 \u{b5}V"
+        details_text("Fz", &span, Clock::Minutes, "\u{b5}V", [v(12.3), v(-4.1)]),
+        "Fz 0:12.500 to 0:13.750 \u{b7} 1.250 s, 320 samples at 256 Hz \u{b7} \
+         12.30 \u{b5}V \u{2192} \u{2212}4.100 \u{b5}V, \u{394} \u{2212}16.40 \u{b5}V"
     );
-    // An envelope has no difference, nor has a missing end.
+    // An envelope has no difference, nor has a missing end; one sample; a rate in full.
     let range = Some(Reading::Range {
         min: -1.0,
         max: 2.0,
     });
+    let grid = regular(0.5, 0.0, 100);
+    let span = measure(&grid, 2.0, 4.0);
     assert_eq!(
-        values_text("Fz", "\u{b5}V", range, v(1.0)),
-        "Fz: \u{2212}1.000 \u{2026} 2.000 \u{b5}V \u{2192} 1.000 \u{b5}V"
+        details_text("Fz", &span, Clock::Seconds, "\u{b5}V", [range, v(1.0)]),
+        "Fz 2 s to 4 s \u{b7} 2 s, 1 sample at 0.5 Hz \u{b7} \
+         \u{2212}1.000 \u{2026} 2.000 \u{b5}V \u{2192} 1.000 \u{b5}V"
     );
+    let grid = regular(1017.25, 0.0, 10_000);
+    let span = measure(&grid, 1.0, 2.0);
+    let text = details_text("STI", &span, Clock::Seconds, "", [v(5.0), None]);
+    assert!(text.contains(" at 1017.25 Hz "), "{text}");
+    assert!(text.ends_with(" \u{b7} 5.000 \u{2192} \u{2013}"), "{text}");
+    // Irregular: no samples.
+    let times = TimeTable::new(&[0.0, 0.3, 0.35, 1.0], 1.1).unwrap();
+    let grid = Grid::continuous(
+        Timebase::Irregular {
+            rate: 4.0,
+            hold: false,
+            times: Arc::new(times),
+        },
+        4,
+        SampleType::F32,
+        vec![ChannelId(0)],
+    )
+    .unwrap();
+    let span = measure(&grid, 0.4, 0.9);
     assert_eq!(
-        values_text("STI", "", v(5.0), None),
-        "STI: 5.000 \u{2192} \u{2013}"
+        details_text("x", &span, Clock::Seconds, "", [None, None]),
+        "x 0.4 s to 0.9 s \u{b7} 500 ms \u{b7} \u{2013} \u{2192} \u{2013}"
     );
 }

@@ -7644,17 +7644,29 @@ fn first_row(harness: &Harness<'_, KymoApp>) -> f32 {
     0.5 * traces.height() / viewer(harness).view().rows() as f32
 }
 
-/// The measurement label's two lines: its interval, and its readings.
-fn measurement_label(harness: &Harness<'_, KymoApp>) -> Option<[String; 2]> {
-    let line = |text: &str| {
-        harness
-            .query_by_label_contains(text)
-            .and_then(|n| n.accesskit_node().value())
-    };
-    Some([line("\u{394}t ")?, line(" \u{2192} ")?])
+/// The text of an accessibility node.
+fn node_text(node: &egui_kittest::Node<'_>) -> String {
+    node.accesskit_node()
+        .value()
+        .or_else(|| node.accesskit_node().label())
+        .unwrap_or_default()
+        .to_owned()
 }
 
-/// The measurement's label once both ends read, as tiles may still be arriving.
+/// The measurement label's two lines: its interval, and its channel with the amplitude.
+fn measurement_label(harness: &Harness<'_, KymoApp>) -> Option<[String; 2]> {
+    use egui::accesskit::Role;
+    let values = harness.query_by_label_contains("p-p ")?;
+    let below = values.rect();
+    // The line right above it, from the same left edge.
+    let interval = harness.query_all_by_role(Role::Label).find(|n| {
+        let r = n.rect();
+        (r.bottom() - below.top()).abs() < 1.0 && (r.left() - below.left()).abs() < 1.0
+    })?;
+    Some([node_text(&interval), node_text(&values)])
+}
+
+/// The measurement's label once its amplitude is known, as tiles may still be arriving.
 fn settled_measurement(harness: &mut Harness<'_, KymoApp>) -> [String; 2] {
     let start = Instant::now();
     loop {
@@ -7665,7 +7677,7 @@ fn settled_measurement(harness: &mut Harness<'_, KymoApp>) -> [String; 2] {
         }
         assert!(
             start.elapsed() < Duration::from_secs(60),
-            "timed out waiting for the measurement's readings: {:?}",
+            "timed out waiting for the measurement's amplitude: {:?}",
             measurement_label(harness)
         );
         harness.step();
@@ -7673,13 +7685,33 @@ fn settled_measurement(harness: &mut Harness<'_, KymoApp>) -> [String; 2] {
     }
 }
 
-/// The numbers of a measurement's readings line ("Cz: 1.5 µV → −2 µV · Δ −3.5 µV"), with
-/// the unit of the first.
-fn measured_numbers(line: &str) -> (Vec<f64>, String) {
-    let values = line.split_once(": ").unwrap().1;
+/// The status line while the pointer is at `pos` (in the band: the measurement's details),
+/// once both ends read.
+fn settled_details(harness: &mut Harness<'_, KymoApp>, pos: egui::Pos2) -> String {
+    hover(harness, pos);
+    let start = Instant::now();
+    loop {
+        let left = viewer(harness).status().left.clone();
+        let values = left.rsplit(" \u{b7} ").next().unwrap_or_default();
+        if !values.contains(kymo::measure::NO_READING) {
+            return left;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "timed out waiting for the measurement's readings: {left}"
+        );
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The numbers of the readings part of a measurement's details ("1.5 µV → −2 µV, Δ
+/// −3.5 µV"), with the unit of the first.
+fn measured_numbers(details: &str) -> (Vec<f64>, String) {
+    let values = details.rsplit(" \u{b7} ").next().unwrap();
     let mut unit = String::new();
     let numbers = values
-        .split([' ', '\u{2192}', '\u{b7}', '\u{394}', '\u{2026}'])
+        .split([' ', ',', '\u{2192}', '\u{394}', '\u{2026}'])
         .filter(|part| !part.is_empty())
         .filter_map(|part| match part.replace('\u{2212}', "-").parse() {
             Ok(x) => Some(x),
@@ -7692,6 +7724,69 @@ fn measured_numbers(line: &str) -> (Vec<f64>, String) {
         })
         .collect();
     (numbers, unit)
+}
+
+/// The number in a label's "p-p 86.40 µV".
+fn peak_to_peak(line: &str) -> f64 {
+    let number = line
+        .split_once("p-p ")
+        .unwrap()
+        .1
+        .split(' ')
+        .next()
+        .unwrap();
+    number.replace('\u{2212}', "-").parse().unwrap()
+}
+
+/// The galleys painted in the last frame whose text contains `needle`.
+fn painted_galleys(
+    harness: &Harness<'_, KymoApp>,
+    needle: &str,
+) -> Vec<std::sync::Arc<egui::Galley>> {
+    fn galleys(shape: &egui::Shape, needle: &str, out: &mut Vec<std::sync::Arc<egui::Galley>>) {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text().contains(needle) => out.push(t.galley.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| galleys(s, needle, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &harness.output().shapes {
+        galleys(&clipped.shape, needle, &mut out);
+    }
+    out
+}
+
+/// The centers of the small dots painted over the traces in the last frame: where the
+/// measurement's ends cross its trace.
+fn painted_dots(harness: &Harness<'_, KymoApp>) -> Vec<egui::Pos2> {
+    fn dots(shape: &egui::Shape, out: &mut Vec<egui::Pos2>) {
+        match shape {
+            egui::Shape::Circle(c) if c.radius < 4.0 => out.push(c.center),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| dots(s, out)),
+            _ => {}
+        }
+    }
+    let traces = viewer(harness).layout().unwrap().traces;
+    let mut out = Vec::new();
+    for clipped in &harness.output().shapes {
+        dots(&clipped.shape, &mut out);
+    }
+    out.retain(|p| traces.contains(*p));
+    out
+}
+
+/// A channel's physical samples `range`, brute force from the file.
+fn samples_of(
+    harness: &Harness<'_, KymoApp>,
+    id: kymo_core::ChannelId,
+    range: std::ops::Range<u64>,
+) -> Vec<f64> {
+    let rec = &viewer(harness).document().recording;
+    let mut out = vec![0.0f32; (range.end - range.start) as usize];
+    rec.read_physical(rec.channel(id).grid, &[id], range, &mut out)
+        .unwrap();
+    out.into_iter().map(f64::from).collect()
 }
 
 #[test]
@@ -7708,45 +7803,209 @@ fn shift_dragging_measures_time_and_values() {
     let to = at_time(&harness, 2.051, dy);
     shift_drag(&mut harness, from, to);
     let measurement = viewer(&harness).measurement().unwrap();
-    assert_eq!(measurement.channel, kymo_core::ChannelId(0));
+    let id = kymo_core::ChannelId(0);
+    assert_eq!(measurement.channel, id);
     // It doesn't pan.
     assert_eq!(viewer(&harness).view().time(), start);
     let [interval, values] = settled_measurement(&mut harness);
-    assert_eq!(
-        interval,
-        "\u{394}t 3.20 s \u{b7} 64 samples \u{b7} 0.3125 Hz"
-    );
-    // Cz's samples 41 and 105, in the readout's unit, and their difference.
-    let shown = viewer(&harness);
-    let rec = &shown.document().recording;
-    let id = kymo_core::ChannelId(0);
-    let sample = |s: u64| {
-        let mut out = [0.0f32];
-        rec.read_physical(rec.channel(id).grid, &[id], s..s + 1, &mut out)
-            .unwrap();
-        f64::from(out[0])
+    assert_eq!(interval, "3.20 s 0.312 Hz");
+    // Cz's peak-to-peak over samples 41 to 105, in the readout's unit.
+    let (unit, factor) = {
+        let shown = viewer(&harness);
+        kymo::scale_bar::reading_unit(&shown.document().recording, shown.view(), id)
     };
-    let (unit, factor) = kymo::scale_bar::reading_unit(rec, shown.view(), id);
-    let (a, b) = (sample(41) * factor, sample(105) * factor);
-    assert!(values.starts_with("Cz: "), "{values}");
-    let (numbers, shown_unit) = measured_numbers(&values);
-    assert_eq!(shown_unit, unit);
-    assert_eq!(numbers.len(), 3, "{values}");
+    let samples = samples_of(&harness, id, 41..106);
+    let (lo, hi) = samples
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| {
+            (l.min(v), h.max(v))
+        });
     let close = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs().max(1e-9);
+    assert!(values.starts_with("Cz p-p "), "{values}");
+    assert!(values.ends_with(&format!(" {unit}")), "{values}");
+    let pp = peak_to_peak(&values);
+    assert!(
+        close(pp, (hi - lo) * factor),
+        "{values}: {pp} vs {}",
+        (hi - lo) * factor
+    );
+
+    // The details in the status line while the pointer is over the band: the ends, the
+    // samples, Cz's samples 41 and 105 and their difference.
+    let at = at_time(&harness, 3.0, dy);
+    let details = settled_details(&mut harness, at);
+    assert!(
+        details.starts_with("Cz 0:02.05 to 0:05.25 \u{b7} 3.20 s, 64 samples at 20 Hz \u{b7} "),
+        "{details}"
+    );
+    let (a, b) = (samples[0] * factor, samples[64] * factor);
+    let (numbers, shown_unit) = measured_numbers(&details);
+    assert_eq!(shown_unit, unit);
+    assert_eq!(numbers.len(), 3, "{details}");
     for (got, want) in numbers.iter().zip([a, b, b - a]) {
         // Four significant digits.
-        assert!(close(*got, want), "{values}: {got} vs {want}");
+        assert!(close(*got, want), "{details}: {got} vs {want}");
     }
+    // Not beside it: the reading under the pointer, as ever.
+    let at = at_time(&harness, 8.0, dy);
+    hover(&mut harness, at);
+    let left = viewer(&harness).status().left.clone();
+    assert!(!left.contains("samples at"), "{left}");
+    assert!(left.contains("Cz"), "{left}");
 
-    // With DC removal, as drawn: from the window's mean; the difference stays.
+    // With DC removal, as drawn: the ends from the window's mean; the difference and the
+    // amplitude stay.
     press(&mut harness, command(), Key::D);
     let baseline = viewer(&harness).baseline(id) * factor;
     assert!(baseline.abs() > 0.01, "{baseline}");
-    let [_, values] = settled_measurement(&mut harness);
-    let (numbers, _) = measured_numbers(&values);
+    let at = at_time(&harness, 3.0, dy);
+    let details = settled_details(&mut harness, at);
+    let (numbers, _) = measured_numbers(&details);
     for (got, want) in numbers.iter().zip([a - baseline, b - baseline, b - a]) {
-        assert!(close(*got, want), "{values}: {got} vs {want}");
+        assert!(close(*got, want), "{details}: {got} vs {want}");
     }
+    let [_, values] = settled_measurement(&mut harness);
+    assert!(close(peak_to_peak(&values), pp), "{values}");
+}
+
+#[test]
+fn the_amplitude_is_in_the_readouts_unit() {
+    // Pz stored in mV, shown in µV as EEG is.
+    use kymo_testgen::{ChannelSpec, Format, Spec};
+    let cz = ChannelSpec::eeg("Cz", 20, Format::Edf);
+    let mut pz = ChannelSpec::eeg("Pz", 20, Format::Edf);
+    pz.dimension = "mV".into();
+    pz.physical_min /= 1000.0;
+    pz.physical_max /= 1000.0;
+    pz.amplitude /= 1000.0;
+    let file = TempFile::written(&Spec::new(Format::Edf, vec![cz, pz], 1.0, 60));
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let pz = kymo_core::ChannelId(1);
+    let row = viewer(&harness).view().row_of(pz).unwrap() as f32;
+    let dy = first_row(&harness) * (2.0 * row + 1.0);
+    let (from, to) = (at_time(&harness, 2.05, dy), at_time(&harness, 5.25, dy));
+    shift_drag(&mut harness, from, to);
+    assert_eq!(viewer(&harness).measurement().unwrap().channel, pz);
+    let [_, values] = settled_measurement(&mut harness);
+    assert!(values.starts_with("Pz p-p "), "{values}");
+    assert!(values.ends_with(" \u{b5}V"), "{values}");
+    let samples = samples_of(&harness, pz, 41..106);
+    let (lo, hi) = samples
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| {
+            (l.min(v), h.max(v))
+        });
+    let want = (hi - lo) * 1000.0;
+    let got = peak_to_peak(&values);
+    assert!(
+        (got - want).abs() <= 1e-3 * want,
+        "{values}: {got} vs {want}"
+    );
+}
+
+#[test]
+fn the_amplitude_asks_for_its_own_tiles() {
+    // Zoomed out, the band's edges need finer tiles than the view's; with the cache
+    // cleared, only the measurement asks for them again.
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    press(&mut harness, command(), Key::Num9);
+    step_until(&mut harness, "the tiles", |app| {
+        app.viewer().unwrap().complete()
+    });
+    let dy = first_row(&harness);
+    let (from, to) = (at_time(&harness, 3.3, dy), at_time(&harness, 11.7, dy));
+    shift_drag(&mut harness, from, to);
+    let [_, before] = settled_measurement(&mut harness);
+    viewer(&harness).cache().clear();
+    harness.step();
+    let [_, cleared] = measurement_label(&harness).unwrap();
+    assert!(cleared.ends_with(kymo::measure::NO_READING), "{cleared}");
+    let [_, after] = settled_measurement(&mut harness);
+    assert_eq!(after, before);
+}
+
+#[test]
+fn the_label_keeps_its_lines_whole_as_it_grows() {
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let dy = first_row(&harness);
+    let traces = viewer(&harness).layout().unwrap().traces;
+    let lines_whole = |harness: &Harness<'_, KymoApp>| {
+        let [interval, values] = measurement_label(harness).expect("a label");
+        for line in [&interval, &values] {
+            let galleys = painted_galleys(harness, line);
+            assert!(!galleys.is_empty(), "{line} not painted");
+            for g in galleys {
+                assert_eq!(g.rows.len(), 1, "{line} wrapped: {:?}", g.text());
+            }
+        }
+        let label = harness.query_by_label_contains("p-p ").unwrap().rect();
+        assert!(traces.contains_rect(label), "{label:?} beyond {traces:?}");
+    };
+    // Short at first, near the right edge, then long: the label laid out for the short
+    // text grows rather than wrapping.
+    let from = at_time(&harness, 19.0, dy);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    hover(&mut harness, from);
+    harness.drag_at(from);
+    harness.step();
+    let at = at_time(&harness, 18.8, dy);
+    hover(&mut harness, at);
+    harness.run_steps(3);
+    lines_whole(&harness);
+    for t in [12.0, 4.0, 0.5] {
+        let at = at_time(&harness, t, dy);
+        hover(&mut harness, at);
+        harness.run_steps(3);
+        lines_whole(&harness);
+    }
+    harness.drop_at(at_time(&harness, 0.5, dy));
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.step();
+    settled_measurement(&mut harness);
+    harness.run_steps(2);
+    lines_whole(&harness);
+    // While dragging and after, the details are in the status line only over the band.
+    let left = viewer(&harness).status().left.clone();
+    assert!(!left.contains("samples at"), "{left}");
+}
+
+#[test]
+fn dots_mark_where_the_ends_cross_the_trace() {
+    let file = slow_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    dc_off(&mut harness);
+    let dy = first_row(&harness);
+    assert!(painted_dots(&harness).is_empty());
+    let (from, to) = (at_time(&harness, 2.05, dy), at_time(&harness, 5.25, dy));
+    shift_drag(&mut harness, from, to);
+    settled_measurement(&mut harness);
+    harness.run_steps(2);
+    let mut dots = painted_dots(&harness);
+    dots.sort_by(|p, q| p.x.total_cmp(&q.x));
+    assert_eq!(dots.len(), 2, "{dots:?}");
+    for (dot, end) in dots.iter().zip([from, to]) {
+        assert!((dot.x - end.x).abs() <= 1.0, "{dot:?} vs {end:?}");
+    }
+    // As far apart as Cz's samples 41 and 105 are drawn, larger values higher.
+    let id = kymo_core::ChannelId(0);
+    let samples = samples_of(&harness, id, 41..106);
+    let shown = viewer(&harness);
+    let traces = shown.layout().unwrap().traces;
+    let row_height = f64::from(traces.height()) / shown.view().rows() as f64;
+    let per_unit = row_height / (2.0 * shown.view().channel_amplitude(id));
+    let want = (samples[0] - samples[64]) * per_unit;
+    let got = f64::from(dots[1].y - dots[0].y);
+    assert!((got - want).abs() < 0.5, "{got} vs {want}");
+    // Gone with the measurement.
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert!(painted_dots(&harness).is_empty());
 }
 
 #[test]
@@ -7836,7 +8095,7 @@ fn esc_and_clicks_remove_the_measurement_and_drags_keep_it() {
 }
 
 #[test]
-fn zoomed_out_ends_read_envelopes_and_count_every_sample() {
+fn zoomed_out_the_amplitude_stays_exact_and_the_ends_read_envelopes() {
     // 512 Hz: the whole recording on screen is envelopes.
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
@@ -7845,25 +8104,48 @@ fn zoomed_out_ends_read_envelopes_and_count_every_sample() {
     step_until(&mut harness, "the tiles", |app| {
         app.viewer().unwrap().complete()
     });
+    dc_off(&mut harness);
     let dy = first_row(&harness);
     let (from, to) = (at_time(&harness, 3.3, dy), at_time(&harness, 11.7, dy));
     shift_drag(&mut harness, from, to);
     let viewer_now = viewer(&harness);
-    let span = viewer_now
-        .measurement()
-        .unwrap()
-        .span(&viewer_now.document().recording);
+    let measurement = viewer_now.measurement().unwrap();
+    let span = measurement.span(&viewer_now.document().recording);
     let samples = span.samples.unwrap();
     assert_eq!(span.dt, samples as f64 / 512.0);
     assert!((span.dt - 8.4).abs() < 0.05, "{span:?}");
-    let [interval, values] = settled_measurement(&mut harness);
-    assert!(
-        interval.contains(&format!(" {samples} samples ")),
-        "{interval}"
+    let (unit, factor) = kymo::scale_bar::reading_unit(
+        &viewer_now.document().recording,
+        viewer_now.view(),
+        measurement.channel,
     );
-    // Ranges at both ends, and no difference between them.
-    assert_eq!(values.matches('\u{2026}').count(), 2, "{values}");
-    assert!(!values.contains('\u{394}'), "{values}");
+    // The peak-to-peak of every sample in the band, not of the buckets drawn.
+    let [interval, values] = settled_measurement(&mut harness);
+    assert!(!interval.contains("samples"), "{interval}");
+    let all = samples_of(&harness, measurement.channel, span.inside.clone());
+    let (lo, hi) = all
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| {
+            (l.min(v), h.max(v))
+        });
+    let want = (hi - lo) * factor;
+    let got = peak_to_peak(&values);
+    assert!(
+        (got - want).abs() <= 1e-3 * want.abs(),
+        "{values}: {got} vs {want} {unit}"
+    );
+    // The details count every sample; ranges at both ends, and no difference between them.
+    let at = at_time(&harness, 6.0, dy);
+    let details = settled_details(&mut harness, at);
+    assert!(
+        details.contains(&format!(" {samples} samples at 512 Hz ")),
+        "{details}"
+    );
+    let values = details.rsplit(" \u{b7} ").next().unwrap();
+    assert_eq!(values.matches('\u{2026}').count(), 2, "{details}");
+    assert!(!values.contains('\u{394}'), "{details}");
+    // No dots on envelopes.
+    assert!(painted_dots(&harness).is_empty());
 }
 
 #[test]

@@ -107,6 +107,49 @@ pub fn max_level(len: u64) -> Level {
     level
 }
 
+/// The buckets that make up `samples` exactly, each sample in one of them: whole buckets of
+/// the coarsest level up to `top` that fits, and at either edge finer ones, down to samples
+/// at level 0. Each piece is a level and a range of its buckets (samples at level 0), at
+/// most two per level, so their extremes are the samples' extremes from a few tiles,
+/// however long `samples` is.
+pub fn exact_cover(samples: Range<u64>, top: Level) -> Vec<(Level, Range<u64>)> {
+    let mut out = Vec::new();
+    if samples.is_empty() {
+        return out;
+    }
+    let mut level = top;
+    while level > Level::RAW && level.bucket_len() > samples.end - samples.start {
+        level = level.down().unwrap_or(Level::RAW);
+    }
+    // What is left to cover: the whole at first, then the edges, each of which ends or
+    // starts on a coarser bucket's boundary, so at most two parts at a time.
+    let mut parts = vec![samples];
+    loop {
+        let b = level.bucket_len();
+        let mut next = Vec::with_capacity(2);
+        for part in parts {
+            let (first, end) = (part.start.div_ceil(b), part.end / b);
+            if first < end {
+                out.push((level, first..end));
+                if part.start < first * b {
+                    next.push(part.start..first * b);
+                }
+                if end * b < part.end {
+                    next.push(end * b..part.end);
+                }
+            } else {
+                next.push(part);
+            }
+        }
+        parts = next;
+        match level.down() {
+            Some(down) if !parts.is_empty() => level = down,
+            _ => break,
+        }
+    }
+    out
+}
+
 /// Identifies a derived signal (filters, references, projections); 0 is the raw recording.
 /// Tiles of different versions never mix.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]

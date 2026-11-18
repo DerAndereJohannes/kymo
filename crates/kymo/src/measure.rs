@@ -2,10 +2,13 @@
 //! samples of the channel the drag started on, and that channel's readings at both ends.
 //! A measurement is display state: never saved, gone with the recording.
 
+use std::ops::Range;
+
 use kymo_core::{ChannelId, Grid, Recording};
 
+use crate::ui::axis::{Clock, format_time};
 use crate::ui::readout::Reading;
-use crate::ui::status::{format_value, reading_text, time_decimals};
+use crate::ui::status::{format_significant, format_value, reading_text, time_decimals};
 
 /// What an end without a reading shows (off screen, not cached yet, in a gap).
 pub const NO_READING: &str = "\u{2013}";
@@ -21,7 +24,7 @@ pub struct Measurement {
 
 /// A measurement's ends as measured: on a grid with sample times, the samples nearest to
 /// its times.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Span {
     /// The earlier end's time and the later one's, in seconds from the start.
     pub start: f64,
@@ -34,6 +37,9 @@ pub struct Span {
     pub samples: Option<u64>,
     /// The grid's rate (an irregular grid's average), for the time's decimals.
     pub rate: f64,
+    /// The samples from the earlier end to the later, both included; on an irregular grid,
+    /// those at times between them.
+    pub inside: Range<u64>,
 }
 
 impl Measurement {
@@ -44,13 +50,31 @@ impl Measurement {
     /// [`span`](Self::span) on `grid`, its channel's.
     pub fn span_on(&self, grid: &Grid) -> Span {
         let (a, b) = (self.press.min(self.reach), self.press.max(self.reach));
-        if grid.times().is_some() || grid.is_empty() {
+        if grid.is_empty() {
             return Span {
                 start: a,
                 end: b,
                 dt: b - a,
                 samples: None,
                 rate: grid.rate(),
+                inside: 0..0,
+            };
+        }
+        if grid.times().is_some() {
+            let len = grid.len();
+            let mut first = grid.sample_at(a).min(len);
+            if first < len && grid.time_of(first) < a {
+                first += 1;
+            }
+            let mut end = grid.sample_at(b).min(len - 1);
+            end = if grid.time_of(end) <= b { end + 1 } else { end };
+            return Span {
+                start: a,
+                end: b,
+                dt: b - a,
+                samples: None,
+                rate: grid.rate(),
+                inside: first..end.max(first),
             };
         }
         let (first, last) = (nearest_sample(grid, a), nearest_sample(grid, b));
@@ -66,6 +90,7 @@ impl Measurement {
             dt,
             samples: Some(samples),
             rate: grid.rate(),
+            inside: first..last + 1,
         }
     }
 }
@@ -82,31 +107,67 @@ pub fn nearest_sample(grid: &Grid, time: f64) -> u64 {
     }
 }
 
-/// "Δt 1.250 s · 320 samples · 0.8000 Hz": the interval, to the grid's sample at its
-/// rate's decimals; its samples where the grid has them; its frequency unless it is 0.
-pub fn interval_text(span: &Span) -> String {
+/// The interval: in ms below a second ("47 ms"), else in seconds ("1.250 s"), to the
+/// grid's sample at its rate's decimals.
+pub fn duration_text(span: &Span) -> String {
     let decimals = time_decimals(span.rate);
-    let mut parts = vec![format!("\u{394}t {:.decimals$} s", span.dt)];
-    match span.samples {
-        Some(1) => parts.push("1 sample".to_owned()),
-        Some(n) => parts.push(format!("{n} samples")),
-        None => {}
+    if span.dt < 1.0 {
+        let decimals = decimals.saturating_sub(3);
+        format!("{:.decimals$} ms", span.dt * 1e3)
+    } else {
+        format!("{:.decimals$} s", span.dt)
     }
-    if span.dt > 0.0 {
-        parts.push(format_value(1.0 / span.dt, "Hz"));
-    }
-    parts.join(" \u{b7} ")
 }
 
-/// "Fz: 12.30 µV → −4.100 µV · Δ −16.40 µV": a channel's readings at the earlier end and
-/// the later, in `unit`, and their difference where both are values (an envelope's has
-/// none).
-pub fn values_text(name: &str, unit: &str, start: Option<Reading>, end: Option<Reading>) -> String {
-    let text = |r: Option<Reading>| r.map_or(NO_READING.to_owned(), |r| reading_text(r, unit));
-    let mut out = format!("{name}: {} \u{2192} {}", text(start), text(end));
-    if let (Some(Reading::Value(a)), Some(Reading::Value(b))) = (start, end) {
-        out += " \u{b7} \u{394} ";
-        out += &format_value(b - a, unit);
+/// 1/Δt with three significant digits ("0.800 Hz", "21.3 Hz", "256 Hz"), as many as a drag
+/// is precise to; `None` for an interval of 0.
+pub fn frequency_text(span: &Span) -> Option<String> {
+    (span.dt > 0.0).then(|| format_significant(1.0 / span.dt, 3, "Hz"))
+}
+
+/// "p-p 86.40 µV": the peak-to-peak amplitude in the band, – until it is known or where no
+/// sample has a value.
+pub fn amplitude_text(peak_to_peak: Option<f64>, unit: &str) -> String {
+    match peak_to_peak {
+        Some(v) => format!("p-p {}", format_value(v, unit)),
+        None => format!("p-p {NO_READING}"),
     }
-    out
+}
+
+/// The status line's account of a measurement: "Fz 0:12.500 to 0:13.750 · 1.250 s, 320
+/// samples at 256 Hz · 12.30 µV → −4.100 µV, Δ −16.40 µV", the ends' times on `clock`, the
+/// samples between them where the grid has them, and the readings at the ends in `unit`
+/// with their difference where both are values (an envelope's has none).
+pub fn details_text(
+    name: &str,
+    span: &Span,
+    clock: Clock,
+    unit: &str,
+    ends: [Option<Reading>; 2],
+) -> String {
+    let decimals = time_decimals(span.rate);
+    let times = format!(
+        "{name} {} to {}",
+        format_time(span.start, decimals, clock),
+        format_time(span.end, decimals, clock)
+    );
+    let mut interval = duration_text(span);
+    if let Some(n) = span.samples {
+        let samples = if n == 1 { "sample" } else { "samples" };
+        interval += &format!(", {n} {samples} at {}", rate_text(span.rate));
+    }
+    let text = |r: Option<Reading>| r.map_or(NO_READING.to_owned(), |r| reading_text(r, unit));
+    let mut values = format!("{} \u{2192} {}", text(ends[0]), text(ends[1]));
+    if let [Some(Reading::Value(a)), Some(Reading::Value(b))] = ends {
+        values += ", \u{394} ";
+        values += &format_value(b - a, unit);
+    }
+    [times, interval, values].join(" \u{b7} ")
+}
+
+/// A sampling rate in full: "256 Hz", "0.5 Hz", "1017.25 Hz".
+fn rate_text(rate: f64) -> String {
+    let text = format!("{rate:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text} Hz")
 }
