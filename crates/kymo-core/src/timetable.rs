@@ -95,7 +95,7 @@ impl TimeTable {
     /// A writer of a table of `len` slots, as [`write`](Self::write) makes it, which takes
     /// the times one by one.
     pub fn writer(len: u64) -> TimeTableWriter {
-        let dir = crate::pyramid::Sidecar::default_dir().unwrap_or_else(std::env::temp_dir);
+        let dir = crate::cache::default_dir().unwrap_or_else(std::env::temp_dir);
         Self::writer_in(&dir, len)
     }
 

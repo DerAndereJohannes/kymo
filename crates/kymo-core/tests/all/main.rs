@@ -12,6 +12,7 @@ mod annotation_file;
 mod annotations;
 mod brainvision;
 mod bvrf;
+mod cache;
 mod channel;
 mod channel_file;
 mod decode;

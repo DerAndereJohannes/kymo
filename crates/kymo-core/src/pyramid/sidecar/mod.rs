@@ -236,6 +236,9 @@ struct Inner {
 struct State {
     path: PathBuf,
     complete: bool,
+    /// The temporary file while it is built, open and locked, so clearing the cache (see
+    /// [`crate::cache::clear`]) leaves it alone; `None` once complete.
+    building: Option<File>,
 }
 
 /// The stim changes of one grid, by row.
@@ -251,9 +254,10 @@ impl std::fmt::Debug for Sidecar {
 }
 
 impl Sidecar {
-    /// The default cache directory: `kymo` in the platform's user cache directory.
+    /// The default cache directory: `kymo` in the platform's user cache directory (see
+    /// [`crate::cache`]).
     pub fn default_dir() -> Option<PathBuf> {
-        dirs::cache_dir().map(|d| d.join("kymo"))
+        crate::cache::default_dir()
     }
 
     /// Opens the complete sidecar of `recording` in `dir`, found by its
@@ -271,15 +275,16 @@ impl Sidecar {
         let expected = header(&key, &layouts, header_len, total);
         let final_path = dir.join(format!("{}.{EXTENSION}", key.to_hex()));
 
-        let (map, path, complete, changes) =
+        let (map, path, building, changes) =
             match open_complete(&final_path, &expected, size, &layouts) {
-                Some((map, changes)) => (map, final_path.clone(), true, changes),
+                Some((map, changes)) => (map, final_path.clone(), None, changes),
                 None => {
-                    let (map, path) = create(dir, &key, &expected, total)?;
+                    let (map, path, file) = create(dir, &key, &expected, total)?;
                     let changes = layouts.iter().map(|_| Changes::new()).collect();
-                    (map, path, false, changes)
+                    (map, path, Some(file), changes)
                 }
             };
+        let complete = building.is_none();
         let done = layouts
             .iter()
             .map(|l| AtomicU64::new(if complete { l.len } else { 0 }))
@@ -295,7 +300,11 @@ impl Sidecar {
                 total,
                 changes: changes.into_iter().map(Mutex::new).collect(),
                 final_path,
-                state: Mutex::new(State { path, complete }),
+                state: Mutex::new(State {
+                    path,
+                    complete,
+                    building,
+                }),
             }),
         })
     }
@@ -374,13 +383,16 @@ impl Sidecar {
         }
         let changes: Vec<Changes> = inner.changes.iter().map(|c| lock(c).clone()).collect();
         let trailer = encode_trailer(&changes);
-        let append = || -> io::Result<()> {
-            let mut file = OpenOptions::new().write(true).open(&state.path)?;
+        let append = |mut file: &File| -> io::Result<()> {
+            // Through the locked handle: on Windows the lock keeps out writes from others.
             file.seek(SeekFrom::Start(trailer_at(inner.total)))?;
             file.write_all(&trailer)?;
             file.sync_data()
         };
-        append().map_err(io_error(&state.path))?;
+        let Some(file) = &state.building else {
+            return Ok(false);
+        };
+        append(file).map_err(io_error(&state.path))?;
         let flush = |map: &SharedMap| map.flush().map_err(io_error(&state.path));
         flush(&inner.map)?;
         // SAFETY: the flag lies in the header, which readers never touch after opening and
@@ -390,6 +402,7 @@ impl Sidecar {
         fs::rename(&state.path, &inner.final_path).map_err(io_error(&state.path))?;
         state.path = inner.final_path.clone();
         state.complete = true;
+        state.building = None;
         Ok(true)
     }
 }
@@ -513,7 +526,7 @@ fn create(
     key: &blake3::Hash,
     expected: &[u8],
     total: u64,
-) -> Result<(SharedMap, PathBuf), SidecarError> {
+) -> Result<(SharedMap, PathBuf, File), SidecarError> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     fs::create_dir_all(dir).map_err(io_error(dir))?;
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -524,6 +537,10 @@ fn create(
         .create_new(true)
         .open(&path)
         .map_err(io_error(&path))?;
+    // Held until the file is complete: clearing the cache deletes only temporary files it
+    // can lock, those whose builder is gone. A file system without locks keeps the build
+    // unprotected rather than failing it.
+    let _ = file.try_lock();
     let mapped = file
         .set_len(total)
         .and_then(|()| SharedMap::writable(&file));
@@ -539,7 +556,7 @@ fn create(
     // SAFETY: the mapping was just created and is not shared with any other thread yet;
     // `header` is a separate vector.
     unsafe { map.write(0, &header) };
-    Ok((map, path))
+    Ok((map, path, file))
 }
 
 /// One grid's part of a sidecar, as a [`PyramidStorage`]. Only the handle given to the one

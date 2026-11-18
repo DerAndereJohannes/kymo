@@ -7,6 +7,7 @@ mod annotation;
 pub mod annotation_file;
 pub mod brainvision;
 pub mod bvrf;
+pub mod cache;
 mod channel;
 pub mod channel_file;
 pub mod decode;

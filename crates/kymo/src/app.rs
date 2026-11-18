@@ -16,6 +16,7 @@ use kymo_core::stim::EventOptions;
 use crate::action::Action;
 use crate::annotations::AnnotationColors;
 use crate::app_mode::AppMode;
+use crate::disk_cache::DiskCache;
 use crate::document::{self, Document, Loading, error_text, file_name, format_duration, plural};
 use crate::keymap::{Keymap, Platform};
 use crate::native_menu::NativeMenu;
@@ -87,6 +88,8 @@ pub struct KymoApp {
     shortcuts_open: bool,
     about_open: bool,
     settings_open: bool,
+    /// The disk cache Settings shows.
+    disk_cache: DiskCache,
     /// Whether the Recording Info window is open.
     info_open: bool,
     /// Whether the Channel Types window is open, and what its filter holds.
@@ -169,6 +172,7 @@ impl KymoApp {
         let system_font = options.settings.system_font;
         apply_fonts(ctx, system_font);
         gpu.set_budget(options.settings.gpu_memory_bytes());
+        let disk_cache = DiskCache::new(options.sidecar_dir.clone());
         let mut app = KymoApp {
             state: State::Empty,
             gpu,
@@ -180,6 +184,7 @@ impl KymoApp {
             shortcuts_open: false,
             about_open: false,
             settings_open: false,
+            disk_cache,
             info_open: false,
             channel_types_open: false,
             channel_types_filter: String::new(),
@@ -503,15 +508,31 @@ impl KymoApp {
         {
             viewer.go_to(seconds);
         }
+        let repaint = ctx.clone();
+        self.disk_cache
+            .follow(self.settings_open, move || repaint.request_repaint());
         let mut settings = self.options.settings.clone();
+        let mut clear_cache = false;
         if settings_window(
             &ctx,
             &mut self.settings_open,
             &mut settings,
             &mut self.channel_types_open,
+            &self.disk_cache,
+            &mut clear_cache,
         ) {
             self.set_settings(settings);
             self.apply_theme(&ctx);
+        }
+        if clear_cache {
+            let keep = self
+                .viewer()
+                .and_then(Viewer::sidecar_path)
+                .into_iter()
+                .collect();
+            let repaint = ctx.clone();
+            self.disk_cache
+                .clear(keep, move || repaint.request_repaint());
         }
         let mut settings = self.options.settings.clone();
         let recording_types = self.viewer().map(|v| v.view().kinds()).unwrap_or_default();

@@ -327,6 +327,11 @@ impl TileService {
         &self.shared.cache
     }
 
+    /// The sidecar's file, if the pyramids live in one: a temporary name while it builds.
+    pub fn sidecar_path(&self) -> Option<std::path::PathBuf> {
+        self.shared.sidecar.as_ref().map(Sidecar::path)
+    }
+
     /// The pyramid of `grid`, readable while it builds.
     pub fn pyramid(&self, grid: GridId) -> Option<&Pyramid> {
         self.shared.pyramids.get(grid.0 as usize)

@@ -3189,6 +3189,84 @@ fn settings_apply_at_once() {
     assert_eq!(viewer(&harness).view().time(), 5.0..25.0);
 }
 
+/// Steps until a label containing `text` shows.
+fn step_until_label(harness: &mut Harness<'_, KymoApp>, text: &str) {
+    let start = Instant::now();
+    while harness.query_by_label_contains(text).is_none() {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "timed out waiting for {text:?}"
+        );
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Settings shows the disk cache's size and clears it, but for the open recording's sidecar
+/// and files kymo didn't write; settings stay. Without a cache directory there is no row.
+#[test]
+fn settings_clear_the_disk_cache() {
+    let file = TempFile::preset("bdf+c-small");
+    let dir = TempDir::new();
+    let hash = "0d5284d4f6dad0bd4380c50b1337de3dbb3982bdc8522b48e7e6ef04bebbaafd";
+    let other = dir.path().join(format!("{hash}.kymo-pyramid"));
+    std::fs::write(&other, vec![0u8; 3 << 20]).unwrap();
+    let foreign = dir.path().join("notes.txt");
+    std::fs::write(&foreign, b"mine").unwrap();
+    let settings = Settings {
+        tile_cache_mb: 100,
+        ..Settings::default()
+    };
+    let path = file.path().to_owned();
+    let sidecars = dir.path().to_owned();
+    // Tall enough for the last row of Settings to show without scrolling.
+    let size = egui::vec2(SIZE.x, 900.0);
+    let mut harness = Harness::builder().with_size(size).build_eframe(move |cc| {
+        KymoApp::new(
+            &cc.egui_ctx,
+            Gpu::none("no GPU in this test"),
+            Options {
+                sidecar_dir: Some(sidecars),
+                settings,
+                ..options()
+            },
+            Some(path),
+        )
+    });
+    ready(&mut harness);
+    let open = viewer(&harness).sidecar_path().unwrap();
+    assert!(open.exists());
+
+    choose(&mut harness, "Edit", "Settings");
+    step_until_label(&mut harness, " in 2 files");
+    // The window takes a few frames to grow to its content.
+    harness.run_steps(10);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Disk Cache")
+        .click();
+    step_until_label(&mut harness, "3 MB in 1 file cleared, 1 file in use kept");
+    assert!(!other.exists());
+    assert!(open.exists());
+    assert!(foreign.exists());
+    assert_eq!(harness.state().settings().tile_cache_mb, 100);
+
+    // Closed and opened again, it is measured again.
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(!harness.state().settings_open());
+    choose(&mut harness, "Edit", "Settings");
+    step_until_label(&mut harness, " in 1 file");
+    assert!(harness.query_by_label_contains("cleared").is_none());
+    drop(harness);
+
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    choose(&mut harness, "Edit", "Settings");
+    harness.run_steps(2);
+    harness.get_by_label("Tile Cache");
+    assert!(harness.query_by_label("Disk Cache").is_none());
+}
+
 /// Settings → Font puts the system's font in front of egui's for text, where the platform
 /// has one (macOS, Windows), and takes it out again; off by default. Elsewhere there is no
 /// such setting. Widths measured once (the names column's, the channel list's columns) are

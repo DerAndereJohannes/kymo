@@ -8,6 +8,7 @@ pub mod annotations;
 pub mod app;
 pub mod app_mode;
 pub mod cli;
+pub mod disk_cache;
 pub mod document;
 pub mod history;
 pub mod keymap;

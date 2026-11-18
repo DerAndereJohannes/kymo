@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, DragValue, Ui};
 
+use crate::disk_cache::DiskCache;
 use crate::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use crate::ui::Overlay;
 use crate::ui::fonts::SYSTEM_FONT_NAME;
@@ -10,14 +11,20 @@ use crate::ui::types::CHANNEL_TYPES;
 /// What the Channel Types row's button is labeled.
 pub const EDIT_TYPES: &str = "Edit\u{2026}";
 
+/// What the Disk Cache row's button is labeled.
+pub const CLEAR_CACHE: &str = "Clear";
+
 /// The Settings window, while `open`. Its Channel Types row's button opens the Channel
-/// Types window (`channel_types`). Returns whether a setting changed; the caller applies it
-/// at once.
+/// Types window (`channel_types`); its Disk Cache row shows `cache`, where there is one, and
+/// sets `clear_cache` when its button is clicked. Returns whether a setting changed; the
+/// caller applies it at once.
 pub fn settings_window(
     ctx: &egui::Context,
     open: &mut bool,
     settings: &mut Settings,
     channel_types: &mut bool,
+    cache: &DiskCache,
+    clear_cache: &mut bool,
 ) -> bool {
     let before = settings.clone();
     egui::Window::new("Settings")
@@ -126,6 +133,25 @@ pub fn settings_window(
                             .speed(8.0)
                             .suffix(" MB"),
                     );
+                    if cache.exists() {
+                        let label = ui.label("Disk Cache");
+                        ui.horizontal(|ui| {
+                            let button = ui.add_enabled(
+                                cache.clearable(),
+                                egui::Button::new(CLEAR_CACHE),
+                            );
+                            if button.labelled_by(label.id).clicked() {
+                                *clear_cache = true;
+                            }
+                            ui.label(cache.text());
+                        });
+                        ui.end_row();
+                        hint(
+                            ui,
+                            "Pyramids of the recordings opened before, kept so they open at \
+                             once; settings stay. Clear keeps the open recording's.",
+                        );
+                    }
                 });
                 });
             ui.add_space(6.0);
@@ -141,7 +167,7 @@ pub fn settings_window(
 const GAP: f32 = 12.0;
 
 /// The settings' row labels, in the first column.
-const LABELS: [&str; 8] = [
+const LABELS: [&str; 9] = [
     "Theme",
     "Font",
     "Channel Types",
@@ -150,6 +176,7 @@ const LABELS: [&str; 8] = [
     "Scale",
     "Tile Cache",
     "GPU Memory",
+    "Disk Cache",
 ];
 
 fn text_width(ctx: &egui::Context, text: &str) -> f32 {

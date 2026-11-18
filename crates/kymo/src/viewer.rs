@@ -609,6 +609,11 @@ impl Viewer {
         self.view.set_default_span(seconds);
     }
 
+    /// The file the recording's pyramids live in, if they live in one.
+    pub fn sidecar_path(&self) -> Option<std::path::PathBuf> {
+        self.service().sidecar_path()
+    }
+
     fn service(&self) -> &TileService {
         live(&self.service)
     }
