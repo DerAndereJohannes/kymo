@@ -265,6 +265,8 @@ pub struct Viewer {
     measure_label_width: f32,
     /// What the status line suggests while ⇧ is held over the traces.
     shift_hint: Option<&'static str>,
+    /// While ⇧ is held over the traces, the channel and time a ⇧-drag would start at.
+    measure_start: Option<(ChannelId, f64)>,
 }
 
 impl Viewer {
@@ -321,6 +323,7 @@ impl Viewer {
             measuring: None,
             measure_label_width: 0.0,
             shift_hint: None,
+            measure_start: None,
             history: History::default(),
             can_merge: Cell::new(None),
         }
@@ -1326,6 +1329,10 @@ impl Viewer {
             Vec::new()
         };
         let label_width = self.draw_measurement(ui, id, &overlay, traces, size_px[0]);
+        if let Some((channel, time)) = self.measure_start {
+            let visuals = ui.visuals();
+            self.draw_trace_dots(&overlay, traces, channel, &[time], size_px[0], visuals);
+        }
 
         // Channel names, centered on their rows, shortened in the middle where too long.
         let names_painter = painter.with_clip_rect(names);
@@ -1386,13 +1393,20 @@ impl Viewer {
             painter.rect_filled(line, 0.0, color);
         }
 
-        self.draw_measure_dots(painter, traces, measurement, &span, width_px, visuals);
+        let ends = [span.start, span.end];
+        self.draw_trace_dots(
+            painter,
+            traces,
+            measurement.channel,
+            &ends,
+            width_px,
+            visuals,
+        );
 
         // Two lines: the interval and its frequency at a glance, then the channel and its
         // peak-to-peak amplitude in the band; the rest is in the status line.
         let body = TextStyle::Body.resolve(ui.style());
         let small = TextStyle::Small.resolve(ui.style());
-        let weak = visuals.weak_text_color();
         let mut interval = LayoutJob::default();
         let duration = measure::duration_text(&span);
         interval.append(&duration, 0.0, TextFormat::simple(body.clone(), color));
@@ -1408,7 +1422,8 @@ impl Viewer {
             .map(|(lo, hi)| (hi - lo) * factor.abs());
         let mut values = LayoutJob::default();
         let name = &rec.channel(measurement.channel).name;
-        values.append(name, 0.0, TextFormat::simple(small.clone(), weak));
+        let text = visuals.text_color();
+        values.append(name, 0.0, TextFormat::simple(small.clone(), text));
         let amplitude = format!(" {}", measure::amplitude_text(peak_to_peak, &unit));
         values.append(
             &amplitude,
@@ -1450,18 +1465,19 @@ impl Viewer {
         Some(shown.response.rect.width())
     }
 
-    /// Dots where the measurement's ends cross its channel's trace, where it is on screen
-    /// and the ends read values (not envelopes).
-    fn draw_measure_dots(
+    /// Dots where `channel`'s trace is at `times`: a measurement's ends, or where one would
+    /// start while ⇧ is held. Where the row is on screen and the times read values (not
+    /// envelopes).
+    fn draw_trace_dots(
         &self,
         painter: &egui::Painter,
         traces: Rect,
-        m: Measurement,
-        span: &Span,
+        channel: ChannelId,
+        times: &[f64],
         width_px: u32,
         visuals: &egui::Visuals,
     ) {
-        let Some(row) = self.view.row_of(m.channel) else {
+        let Some(row) = self.view.row_of(channel) else {
             return;
         };
         if !self.view.visible_rows().contains(&row) {
@@ -1471,14 +1487,14 @@ impl Viewer {
         let height = f64::from(traces.height());
         let row_height = self.view.row_height(height);
         let center = self.view.y_of_row(row as f64 + 0.5, height);
-        let amplitude = self.view.channel_amplitude(m.channel);
+        let amplitude = self.view.channel_amplitude(channel);
         if !(amplitude > 0.0 && amplitude.is_finite()) {
             return;
         }
         let per_unit = row_height / (2.0 * amplitude);
-        let baseline = self.baseline(m.channel);
+        let baseline = self.baseline(channel);
         // Stim traces are clipped to their rows.
-        let rows = if self.view.kind_of(m.channel).is_stim() {
+        let rows = if self.view.kind_of(channel).is_stim() {
             let top = traces.top() + (center - row_height / 2.0) as f32;
             Rangef::new(top, top + row_height as f32)
         } else {
@@ -1486,9 +1502,9 @@ impl Viewer {
         };
         let view = self.view.tile_view(width_px);
         let width = f64::from(traces.width());
-        for t in [span.start, span.end] {
+        for &t in times {
             let Some(readout::Reading::Value(v)) =
-                readout::read(rec, self.service().cache(), &view, m.channel, t)
+                readout::read(rec, self.service().cache(), &view, channel, t)
             else {
                 continue;
             };
@@ -1687,6 +1703,18 @@ impl Viewer {
         if self.measuring.is_some() || shift && response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
         }
+        // Where a ⇧-drag would start: the sample nearest the pointer on the channel it
+        // would measure.
+        self.measure_start = (shift && response.hovered() && self.measuring.is_none())
+            .then(|| response.hover_pos())
+            .flatten()
+            .and_then(|p| {
+                let channel = self.channel_near(f64::from(p.y - traces.top()), area.height)?;
+                let rec = &self.document.recording;
+                let grid = rec.grid(rec.channel(channel).grid);
+                let time = self.time_at_x(f64::from(p.x - traces.left()), area.width);
+                Some((channel, measure::snap(grid, time)))
+            });
         self.shift_hint =
             (shift && over_traces && self.measuring.is_none()).then(|| match keymap.platform() {
                 Platform::Mac => "\u{21e7}-drag to measure",

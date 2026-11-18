@@ -7656,7 +7656,7 @@ fn node_text(node: &egui_kittest::Node<'_>) -> String {
 /// The measurement label's two lines: its interval, and its channel with the amplitude.
 fn measurement_label(harness: &Harness<'_, KymoApp>) -> Option<[String; 2]> {
     use egui::accesskit::Role;
-    let values = harness.query_by_label_contains("p-p ")?;
+    let values = harness.query_by_label_contains("PTP ")?;
     let below = values.rect();
     // The line right above it, from the same left edge.
     let interval = harness.query_all_by_role(Role::Label).find(|n| {
@@ -7726,10 +7726,10 @@ fn measured_numbers(details: &str) -> (Vec<f64>, String) {
     (numbers, unit)
 }
 
-/// The number in a label's "p-p 86.40 µV".
+/// The number in a label's "PTP 86.40 µV".
 fn peak_to_peak(line: &str) -> f64 {
     let number = line
-        .split_once("p-p ")
+        .split_once("PTP ")
         .unwrap()
         .1
         .split(' ')
@@ -7821,7 +7821,7 @@ fn shift_dragging_measures_time_and_values() {
             (l.min(v), h.max(v))
         });
     let close = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs().max(1e-9);
-    assert!(values.starts_with("Cz p-p "), "{values}");
+    assert!(values.starts_with("Cz PTP "), "{values}");
     assert!(values.ends_with(&format!(" {unit}")), "{values}");
     let pp = peak_to_peak(&values);
     assert!(
@@ -7835,7 +7835,7 @@ fn shift_dragging_measures_time_and_values() {
     let at = at_time(&harness, 3.0, dy);
     let details = settled_details(&mut harness, at);
     assert!(
-        details.starts_with("Cz 0:02.05 to 0:05.25 \u{b7} 3.20 s, 64 samples at 20 Hz \u{b7} "),
+        details.starts_with("Cz 0:02.05 to 0:05.25 \u{b7} 3.20 s (64 samples at 20 Hz) \u{b7} "),
         "{details}"
     );
     let (a, b) = (samples[0] * factor, samples[64] * factor);
@@ -7888,7 +7888,7 @@ fn the_amplitude_is_in_the_readouts_unit() {
     shift_drag(&mut harness, from, to);
     assert_eq!(viewer(&harness).measurement().unwrap().channel, pz);
     let [_, values] = settled_measurement(&mut harness);
-    assert!(values.starts_with("Pz p-p "), "{values}");
+    assert!(values.starts_with("Pz PTP "), "{values}");
     assert!(values.ends_with(" \u{b5}V"), "{values}");
     let samples = samples_of(&harness, pz, 41..106);
     let (lo, hi) = samples
@@ -7943,7 +7943,7 @@ fn the_label_keeps_its_lines_whole_as_it_grows() {
                 assert_eq!(g.rows.len(), 1, "{line} wrapped: {:?}", g.text());
             }
         }
-        let label = harness.query_by_label_contains("p-p ").unwrap().rect();
+        let label = harness.query_by_label_contains("PTP ").unwrap().rect();
         assert!(traces.contains_rect(label), "{label:?} beyond {traces:?}");
     };
     // Short at first, near the right edge, then long: the label laid out for the short
@@ -8004,6 +8004,30 @@ fn dots_mark_where_the_ends_cross_the_trace() {
     assert!((got - want).abs() < 0.5, "{got} vs {want}");
     // Gone with the measurement.
     press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert!(painted_dots(&harness).is_empty());
+
+    // Holding ⇧ shows where a measurement would start: on the trace at the sample nearest
+    // the pointer (sample 41 at 2.05 s), following it, gone with ⇧.
+    let at = at_time(&harness, 2.074, dy);
+    hover(&mut harness, at);
+    assert!(painted_dots(&harness).is_empty());
+    harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    harness.run_steps(2);
+    let start = painted_dots(&harness);
+    assert_eq!(start.len(), 1, "{start:?}");
+    assert!((start[0].x - from.x).abs() <= 0.3, "{start:?} vs {from:?}");
+    assert!(
+        (start[0].y - dots[0].y).abs() < 0.5,
+        "{start:?} vs {dots:?}"
+    );
+    let at = at_time(&harness, 5.226, dy);
+    hover(&mut harness, at);
+    harness.run_steps(2);
+    let moved = painted_dots(&harness);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert!((moved[0].x - to.x).abs() <= 0.3 && (moved[0].y - dots[1].y).abs() < 0.5);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
     harness.run_steps(2);
     assert!(painted_dots(&harness).is_empty());
 }
@@ -8138,7 +8162,7 @@ fn zoomed_out_the_amplitude_stays_exact_and_the_ends_read_envelopes() {
     let at = at_time(&harness, 6.0, dy);
     let details = settled_details(&mut harness, at);
     assert!(
-        details.contains(&format!(" {samples} samples at 512 Hz ")),
+        details.contains(&format!(" ({samples} samples at 512 Hz) ")),
         "{details}"
     );
     let values = details.rsplit(" \u{b7} ").next().unwrap();

@@ -172,9 +172,9 @@ fn irregular_grids_measure_the_pointer_times() {
 
 #[test]
 fn amplitudes() {
-    assert_eq!(amplitude_text(Some(86.4), "\u{b5}V"), "p-p 86.40 \u{b5}V");
-    assert_eq!(amplitude_text(Some(5.0), ""), "p-p 5.000");
-    assert_eq!(amplitude_text(None, "\u{b5}V"), "p-p \u{2013}");
+    assert_eq!(amplitude_text(Some(86.4), "\u{b5}V"), "PTP 86.40 \u{b5}V");
+    assert_eq!(amplitude_text(Some(5.0), ""), "PTP 5.000");
+    assert_eq!(amplitude_text(None, "\u{b5}V"), "PTP \u{2013}");
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn details_name_the_ends_samples_and_values() {
     let v = |x| Some(Reading::Value(x));
     assert_eq!(
         details_text("Fz", &span, Clock::Minutes, "\u{b5}V", [v(12.3), v(-4.1)]),
-        "Fz 0:12.500 to 0:13.750 \u{b7} 1.250 s, 320 samples at 256 Hz \u{b7} \
+        "Fz 0:12.500 to 0:13.750 \u{b7} 1.250 s (320 samples at 256 Hz) \u{b7} \
          12.30 \u{b5}V \u{2192} \u{2212}4.100 \u{b5}V, \u{394} \u{2212}16.40 \u{b5}V"
     );
     // An envelope has no difference, nor has a missing end; one sample; a rate in full.
@@ -196,13 +196,13 @@ fn details_name_the_ends_samples_and_values() {
     let span = measure(&grid, 2.0, 4.0);
     assert_eq!(
         details_text("Fz", &span, Clock::Seconds, "\u{b5}V", [range, v(1.0)]),
-        "Fz 2 s to 4 s \u{b7} 2 s, 1 sample at 0.5 Hz \u{b7} \
+        "Fz 2 s to 4 s \u{b7} 2 s (1 sample at 0.5 Hz) \u{b7} \
          \u{2212}1.000 \u{2026} 2.000 \u{b5}V \u{2192} 1.000 \u{b5}V"
     );
     let grid = regular(1017.25, 0.0, 10_000);
     let span = measure(&grid, 1.0, 2.0);
     let text = details_text("STI", &span, Clock::Seconds, "", [v(5.0), None]);
-    assert!(text.contains(" at 1017.25 Hz "), "{text}");
+    assert!(text.contains(" at 1017.25 Hz) "), "{text}");
     assert!(text.ends_with(" \u{b7} 5.000 \u{2192} \u{2013}"), "{text}");
     // Irregular: no samples.
     let times = TimeTable::new(&[0.0, 0.3, 0.35, 1.0], 1.1).unwrap();

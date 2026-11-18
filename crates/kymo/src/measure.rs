@@ -95,6 +95,16 @@ impl Measurement {
     }
 }
 
+/// The time a measurement's end at `time` lies at: its nearest sample's on a grid with
+/// sample times, `time` itself on an irregular or empty one.
+pub fn snap(grid: &Grid, time: f64) -> f64 {
+    if grid.is_empty() || grid.times().is_some() {
+        time
+    } else {
+        grid.time_of(nearest_sample(grid, time))
+    }
+}
+
 /// The sample of a non-empty `grid` nearest to `time`, its first or last beyond them.
 pub fn nearest_sample(grid: &Grid, time: f64) -> u64 {
     let last = grid.len() - 1;
@@ -125,17 +135,17 @@ pub fn frequency_text(span: &Span) -> Option<String> {
     (span.dt > 0.0).then(|| format_significant(1.0 / span.dt, 3, "Hz"))
 }
 
-/// "p-p 86.40 µV": the peak-to-peak amplitude in the band, – until it is known or where no
+/// "PTP 86.40 µV": the peak-to-peak amplitude in the band, – until it is known or where no
 /// sample has a value.
 pub fn amplitude_text(peak_to_peak: Option<f64>, unit: &str) -> String {
     match peak_to_peak {
-        Some(v) => format!("p-p {}", format_value(v, unit)),
-        None => format!("p-p {NO_READING}"),
+        Some(v) => format!("PTP {}", format_value(v, unit)),
+        None => format!("PTP {NO_READING}"),
     }
 }
 
-/// The status line's account of a measurement: "Fz 0:12.500 to 0:13.750 · 1.250 s, 320
-/// samples at 256 Hz · 12.30 µV → −4.100 µV, Δ −16.40 µV", the ends' times on `clock`, the
+/// The status line's account of a measurement: "Fz 0:12.500 to 0:13.750 · 1.250 s (320
+/// samples at 256 Hz) · 12.30 µV → −4.100 µV, Δ −16.40 µV", the ends' times on `clock`, the
 /// samples between them where the grid has them, and the readings at the ends in `unit`
 /// with their difference where both are values (an envelope's has none).
 pub fn details_text(
@@ -154,7 +164,7 @@ pub fn details_text(
     let mut interval = duration_text(span);
     if let Some(n) = span.samples {
         let samples = if n == 1 { "sample" } else { "samples" };
-        interval += &format!(", {n} {samples} at {}", rate_text(span.rate));
+        interval += &format!(" ({n} {samples} at {})", rate_text(span.rate));
     }
     let text = |r: Option<Reading>| r.map_or(NO_READING.to_owned(), |r| reading_text(r, unit));
     let mut values = format!("{} \u{2192} {}", text(ends[0]), text(ends[1]));
