@@ -1303,6 +1303,7 @@ impl MenuState for AppMenuState {
                 self.selected || self.dragging || self.measured || self.channels_selected
             }
             Action::ExportShownAnnotations => self.shown,
+            Action::ScaleSelectedUp | Action::ScaleSelectedDown => self.channels_selected,
             Action::OpenRecent(index) => usize::from(index) < self.recent.len(),
             Action::ClearRecent => !self.recent.is_empty(),
             _ if action.stim_checked(self.stim_options).is_some() => self.stim,

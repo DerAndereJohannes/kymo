@@ -15,7 +15,7 @@ use kymo_core::tile::query;
 use kymo_core::{AnnotationData, AnnotationId, ChannelId, ChannelKind, GridId, Origin};
 use kymo_core::{annotation_file, channel_file};
 
-use crate::action::Action;
+use crate::action::{Action, Gesture};
 use crate::annotations::{self, Legend, Marks};
 use crate::annotations::{AnnotationColor, AnnotationColors};
 use crate::document::{Document, Summary, format_duration};
@@ -264,7 +264,7 @@ pub struct Viewer {
     /// The measurement's label's width at the last frame, to place it beside the band.
     measure_label_width: f32,
     /// What the status line suggests while ⇧ is held over the traces.
-    shift_hint: Option<&'static str>,
+    shift_hint: Option<String>,
     /// While ⇧ is held over the traces, the channel and time a ⇧-drag would start at.
     measure_start: Option<(ChannelId, f64)>,
 }
@@ -673,7 +673,11 @@ impl Viewer {
                 }
                 return true;
             }
-            Action::ScaleUp | Action::ScaleDown | Action::DefaultScale => self.auto_scale = false,
+            Action::ScaleUp
+            | Action::ScaleDown
+            | Action::ScaleSelectedUp
+            | Action::ScaleSelectedDown
+            | Action::DefaultScale => self.auto_scale = false,
             _ => {}
         }
         self.view.apply(action)
@@ -1046,7 +1050,7 @@ impl Viewer {
             ),
             None => "Editing annotations".to_owned(),
         });
-        let hint = self.shift_hint.unwrap_or_default().to_owned();
+        let hint = self.shift_hint.clone().unwrap_or_default();
         // The measurement in full while it is made or the pointer is over its band, in
         // place of the reading and the annotations under the pointer.
         let measured = self.measurement.and_then(|m| {
@@ -1659,6 +1663,8 @@ impl Viewer {
             ui.memory_mut(|m| m.stop_text_input());
         }
         let shift = ui.input(|i| i.modifiers.shift);
+        // ⌥⇧⌘ held: scrolling scales the channel under the pointer instead.
+        let channel_keys = ui.input(|i| shift && i.modifiers.alt && keymap.command(i.modifiers));
         if response.drag_started()
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -1705,21 +1711,39 @@ impl Viewer {
         }
         // Where a ⇧-drag would start: the sample nearest the pointer on the channel it
         // would measure.
-        self.measure_start = (shift && response.hovered() && self.measuring.is_none())
+        self.measure_start =
+            (shift && !channel_keys && response.hovered() && self.measuring.is_none())
+                .then(|| response.hover_pos())
+                .flatten()
+                .and_then(|p| {
+                    let channel = self.channel_near(f64::from(p.y - traces.top()), area.height)?;
+                    let rec = &self.document.recording;
+                    let grid = rec.grid(rec.channel(channel).grid);
+                    let time = self.time_at_x(f64::from(p.x - traces.left()), area.width);
+                    Some((channel, measure::snap(grid, time)))
+                });
+        let scaled = (channel_keys && response.hovered() && self.measuring.is_none())
             .then(|| response.hover_pos())
             .flatten()
-            .and_then(|p| {
-                let channel = self.channel_near(f64::from(p.y - traces.top()), area.height)?;
-                let rec = &self.document.recording;
-                let grid = rec.grid(rec.channel(channel).grid);
-                let time = self.time_at_x(f64::from(p.x - traces.left()), area.width);
-                Some((channel, measure::snap(grid, time)))
-            });
-        self.shift_hint =
-            (shift && over_traces && self.measuring.is_none()).then(|| match keymap.platform() {
-                Platform::Mac => "\u{21e7}-drag to measure",
-                Platform::Windows | Platform::Linux => "Shift-drag to measure",
-            });
+            .and_then(|p| self.channel_near(f64::from(p.y - traces.top()), area.height));
+        self.shift_hint = if let Some(channel) = scaled {
+            let what = match self.view.scale_targets(channel).as_slice() {
+                [one] => format!("{} alone", self.document.recording.channel(*one).name),
+                many => format!("the {} selected channels", many.len()),
+            };
+            Some(format!(
+                "{}-scroll to scale {what}",
+                keymap.channel_scale_keys()
+            ))
+        } else {
+            (shift && over_traces && self.measuring.is_none()).then(|| {
+                match keymap.platform() {
+                    Platform::Mac => "\u{21e7}-drag to measure",
+                    Platform::Windows | Platform::Linux => "Shift-drag to measure",
+                }
+                .to_owned()
+            })
+        };
         // A click on a name marks the channel bad or good.
         let names_response = ui.interact(names, id.with("names"), Sense::click());
         let channel_at = |p: Pos2| {
@@ -1759,6 +1783,9 @@ impl Viewer {
         let pointer_x = pointer
             .filter(|p| traces.x_range().contains(p.x))
             .map(|p| f64::from(p.x - traces.left()));
+        // The channel a ⌥⇧⌘-scroll scales: the row under the pointer, beside the traces too.
+        let pointer_channel =
+            pointer.and_then(|p| self.channel_near(f64::from(p.y - traces.top()), area.height));
         let (events, modifiers) = ui.input(|i| (i.events.clone(), i.modifiers));
         for event in events {
             let gestures = match event {
@@ -1772,7 +1799,20 @@ impl Viewer {
                 _ => continue,
             };
             for gesture in gestures {
-                self.view.gesture(gesture, area, pointer_x);
+                match gesture {
+                    Gesture::ScaleChannel { factor } => {
+                        if let Some(channel) = pointer_channel {
+                            let targets = self.view.scale_targets(channel);
+                            self.view.scale_channels(&targets, factor);
+                            self.auto_scale = false;
+                        }
+                    }
+                    Gesture::Scale { .. } => {
+                        self.view.gesture(gesture, area, pointer_x);
+                        self.auto_scale = false;
+                    }
+                    _ => self.view.gesture(gesture, area, pointer_x),
+                }
             }
         }
     }

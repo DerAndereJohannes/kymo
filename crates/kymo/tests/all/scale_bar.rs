@@ -303,3 +303,25 @@ proptest! {
         prop_assert!(round, "{value} ({mantissa})");
     }
 }
+
+#[test]
+fn a_channel_scaled_alone_gets_its_own_bar() {
+    // EEG 0..3 in µV, EOG in mV, Status; EEG 1 twice as tall as its neighbors.
+    let rec = recording(3, 60);
+    let mut view = ViewState::new(&rec);
+    view.scale_channels(&[ChannelId(1)], 2.0);
+    let got: Vec<_> = scale_bars(&rec, &view)
+        .iter()
+        .map(|b| (b.group.clone(), b.channel.0, b.middle, b.value, b.fraction))
+        .collect();
+    // EEG 1 at 10 µV per spacing: 20 µV spans its whole row. EEG 2, after it, is of the
+    // group that already has a bar.
+    assert_eq!(
+        got.iter().map(|g| (g.1, g.2, g.3)).collect::<Vec<_>>(),
+        [(0, 0.5, 20.0), (1, 1.5, 20.0), (3, 3.5, 200.0)]
+    );
+    assert!((got[0].4 - 0.5).abs() < 1e-12 && (got[1].4 - 1.0).abs() < 1e-12);
+    assert_eq!(got[1].0, ScaleGroup::Channel(ChannelId(1)));
+    view.rejoin(&[ChannelId(1)]);
+    assert_eq!(scale_bars(&rec, &view).len(), 2);
+}

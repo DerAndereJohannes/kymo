@@ -84,6 +84,13 @@ impl Chord {
         }
     }
 
+    pub const fn shift_alt_cmd(key: Key) -> Chord {
+        Chord {
+            shift: true,
+            ..Chord::alt_cmd(key)
+        }
+    }
+
     pub const fn shift_cmd(key: Key) -> Chord {
         Chord {
             shift: true,
@@ -195,6 +202,9 @@ pub const BINDINGS: &[(Action, Chord)] = &[
     (Action::ScaleUp, Chord::alt_cmd(Key::Plus)),
     (Action::ScaleUp, Chord::alt_cmd(Key::Equals)),
     (Action::ScaleDown, Chord::alt_cmd(Key::Minus)),
+    (Action::ScaleSelectedUp, Chord::shift_alt_cmd(Key::Plus)),
+    (Action::ScaleSelectedUp, Chord::shift_alt_cmd(Key::Equals)),
+    (Action::ScaleSelectedDown, Chord::shift_alt_cmd(Key::Minus)),
     (Action::AutoScale, Chord::cmd(Key::R)),
     (Action::DefaultScale, Chord::alt_cmd(Key::Num0)),
     (Action::ToggleDc, Chord::cmd(Key::D)),
@@ -275,8 +285,10 @@ impl Keymap {
     /// points, for wheels that scroll by pages.
     ///
     /// Plain scrolling pans time (horizontal) and scrolls channels (vertical); Shift turns a
-    /// vertical wheel into panning; ⌘ zooms time and ⌥ scales amplitudes, both by
-    /// vertical amounts.
+    /// vertical wheel into panning. By vertical amounts, ⌘ zooms time, ⌥ (or ⌥⌘) scales
+    /// amplitudes, ⇧⌘ changes the number of rows and ⌥⇧⌘ scales the channel under the
+    /// pointer; with ⇧ a horizontal amount counts where there is no vertical one, as macOS
+    /// turns a mouse wheel's scrolling sideways while ⇧ is held.
     pub fn wheel(
         &self,
         unit: MouseWheelUnit,
@@ -290,13 +302,26 @@ impl Keymap {
             MouseWheelUnit::Page => delta * page,
         };
         let (dx, dy) = (f64::from(delta.x), f64::from(delta.y));
-        let command = match self.platform {
-            Platform::Mac => modifiers.mac_cmd,
-            Platform::Windows | Platform::Linux => modifiers.ctrl,
-        };
+        let command = self.command(modifiers);
         let doubling = |points: f64| (points / POINTS_PER_DOUBLING).exp2();
         let mut gestures = Vec::new();
-        if command {
+        let either = if dy != 0.0 { dy } else { dx };
+        if command && modifiers.shift {
+            if either != 0.0 {
+                let factor = doubling(either);
+                gestures.push(if modifiers.alt {
+                    Gesture::ScaleChannel { factor }
+                } else {
+                    Gesture::Rows { factor }
+                });
+            }
+        } else if command && modifiers.alt {
+            if dy != 0.0 {
+                gestures.push(Gesture::Scale {
+                    factor: doubling(dy),
+                });
+            }
+        } else if command {
             if dy != 0.0 {
                 gestures.push(Gesture::Zoom {
                     factor: doubling(dy),
@@ -324,13 +349,34 @@ impl Keymap {
         gestures
     }
 
-    /// A pinch by `factor` (above 1 spreads): zooms time, or scales amplitudes with ⌥.
+    /// A pinch by `factor` (above 1 spreads): zooms time, or with the modifiers of
+    /// [`wheel`](Self::wheel) scales amplitudes (⌥ or ⌥⌘), changes the number of rows (⇧⌘)
+    /// or scales the channel under the pointer (⌥⇧⌘).
     pub fn pinch(&self, factor: f32, modifiers: Modifiers) -> Gesture {
         let factor = f64::from(factor);
-        if modifiers.alt {
-            Gesture::Scale { factor }
-        } else {
-            Gesture::Zoom { factor }
+        let command = self.command(modifiers);
+        match (command, modifiers.alt, modifiers.shift) {
+            (true, true, true) => Gesture::ScaleChannel { factor },
+            (true, false, true) => Gesture::Rows { factor },
+            (_, true, _) => Gesture::Scale { factor },
+            _ => Gesture::Zoom { factor },
+        }
+    }
+
+    /// Whether ⌘ (Ctrl on Windows and Linux) is held.
+    pub fn command(&self, modifiers: Modifiers) -> bool {
+        match self.platform {
+            Platform::Mac => modifiers.mac_cmd,
+            Platform::Windows | Platform::Linux => modifiers.ctrl,
+        }
+    }
+
+    /// The modifiers held for scaling a single channel, as the platform writes them:
+    /// "⌥⇧⌘", or "Ctrl+Alt+Shift".
+    pub fn channel_scale_keys(&self) -> &'static str {
+        match self.platform {
+            Platform::Mac => "\u{2325}\u{21e7}\u{2318}",
+            Platform::Windows | Platform::Linux => "Ctrl+Alt+Shift",
         }
     }
 }

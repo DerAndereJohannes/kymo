@@ -8199,3 +8199,162 @@ fn holding_shift_over_the_traces_suggests_measuring() {
     harness.run_steps(2);
     assert!(!viewer(&harness).status().left.contains(hint));
 }
+
+/// The middle of row `row` on screen (0 is the top row), over the traces.
+fn row_middle(harness: &Harness<'_, KymoApp>, row: usize) -> egui::Pos2 {
+    let traces = viewer(harness).layout().unwrap().traces;
+    let height = traces.height() / viewer(harness).view().rows() as f32;
+    egui::pos2(
+        traces.center().x,
+        traces.top() + (row as f32 + 0.5) * height,
+    )
+}
+
+/// Every channel's amplitude, in its own unit.
+fn channel_amplitudes(harness: &Harness<'_, KymoApp>) -> Vec<f64> {
+    let viewer = viewer(harness);
+    (0..viewer.document().recording.channels().len() as u32)
+        .map(|c| viewer.view().channel_amplitude(kymo_core::ChannelId(c)))
+        .collect()
+}
+
+/// ⌥⇧⌘-scrolling over a trace scales its channel alone (the selection where it is in it),
+/// which the status line says while the keys are held; ⌥⇧⌘+ and − scale the selection; the
+/// channel list marks a channel scaled on its own, and its menu returns it to its type's
+/// scale, as Default Scale returns every channel. ⇧⌘-scrolling changes the rows, ⌥⌘-scrolling
+/// scales every channel.
+#[test]
+fn a_channel_scales_alone() {
+    use egui::accesskit::Role;
+    use kymo::ui::header::ALONE_LABEL;
+    use kymo::ui::types::SCALE_WITH_TYPE;
+    let file = TempFile::preset("bdf+c-small");
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let keys = kymo::keymap::Keymap::new(Platform::current()).channel_scale_keys();
+    let all = command() | Modifiers::ALT | Modifiers::SHIFT;
+    let start = channel_amplitudes(&harness);
+    let visible = viewer(&harness).view().visible_channels().to_vec();
+    let name = |harness: &Harness<'_, KymoApp>, c: kymo_core::ChannelId| {
+        viewer(harness).document().recording.channel(c).name.clone()
+    };
+    let second = visible[1];
+
+    // Held over the second row, the keys say what a scroll would scale, not measuring.
+    let at = row_middle(&harness, 1);
+    hover(&mut harness, at);
+    harness.event(egui::Event::ModifiersChanged(all));
+    harness.run_steps(2);
+    let left = viewer(&harness).status().left.clone();
+    let hint = format!("{keys}-scroll to scale {} alone", name(&harness, second));
+    assert!(left.starts_with(&hint), "{left}");
+    assert!(!left.contains("measure"), "{left}");
+    assert!(harness.query_by_label(ALONE_LABEL).is_none());
+
+    // A scroll up by 200 points doubles its height, and only its.
+    scroll(&mut harness, egui::vec2(0.0, 200.0), all);
+    let scaled = channel_amplitudes(&harness);
+    for (c, (now, before)) in scaled.iter().zip(&start).enumerate() {
+        let want = if c == second.0 as usize {
+            before / 2.0
+        } else {
+            *before
+        };
+        assert!(
+            (now - want).abs() <= 1e-9 * want,
+            "channel {c}: {now} != {want}"
+        );
+    }
+    let bars = viewer(&harness).scale_bars();
+    assert!(
+        bars.iter()
+            .any(|(b, _)| b.group == kymo::view::ScaleGroup::Channel(second)),
+        "{bars:?}"
+    );
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
+    assert!(!viewer(&harness).status().left.contains(&hint));
+    // Marked in the channel list; its menu returns it.
+    assert_eq!(harness.query_all_by_label(ALONE_LABEL).count(), 1);
+    let second_name = name(&harness, second);
+    channel_options(&mut harness, &second_name);
+    menu_path(&mut harness, &[SCALE_WITH_TYPE]);
+    assert_eq!(channel_amplitudes(&harness), start);
+    assert!(harness.query_by_label(ALONE_LABEL).is_none());
+
+    // The first and third selected: over the third, both scale.
+    let (first, third) = (visible[0], visible[2]);
+    let first_name = name(&harness, first);
+    click_in_list(&mut harness, Role::Label, &first_name);
+    let third_name = name(&harness, third);
+    harness
+        .get_by_role_and_label(Role::Label, &third_name)
+        .click_modifiers(command());
+    harness.run_steps(2);
+    assert_eq!(viewer(&harness).view().selected(), [first, third]);
+    let at = row_middle(&harness, 2);
+    hover(&mut harness, at);
+    harness.event(egui::Event::ModifiersChanged(all));
+    harness.run_steps(2);
+    let left = viewer(&harness).status().left.clone();
+    assert!(
+        left.starts_with(&format!("{keys}-scroll to scale the 2 selected channels")),
+        "{left}"
+    );
+    scroll(&mut harness, egui::vec2(0.0, -200.0), all);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
+    let both = channel_amplitudes(&harness);
+    for (c, (now, before)) in both.iter().zip(&start).enumerate() {
+        let selected = c == first.0 as usize || c == third.0 as usize;
+        let want = if selected { before * 2.0 } else { *before };
+        assert!(
+            (now - want).abs() <= 1e-9 * want,
+            "channel {c}: {now} != {want}"
+        );
+    }
+    assert_eq!(harness.query_all_by_label(ALONE_LABEL).count(), 2);
+    // ⌥⇧⌘− scales them down, only while something is selected.
+    press(&mut harness, all, Key::Minus);
+    let step = kymo::view::SCALE_STEP;
+    let down = viewer(&harness).view().channel_amplitude(first);
+    assert!((down - start[first.0 as usize] * 2.0 * step).abs() <= 1e-9 * down);
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    assert!(viewer(&harness).view().selected().is_empty());
+    let before = channel_amplitudes(&harness);
+    press(&mut harness, all, Key::Minus);
+    assert_eq!(channel_amplitudes(&harness), before);
+
+    // ⌥⌘-scrolling scales every channel, the ones on their own too.
+    let at = row_middle(&harness, 0);
+    hover(&mut harness, at);
+    scroll(
+        &mut harness,
+        egui::vec2(0.0, 200.0),
+        command() | Modifiers::ALT,
+    );
+    let halved = channel_amplitudes(&harness);
+    for (c, (now, was)) in halved.iter().zip(&before).enumerate() {
+        assert!((now - was / 2.0).abs() <= 1e-9 * was, "channel {c}");
+    }
+    // ⇧⌘-scrolling shows half as many rows.
+    let rows = viewer(&harness).view().rows();
+    scroll(
+        &mut harness,
+        egui::vec2(0.0, 200.0),
+        command() | Modifiers::SHIFT,
+    );
+    assert_eq!(
+        viewer(&harness).view().rows(),
+        (rows as f64 / 2.0).round() as usize
+    );
+    // Default Scale returns every channel to its type's default.
+    press(&mut harness, command() | Modifiers::ALT, Key::Num0);
+    let rec = &viewer(&harness).document().recording;
+    let fresh = kymo::view::ViewState::new(rec);
+    let defaults: Vec<f64> = (0..rec.channels().len() as u32)
+        .map(|c| fresh.channel_amplitude(kymo_core::ChannelId(c)))
+        .collect();
+    assert_eq!(channel_amplitudes(&harness), defaults);
+    assert!(harness.query_by_label(ALONE_LABEL).is_none());
+}

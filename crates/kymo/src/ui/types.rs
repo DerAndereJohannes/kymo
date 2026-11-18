@@ -106,6 +106,8 @@ pub struct MenuChoice {
     pub all_types: bool,
     /// A change of the channels' types.
     pub retype: Option<Retype>,
+    /// The channels back to their type's amplitude (a channel's menu only).
+    pub rejoin: bool,
 }
 
 /// A change of channels' types picked in a [`change_type_menu`].
@@ -116,7 +118,7 @@ pub enum Retype {
     FromFile,
 }
 
-/// The channels a [`change_type_menu`] changes, as it needs them.
+/// The channels a [`change_type_menu`] (or a [`channel_menu`]) changes, as it needs them.
 pub struct Targets<'a> {
     /// Their types now.
     pub kinds: &'a [ChannelKind],
@@ -124,6 +126,9 @@ pub struct Targets<'a> {
     pub file_kind: Option<ChannelKind>,
     /// Whether any type differs from the file's.
     pub retyped: bool,
+    /// Whether any was scaled on its own though its type shares an amplitude, for a
+    /// channel menu's Scale With Type.
+    pub scaled_alone: bool,
 }
 
 /// What the Change Type To menu is called, and its items.
@@ -131,6 +136,9 @@ pub const CHANGE_TYPE: &str = "Change Type To";
 pub const OTHER_TYPES: &str = "Other Types";
 pub const NEW_TYPE: &str = "New Type\u{2026}";
 pub const FROM_FILE: &str = "From File";
+/// The channel menu's item that returns channels scaled on their own to their type's
+/// amplitude.
+pub const SCALE_WITH_TYPE: &str = "Scale With Type";
 
 /// A Change Type To submenu for the channels `targets`: the recording's types (`recording`,
 /// stim left out), checked where every target has it; Other Types, every other type kymo
@@ -333,7 +341,8 @@ pub fn type_menu(
 
 /// A "⋯" button `height` high at the end of a channel's row, named "Options for {label}"
 /// for screen readers, its dots drawn as `dots` says: a menu with `title` (the channel's
-/// name, or how many channels it acts on) and Change Type To (see [`change_type_menu`]).
+/// name, or how many channels it acts on), Change Type To (see [`change_type_menu`]) and
+/// Scale With Type, enabled where a target is scaled on its own.
 pub fn channel_menu(
     ui: &mut Ui,
     label: &str,
@@ -355,6 +364,13 @@ pub fn channel_menu(
         ui.label(RichText::new(title).strong());
         ui.separator();
         choice.retype = change_type_menu(ui, targets, recording, types);
+        ui.separator();
+        if ui
+            .add_enabled(targets.scaled_alone, Button::new(SCALE_WITH_TYPE))
+            .clicked()
+        {
+            choice.rejoin = true;
+        }
     });
     choice
 }

@@ -184,6 +184,7 @@ proptest! {
         bad in proptest::collection::vec(any::<bool>(), 36),
         hidden in 0usize..36,
         rows in 10usize..40,
+        alone in proptest::collection::vec(0u32..36, 0..3),
     ) {
         let fx = fixture();
         let duration = fx.recording.duration();
@@ -197,6 +198,9 @@ proptest! {
             }
         }
         view.set_shown(ChannelId(hidden as u32), false);
+        // Channels scaled on their own are fitted on their own.
+        let alone: Vec<ChannelId> = alone.into_iter().map(ChannelId).collect();
+        view.scale_channels(&alone, 2.0);
         prop_assert_eq!(fitted(fx, &view, width), brute(fx, &view, width));
     }
 }
@@ -509,4 +513,27 @@ fn only_channels_of_a_type_and_quantity_share_an_amplitude() {
         assert!(near(got, expected), "channel {c}: {got:?}");
     }
     assert_eq!(got.len(), 6, "{got:?}");
+}
+
+#[test]
+fn a_channel_scaled_alone_is_fitted_alone() {
+    let fx = sines([0.0; 4], [1.0; 4]);
+    let mut view = view_of(&fx);
+    // EEG 2, with the artifact, on its own: its fit is its own, the others' without it.
+    view.scale_channels(&[ChannelId(2)], 3.0);
+    let got = fitted(&fx, &view, 1000);
+    let eeg = amplitude(&got, ChannelKind::EEG).unwrap();
+    assert!((19e-6..=21e-6).contains(&eeg), "EEG {eeg}");
+    let own = got[&ScaleGroup::Channel(ChannelId(2))];
+    assert!((19e-6..=21e-6).contains(&own), "EEG 2 {own}");
+    view.set_amplitudes(got);
+    assert!((view.channel_amplitude(ChannelId(2)) - own * 1e6).abs() < 1e-9);
+    assert!(view.scaled_alone(ChannelId(2)));
+    // Default Scale returns it to its type's default.
+    view.apply(Action::DefaultScale);
+    assert!((view.channel_amplitude(ChannelId(2)) - 20.0).abs() < 1e-9);
+    assert_eq!(
+        fitted(&fx, &view, 1000).get(&ScaleGroup::Channel(ChannelId(2))),
+        None
+    );
 }

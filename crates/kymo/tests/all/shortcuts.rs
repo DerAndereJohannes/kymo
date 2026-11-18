@@ -91,13 +91,24 @@ fn gestures_use_the_platform_modifiers() {
         keys(&mac, "Zoom Time Around the Pointer"),
         "Pinch or ⌘ + scroll"
     );
-    assert_eq!(keys(&mac, "Scale Amplitudes"), "⌥ + pinch or ⌥ + scroll");
+    assert_eq!(keys(&mac, "Scale Amplitudes"), "⌥⌘ or ⌥ + scroll or pinch");
+    let one = "Scale One Channel (or the Selected Ones)";
+    assert_eq!(keys(&mac, one), "⌥⇧⌘ + scroll or pinch over its trace");
+    assert_eq!(keys(&mac, "More or Fewer Channels"), "⇧⌘ + scroll or pinch");
     let linux = gestures(Platform::Linux);
     assert_eq!(
         keys(&linux, "Zoom Time Around the Pointer"),
         "Pinch or Ctrl + scroll"
     );
     assert!(keys(&linux, "Pan Time").contains("Shift + wheel"));
+    assert_eq!(
+        keys(&linux, one),
+        "Ctrl+Alt+Shift + scroll or pinch over its trace"
+    );
+    assert_eq!(
+        keys(&linux, "Scale Amplitudes"),
+        "Ctrl+Alt or Alt + scroll or pinch"
+    );
     let measure = "Measure Time and Values";
     assert_eq!(keys(&mac, measure), "⇧ + drag the traces");
     assert_eq!(keys(&linux, measure), "Shift + drag the traces");

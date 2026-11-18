@@ -141,6 +141,12 @@ pub struct ViewState {
     fitted: HashMap<ScaleGroup, f64>,
     /// The factor on every amplitude from scaling up and down.
     scale: f64,
+    /// The channels scaled on their own by hand (see [`scale_channels`](Self::scale_channels)),
+    /// each a scale group of its own whatever its type's setting.
+    alone: BTreeSet<ChannelId>,
+    /// What scrolling the number of rows left over from rounding to whole rows, as a factor
+    /// on the rows shown (see [`Gesture::Rows`]).
+    rows_residual: f64,
     dc: bool,
     types: TypeSettings,
     bad: BTreeSet<ChannelId>,
@@ -197,6 +203,8 @@ impl ViewState {
             rows: DEFAULT_ROWS,
             fitted: HashMap::new(),
             scale: 1.0,
+            alone: BTreeSet::new(),
+            rows_residual: 1.0,
             dc: true,
             types: TypeSettings::default(),
             bad: recording.bad_channels().iter().copied().collect(),
@@ -303,14 +311,57 @@ impl ViewState {
         self.group_amplitude(&self.scale_group(channel)) / self.to_si(channel)
     }
 
-    /// The channels `channel` shares its amplitude with: its own group if its type is scaled
-    /// each channel on its own, else those of its type whose units measure the same.
+    /// The channels `channel` shares its amplitude with: its own group if it was scaled on
+    /// its own or its type is scaled each channel on its own, else those of its type whose
+    /// units measure the same.
     pub fn scale_group(&self, channel: ChannelId) -> ScaleGroup {
         let kind = self.kind_of(channel);
-        if self.types.own_scale(kind) {
+        if self.alone.contains(&channel) || self.types.own_scale(kind) {
             ScaleGroup::Channel(channel)
         } else {
             ScaleGroup::Shared(kind.clone(), self.unit_of(channel).clone())
+        }
+    }
+
+    /// Makes `channels` `factor` times taller, each on its own: a channel that shares its
+    /// type's amplitude leaves the group for one of its own, starting where the group's is.
+    pub fn scale_channels(&mut self, channels: &[ChannelId], factor: f64) {
+        if !(factor.is_finite() && factor > 0.0) {
+            return;
+        }
+        for &c in channels {
+            if c.0 as usize >= self.kinds.len() {
+                continue;
+            }
+            let base = self.group_amplitude(&self.scale_group(c)) / self.scale;
+            self.alone.insert(c);
+            self.fitted.insert(ScaleGroup::Channel(c), base / factor);
+        }
+    }
+
+    /// The channels a scaling over `channel` scales: the selection if `channel` is in it,
+    /// else `channel` alone.
+    pub fn scale_targets(&self, channel: ChannelId) -> Vec<ChannelId> {
+        if self.is_selected(channel) {
+            self.selected()
+        } else {
+            vec![channel]
+        }
+    }
+
+    /// Whether `channel` was scaled on its own though its type shares an amplitude: the
+    /// channel list marks it, and [`rejoin`](Self::rejoin) returns it to its group.
+    pub fn scaled_alone(&self, channel: ChannelId) -> bool {
+        self.alone.contains(&channel) && !self.types.own_scale(self.kind_of(channel))
+    }
+
+    /// Returns `channels` to their type's amplitude. A channel of a type scaled each channel
+    /// on its own keeps its amplitude.
+    pub fn rejoin(&mut self, channels: &[ChannelId]) {
+        for &c in channels {
+            if self.alone.remove(&c) && !self.types.own_scale(self.kind_of(c)) {
+                self.fitted.remove(&ScaleGroup::Channel(c));
+            }
         }
     }
 
@@ -585,8 +636,11 @@ impl ViewState {
             }
             Action::ScaleUp => self.scale(SCALE_STEP),
             Action::ScaleDown => self.scale(1.0 / SCALE_STEP),
+            Action::ScaleSelectedUp => self.scale_channels(&self.selected(), SCALE_STEP),
+            Action::ScaleSelectedDown => self.scale_channels(&self.selected(), 1.0 / SCALE_STEP),
             Action::DefaultScale => {
                 self.fitted.clear();
+                self.alone.clear();
                 self.scale = 1.0;
             }
             Action::ToggleDc
@@ -642,7 +696,32 @@ impl ViewState {
                 self.zoom(factor, anchor);
             }
             Gesture::Scale { factor } => self.scale(factor),
+            Gesture::Rows { factor } => self.zoom_rows(factor),
+            // Needs the channel under the pointer, which the viewer finds (see
+            // [`scale_channels`](Self::scale_channels)).
+            Gesture::ScaleChannel { .. } => {}
         }
+    }
+
+    /// Shows `factor` times fewer rows (above 1 magnifies them), in whole rows: what a step
+    /// leaves over from rounding carries over to the next, so slow scrolling adds up.
+    pub fn zoom_rows(&mut self, factor: f64) {
+        if !(factor.is_finite() && factor > 0.0) {
+            return;
+        }
+        let rows = self.rows();
+        let wanted = rows as f64 * self.rows_residual / factor;
+        let n = (wanted.round().max(1.0)) as usize;
+        if n != rows {
+            self.set_rows(n);
+        }
+        // At the ends (one row, or all of them) nothing carries over.
+        let now = self.rows();
+        self.rows_residual = if n == now && n > 1 {
+            (wanted / now as f64).clamp(0.5, 2.0)
+        } else {
+            1.0
+        };
     }
 
     /// Moves the window by `seconds` (positive is later).

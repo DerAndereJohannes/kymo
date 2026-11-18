@@ -66,6 +66,9 @@ fn looks_up_the_tables_bindings() {
             (Key::Plus, true, true, false, Action::ScaleUp),
             (Key::Equals, true, true, false, Action::ScaleUp),
             (Key::Minus, true, true, false, Action::ScaleDown),
+            (Key::Plus, true, true, true, Action::ScaleSelectedUp),
+            (Key::Equals, true, true, true, Action::ScaleSelectedUp),
+            (Key::Minus, true, true, true, Action::ScaleSelectedDown),
             (Key::D, true, false, false, Action::ToggleDc),
             (Key::W, true, false, false, Action::Close),
             (Key::S, true, false, false, Action::SaveAnnotations),
@@ -81,8 +84,12 @@ fn looks_up_the_tables_bindings() {
                 "{platform:?} {key:?}"
             );
         }
-        // Keys that need Shift on some layouts: + on a US keyboard, / on a German one.
-        assert_eq!(lookup(Key::Plus, true, true, true), Some(Action::ScaleUp));
+        // Keys that need Shift on some layouts: + on a US keyboard, / on a German one. With
+        // ⌘ or ⌥⌘, + with Shift is bound itself, as = (the same key there) without it.
+        assert_eq!(
+            lookup(Key::Equals, true, true, false),
+            Some(Action::ScaleUp)
+        );
         assert_eq!(
             lookup(Key::Slash, true, false, true),
             Some(Action::Shortcuts)
@@ -215,5 +222,84 @@ fn pinching_zooms_and_alt_pinching_scales() {
     assert_eq!(
         keymap.pinch(0.5, Modifiers::ALT),
         Gesture::Scale { factor: 0.5 }
+    );
+}
+
+#[test]
+fn modifiers_mean_the_same_when_scrolling_and_pinching() {
+    for platform in Platform::ALL {
+        let keymap = Keymap::new(platform);
+        let m = |command, alt, shift| mods(platform, command, alt, shift);
+        let wheel = |delta: Vec2, modifiers| {
+            keymap.wheel(MouseWheelUnit::Point, delta, modifiers, Vec2::ZERO)
+        };
+        let up = vec2(0.0, 200.0);
+        // ⌥⌘ scales every channel, as ⌥ alone does; ⇧⌘ changes the rows; ⌥⇧⌘ scales the
+        // channel under the pointer.
+        assert_eq!(
+            wheel(up, m(true, true, false)),
+            [Gesture::Scale { factor: 2.0 }]
+        );
+        assert_eq!(
+            wheel(up, m(true, false, true)),
+            [Gesture::Rows { factor: 2.0 }]
+        );
+        assert_eq!(
+            wheel(-up, m(true, true, true)),
+            [Gesture::ScaleChannel { factor: 0.5 }]
+        );
+        // With ⇧, a wheel's sideways scrolling (as macOS turns it) counts as vertical.
+        let sideways = vec2(400.0, 0.0);
+        assert_eq!(
+            wheel(sideways, m(true, true, true)),
+            [Gesture::ScaleChannel { factor: 4.0 }]
+        );
+        assert_eq!(
+            wheel(sideways, m(true, false, true)),
+            [Gesture::Rows { factor: 4.0 }]
+        );
+        assert!(wheel(Vec2::ZERO, m(true, true, true)).is_empty());
+        // Pinching follows the same modifiers.
+        assert_eq!(
+            keymap.pinch(2.0, m(false, false, false)),
+            Gesture::Zoom { factor: 2.0 }
+        );
+        assert_eq!(
+            keymap.pinch(2.0, m(true, false, false)),
+            Gesture::Zoom { factor: 2.0 }
+        );
+        assert_eq!(
+            keymap.pinch(2.0, m(true, true, false)),
+            Gesture::Scale { factor: 2.0 }
+        );
+        assert_eq!(
+            keymap.pinch(2.0, m(false, true, false)),
+            Gesture::Scale { factor: 2.0 }
+        );
+        assert_eq!(
+            keymap.pinch(2.0, m(true, false, true)),
+            Gesture::Rows { factor: 2.0 }
+        );
+        assert_eq!(
+            keymap.pinch(2.0, m(true, true, true)),
+            Gesture::ScaleChannel { factor: 2.0 }
+        );
+    }
+    // The other platform's command key isn't ⌘: Ctrl on macOS leaves ⌥⇧ scaling all.
+    let mac = Keymap::new(Platform::Mac);
+    let ctrl_alt_shift = Modifiers {
+        ctrl: true,
+        alt: true,
+        shift: true,
+        ..NONE
+    };
+    assert_eq!(
+        mac.pinch(2.0, ctrl_alt_shift),
+        Gesture::Scale { factor: 2.0 }
+    );
+    assert_eq!(mac.channel_scale_keys(), "⌥⇧⌘");
+    assert_eq!(
+        Keymap::new(Platform::Windows).channel_scale_keys(),
+        "Ctrl+Alt+Shift"
     );
 }

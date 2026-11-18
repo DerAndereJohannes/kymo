@@ -179,7 +179,7 @@ pub fn header_panel(
             });
         legend_rect = Some(panel.response.rect);
     }
-    let all_types = channel_list(ui, recording, document, view, types, rule);
+    let all_types = channel_list(ui, (recording, platform), document, view, types, rule);
     // On top of both lists, as each would take the drag near the line between them.
     if let Some(rect) = legend_rect {
         let folded = ui
@@ -1088,7 +1088,7 @@ fn stream_name(stream: &Stream) -> String {
 /// Returns whether one asked for the Channel Types window.
 fn channel_list(
     ui: &mut Ui,
-    recording: u64,
+    (recording, platform): (u64, Platform),
     document: &Document,
     view: &mut ViewState,
     types: &mut TypeSettings,
@@ -1261,7 +1261,11 @@ fn channel_list(
                 // the type row shows it.
                 let own_unit = shared.get(&group).is_some_and(Option::is_none);
                 let unit_width = fit.unit.filter(|_| own_unit);
-                let short_name = elide_middle(ui.ctx(), listed, &body, name_width);
+                // The mark of a channel scaled on its own follows its name, within the
+                // name's column.
+                let alone = view.scaled_alone(id);
+                let mark = if alone { alone_mark_width(ui) } else { 0.0 };
+                let short_name = elide_middle(ui.ctx(), listed, &body, name_width - mark);
                 let short_unit =
                     unit_width.and_then(|width| elide_middle(ui.ctx(), &unit, &body, width));
                 // The row's whole text where some of it is shortened or left out, or its
@@ -1308,6 +1312,9 @@ fn channel_list(
                 let mut response = cell(ui, name_width, left, label);
                 if text != name {
                     accessible_text(ui, &response, name.clone());
+                }
+                if alone {
+                    alone_mark(ui, response.rect, platform, id);
                 }
                 let hover = match (&full, shown) {
                     (Some(full), true) => Some(format!("{full}\n\nShow in Traces")),
@@ -1403,6 +1410,9 @@ fn channel_list(
                     })
                     .inner;
                 retype(ui, view, &ids, choice.retype);
+                if choice.rejoin {
+                    view.rejoin(&ids);
+                }
                 all_types |= choice.all_types;
                 if let Some(full) = full {
                     for response in cells {
@@ -1460,6 +1470,57 @@ fn channel_list(
         ui.data_mut(|d| d.insert_temp(closed_key, closed));
     }
     all_types
+}
+
+/// What the mark of a channel scaled on its own is named for screen readers (and tests).
+pub const ALONE_LABEL: &str = "Scaled on its own";
+
+/// The room the mark of a channel scaled on its own takes after its name, with the gap
+/// before it.
+fn alone_mark_width(ui: &Ui) -> f32 {
+    ui.text_style_height(&TextStyle::Body) * 0.75
+}
+
+/// The mark of `channel`, scaled on its own, right after its name (`name`, the name's
+/// label): a vertical arrow pointing both ways, weak, explained on hover.
+fn alone_mark(ui: &mut Ui, name: egui::Rect, platform: Platform, channel: ChannelId) {
+    let width = alone_mark_width(ui);
+    let height = ui.text_style_height(&TextStyle::Body) * 0.8;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(name.right(), name.center().y - height / 2.0),
+        vec2(width, height),
+    );
+    let response = ui.interact(
+        rect,
+        Id::unique(("kymo scaled alone", channel)),
+        Sense::hover(),
+    );
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Image);
+        node.set_label(ALONE_LABEL);
+    });
+    let color = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let x = rect.right() - width * 0.4;
+    let (top, bottom) = (rect.top() + 1.0, rect.bottom() - 1.0);
+    let head = width * 0.22;
+    let stroke = egui::Stroke::new(1.2, color);
+    let painter = ui.painter();
+    painter.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], stroke);
+    for (tip, dy) in [(top, head), (bottom, -head)] {
+        painter.line_segment([egui::pos2(x, tip), egui::pos2(x - head, tip + dy)], stroke);
+        painter.line_segment([egui::pos2(x, tip), egui::pos2(x + head, tip + dy)], stroke);
+    }
+    let default_scale = Keymap::chord(Action::DefaultScale)
+        .map(|c| format!(" ({})", c.display(platform)))
+        .unwrap_or_default();
+    response.on_hover_text(format!(
+        "{ALONE_LABEL}\n\n{} in its menu returns it to its type's scale, Default Scale{default_scale} every channel.",
+        crate::ui::types::SCALE_WITH_TYPE
+    ));
 }
 
 /// A disclosure chevron centered on `center`, pointing right (closed) or down (open), as
@@ -1810,7 +1871,7 @@ fn kind_row(
 
 /// What a [`change_type_menu`](crate::ui::types::change_type_menu) for `ids` needs: their
 /// types (`kinds`, all of them or the one they share), the file's type where they share
-/// one, and whether any type differs from the file's.
+/// one, whether any type differs from the file's, and whether any is scaled on its own.
 fn targets_of<'a>(view: &ViewState, ids: &[ChannelId], kinds: &'a [ChannelKind]) -> Targets<'a> {
     let file_kind = ids.first().map(|&c| view.file_kind(c).clone());
     let file_kind = file_kind.filter(|k| ids.iter().all(|&c| view.file_kind(c) == k));
@@ -1818,6 +1879,7 @@ fn targets_of<'a>(view: &ViewState, ids: &[ChannelId], kinds: &'a [ChannelKind])
         kinds,
         file_kind,
         retyped: ids.iter().any(|&c| view.retyped(c)),
+        scaled_alone: ids.iter().any(|&c| view.scaled_alone(c)),
     }
 }
 

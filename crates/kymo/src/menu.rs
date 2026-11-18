@@ -206,6 +206,8 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             Item::Separator,
             a(Action::ScaleUp),
             a(Action::ScaleDown),
+            a(Action::ScaleSelectedUp),
+            a(Action::ScaleSelectedDown),
             a(Action::AutoScale),
             a(Action::DefaultScale),
             Item::Separator,

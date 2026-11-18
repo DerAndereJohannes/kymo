@@ -1028,3 +1028,300 @@ fn channels_the_file_marks_bad_start_out_bad() {
     view.toggle_bad(ChannelId(2));
     assert_eq!(view.bad_channels().collect::<Vec<_>>(), [ChannelId(6)]);
 }
+
+/// The amplitude of each channel of `view`, in its own unit.
+fn amplitudes(rec: &Recording, view: &ViewState) -> Vec<f64> {
+    (0..rec.channels().len() as u32)
+        .map(|c| view.channel_amplitude(ChannelId(c)))
+        .collect()
+}
+
+#[test]
+fn a_channel_scaled_alone_leaves_its_group() {
+    let (rec, mut view) = state();
+    let before = amplitudes(&rec, &view);
+    let eeg = ScaleGroup::Shared(ChannelKind::EEG, UnitKey::Quantity(Quantity::Voltage));
+    view.scale_channels(&[ChannelId(3)], 2.0);
+    // Taller by 2, a group of its own; every other channel as it was.
+    assert!(close(view.channel_amplitude(ChannelId(3)), 10.0));
+    assert_eq!(
+        view.scale_group(ChannelId(3)),
+        ScaleGroup::Channel(ChannelId(3))
+    );
+    assert!(view.scaled_alone(ChannelId(3)));
+    let after = amplitudes(&rec, &view);
+    for c in (0..before.len()).filter(|&c| c != 3) {
+        assert_eq!(after[c], before[c], "channel {c}");
+    }
+    assert_eq!(view.scale_group(ChannelId(4)), eeg);
+    // Scaling all scales it too, keeping its ratio; scaling it again starts where it is.
+    act(&mut view, Action::ScaleUp);
+    let ratio = view.channel_amplitude(ChannelId(3)) / view.channel_amplitude(ChannelId(4));
+    assert!(close(ratio, 0.5));
+    view.scale_channels(&[ChannelId(3)], 0.5);
+    assert!(close(
+        view.channel_amplitude(ChannelId(3)),
+        view.channel_amplitude(ChannelId(4))
+    ));
+    assert!(view.scaled_alone(ChannelId(3)));
+    // Fitting its group leaves it alone; fitting it changes only it.
+    view.set_amplitudes([(eeg.clone(), 40e-6)].into_iter().collect());
+    assert!(close(view.channel_amplitude(ChannelId(4)), 40.0));
+    assert!(!close(view.channel_amplitude(ChannelId(3)), 40.0));
+    view.set_amplitudes(
+        [(ScaleGroup::Channel(ChannelId(3)), 5e-6)]
+            .into_iter()
+            .collect(),
+    );
+    assert!(close(view.channel_amplitude(ChannelId(3)), 5.0));
+    assert!(close(view.channel_amplitude(ChannelId(4)), 40.0));
+    // Back to its group's amplitude, whatever it was.
+    view.rejoin(&[ChannelId(3)]);
+    assert!(!view.scaled_alone(ChannelId(3)));
+    assert_eq!(view.scale_group(ChannelId(3)), eeg);
+    assert!(close(view.channel_amplitude(ChannelId(3)), 40.0));
+    // Default Scale returns every channel.
+    view.scale_channels(&[ChannelId(0), ChannelId(30)], 3.0);
+    act(&mut view, Action::DefaultScale);
+    assert_eq!(amplitudes(&rec, &view), before);
+    assert!(!view.scaled_alone(ChannelId(0)) && !view.scaled_alone(ChannelId(30)));
+    // Factors that aren't positive and finite do nothing.
+    for factor in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        view.scale_channels(&[ChannelId(1)], factor);
+        assert!(!view.scaled_alone(ChannelId(1)), "{factor}");
+    }
+    assert_eq!(amplitudes(&rec, &view), before);
+}
+
+#[test]
+fn the_selection_scales_together() {
+    let (rec, mut view) = state();
+    view.scale_channels(&[ChannelId(1)], 2.0);
+    view.select(ChannelId(1));
+    view.toggle_selected(ChannelId(2));
+    view.toggle_selected(ChannelId(30));
+    // Over a selected channel, the selection; over another, that channel alone.
+    assert_eq!(view.scale_targets(ChannelId(2)), ids(&[1, 2, 30]));
+    assert_eq!(view.scale_targets(ChannelId(5)), ids(&[5]));
+    let before = amplitudes(&rec, &view);
+    for _ in 0..4 {
+        act(&mut view, Action::ScaleSelectedUp);
+    }
+    let after = amplitudes(&rec, &view);
+    for (c, (a, b)) in after.iter().zip(&before).enumerate() {
+        let want = if [1, 2, 30].contains(&c) { b / 2.0 } else { *b };
+        assert!(close(*a, want), "channel {c}: {a} != {want}");
+    }
+    act(&mut view, Action::ScaleSelectedDown);
+    assert!(close(
+        view.channel_amplitude(ChannelId(2)),
+        before[2] / 2.0 * types_step()
+    ));
+    // Without a selection nothing scales.
+    view.clear_selection();
+    let now = amplitudes(&rec, &view);
+    act(&mut view, Action::ScaleSelectedUp);
+    assert_eq!(amplitudes(&rec, &view), now);
+}
+
+fn types_step() -> f64 {
+    kymo::view::SCALE_STEP
+}
+
+#[test]
+fn a_channel_keeps_its_scale_through_type_changes() {
+    let rec = mixed_recording();
+    let mut view = ViewState::new(&rec);
+    let eeg = ScaleGroup::Shared(ChannelKind::EEG, UnitKey::Label(String::new()));
+    // C1 (EEG) alone, then made EOG: still alone, at its own amplitude.
+    view.scale_channels(&[ChannelId(1)], 2.0);
+    let own = view.channel_amplitude(ChannelId(1));
+    assert!(view.set_kind(&[ChannelId(1)], &ChannelKind::EOG));
+    assert_eq!(view.channel_amplitude(ChannelId(1)), own);
+    assert!(view.scaled_alone(ChannelId(1)));
+    // Rejoining joins its new type's group.
+    view.rejoin(&[ChannelId(1)]);
+    assert_eq!(
+        view.channel_amplitude(ChannelId(1)),
+        view.channel_amplitude(ChannelId(2))
+    );
+    // A misc channel is scaled on its own anyway: scaling changes its amplitude without a
+    // mark, and rejoining keeps it.
+    view.scale_channels(&[ChannelId(4)], 4.0);
+    assert!(!view.scaled_alone(ChannelId(4)));
+    let misc = view.channel_amplitude(ChannelId(4));
+    assert!(close(misc, 0.25));
+    // Its type shared, the hand scaling marks it and keeps it apart.
+    let mut types = types::TypeSettings::default();
+    types.set_own_scale(&ChannelKind::MISC, false);
+    view.set_type_settings(types);
+    assert!(view.scaled_alone(ChannelId(4)));
+    assert_eq!(view.channel_amplitude(ChannelId(4)), misc);
+    assert_eq!(view.scale_group(ChannelId(3)), eeg);
+    view.set_type_settings(types::TypeSettings::default());
+    view.rejoin(&[ChannelId(4)]);
+    assert_eq!(view.channel_amplitude(ChannelId(4)), misc);
+}
+
+#[test]
+fn scrolling_the_rows_adds_up_to_whole_rows() {
+    let (_, mut view) = state();
+    let area = Area {
+        width: 1000.0,
+        height: 400.0,
+    };
+    let rows = |view: &mut ViewState, factor| view.gesture(Gesture::Rows { factor }, area, None);
+    rows(&mut view, 2.0);
+    assert_eq!(view.rows(), 10);
+    rows(&mut view, 0.5);
+    assert_eq!(view.rows(), 20);
+    // Small steps that each round to the same row still add up.
+    for _ in 0..40 {
+        rows(&mut view, 1.01);
+    }
+    let want = (20.0 / 1.01f64.powi(40)).round() as usize;
+    assert!(view.rows().abs_diff(want) <= 1, "{} vs {want}", view.rows());
+    // From one row to all of them, and back.
+    rows(&mut view, 1000.0);
+    assert_eq!(view.rows(), 1);
+    rows(&mut view, 0.001);
+    assert_eq!(view.rows(), 32);
+    for factor in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+        rows(&mut view, factor);
+        assert_eq!(view.rows(), 32, "{factor}");
+    }
+    // The channel gesture needs the viewer's pointer: alone it changes nothing.
+    let before = view.channel_amplitude(ChannelId(0));
+    view.gesture(Gesture::ScaleChannel { factor: 2.0 }, area, Some(10.0));
+    assert_eq!(view.channel_amplitude(ChannelId(0)), before);
+}
+
+#[derive(Clone, Debug)]
+enum ScaleStep {
+    All(f64),
+    Channels(Vec<u32>, f64),
+    Selected(Vec<u32>, bool),
+    Rejoin(Vec<u32>),
+    Retype(u32, ChannelKind),
+    Default,
+}
+
+fn scale_steps() -> impl Strategy<Value = ScaleStep> {
+    let factor = 0.1f64..10.0;
+    let some = || proptest::collection::vec(0u32..6, 0..4);
+    prop_oneof![
+        factor.clone().prop_map(ScaleStep::All),
+        (some(), factor).prop_map(|(cs, f)| ScaleStep::Channels(cs, f)),
+        (some(), any::<bool>()).prop_map(|(cs, up)| ScaleStep::Selected(cs, up)),
+        some().prop_map(ScaleStep::Rejoin),
+        (
+            0u32..6,
+            proptest::sample::select(vec![
+                ChannelKind::EEG,
+                ChannelKind::EOG,
+                ChannelKind::MISC,
+                ChannelKind::named("Pulse"),
+            ])
+        )
+            .prop_map(|(c, k)| ScaleStep::Retype(c, k)),
+        Just(ScaleStep::Default),
+    ]
+}
+
+proptest! {
+    /// Every channel's amplitude by definition: its type's default times the factor on all,
+    /// unless it was scaled on its own (or its type scales each channel on its own and it
+    /// was), then the amplitude it was given times that factor.
+    #[test]
+    fn amplitudes_follow_their_definition(
+        steps in proptest::collection::vec(scale_steps(), 1..30),
+    ) {
+        let rec = mixed_recording();
+        let mut view = ViewState::new(&rec);
+        let n = rec.channels().len();
+        let defaults = types::TypeSettings::default();
+        let mut kinds: Vec<ChannelKind> = rec.channels().iter().map(|c| c.kind.clone()).collect();
+        let mut scale = 1.0;
+        let mut alone = vec![false; n];
+        let mut own: Vec<Option<f64>> = vec![None; n];
+        // A channel's default amplitude as its type now gives it.
+        let default = |kinds: &[ChannelKind], c: usize| {
+            let mut fresh = ViewState::new(&rec);
+            fresh.set_kind(&[ChannelId(c as u32)], &kinds[c]);
+            fresh.channel_amplitude(ChannelId(c as u32))
+        };
+        for step in steps {
+            let base = |c: usize, kinds: &[ChannelKind], alone: &[bool], own: &[Option<f64>]| {
+                if alone[c] || defaults.own_scale(&kinds[c]) {
+                    own[c].unwrap_or_else(|| default(kinds, c))
+                } else {
+                    default(kinds, c)
+                }
+            };
+            match step {
+                ScaleStep::All(f) => {
+                    view.apply(if f > 1.0 { Action::ScaleUp } else { Action::ScaleDown });
+                    scale /= if f > 1.0 { kymo::view::SCALE_STEP } else { 1.0 / kymo::view::SCALE_STEP };
+                }
+                ScaleStep::Channels(cs, f) => {
+                    let ids: Vec<ChannelId> = cs.iter().map(|&c| ChannelId(c)).collect();
+                    view.scale_channels(&ids, f);
+                    for c in cs {
+                        let c = c as usize;
+                        own[c] = Some(base(c, &kinds, &alone, &own) / f);
+                        alone[c] = true;
+                    }
+                }
+                ScaleStep::Selected(cs, up) => {
+                    view.clear_selection();
+                    for &c in &cs {
+                        if !view.is_selected(ChannelId(c)) {
+                            view.toggle_selected(ChannelId(c));
+                        }
+                    }
+                    view.apply(if up { Action::ScaleSelectedUp } else { Action::ScaleSelectedDown });
+                    let f = if up { kymo::view::SCALE_STEP } else { 1.0 / kymo::view::SCALE_STEP };
+                    let mut cs = cs;
+                    cs.sort_unstable();
+                    cs.dedup();
+                    for c in cs {
+                        let c = c as usize;
+                        own[c] = Some(base(c, &kinds, &alone, &own) / f);
+                        alone[c] = true;
+                    }
+                }
+                ScaleStep::Rejoin(cs) => {
+                    let ids: Vec<ChannelId> = cs.iter().map(|&c| ChannelId(c)).collect();
+                    view.rejoin(&ids);
+                    for c in cs {
+                        let c = c as usize;
+                        if alone[c] && !defaults.own_scale(&kinds[c]) {
+                            own[c] = None;
+                        }
+                        alone[c] = false;
+                    }
+                }
+                ScaleStep::Retype(c, kind) => {
+                    if view.set_kind(&[ChannelId(c)], &kind) {
+                        kinds[c as usize] = kind;
+                    }
+                }
+                ScaleStep::Default => {
+                    view.apply(Action::DefaultScale);
+                    scale = 1.0;
+                    alone = vec![false; n];
+                    own = vec![None; n];
+                }
+            }
+            for c in 0..n {
+                let want = base(c, &kinds, &alone, &own) * scale;
+                let got = view.channel_amplitude(ChannelId(c as u32));
+                prop_assert!(close(got, want), "channel {}: {} != {}", c, got, want);
+                prop_assert_eq!(
+                    view.scaled_alone(ChannelId(c as u32)),
+                    alone[c] && !defaults.own_scale(&kinds[c])
+                );
+            }
+        }
+    }
+}

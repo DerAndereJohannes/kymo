@@ -11,3 +11,4 @@ cc d7db6c518de87691e2a012cc90af730437b3b5bcf6612c47e3eb5ede489b025d # shrinks to
 cc 229f8a9649bb0ea470dd46a49ea14d86c106e3f10506bceeaa20aaeff85f41f2 # shrinks to shape = (27, 1, false), steps = [MoveChannel(0, Some(27))]
 cc ed578e1e0ea82fe0403d7a7438005dc811e9c8db2a5a258d963b9337aab414c4 # shrinks to shape = (10, 1, false), steps = [MoveChannel(0, None)]
 cc c458ae84fc4318cc1687f79c2c92cec5c60df6480e0ec1cc8e08a7a82a61adca # shrinks to shape = (5, 1, false), steps = [Retype([0], Stim)]
+cc 69049f83bb3286cff182e5bdbdf5735cd0f7d18617e17295d8b063eb95fcb196 # shrinks to steps = [Selected([3], false), Rejoin([3]), Retype(3, Misc)]

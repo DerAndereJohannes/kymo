@@ -76,6 +76,11 @@ fn gestures(platform: Platform) -> Vec<Row> {
         Platform::Mac => ("⌘", "⌥", "⇧"),
         Platform::Windows | Platform::Linux => ("Ctrl", "Alt", "Shift"),
     };
+    // Modifiers together, in the platform's order: ⌥⇧⌘, or Ctrl+Alt+Shift.
+    let (alt_command, shift_command, all) = match platform {
+        Platform::Mac => ("⌥⌘", "⇧⌘", "⌥⇧⌘"),
+        Platform::Windows | Platform::Linux => ("Ctrl+Alt", "Ctrl+Shift", "Ctrl+Alt+Shift"),
+    };
     let row = |action, keys: String| Row { keys, action };
     vec![
         row(
@@ -88,8 +93,16 @@ fn gestures(platform: Platform) -> Vec<Row> {
             format!("Pinch or {command} + scroll"),
         ),
         row(
+            "More or Fewer Channels",
+            format!("{shift_command} + scroll or pinch"),
+        ),
+        row(
             "Scale Amplitudes",
-            format!("{alt} + pinch or {alt} + scroll"),
+            format!("{alt_command} or {alt} + scroll or pinch"),
+        ),
+        row(
+            "Scale One Channel (or the Selected Ones)",
+            format!("{all} + scroll or pinch over its trace"),
         ),
         row(
             "Measure Time and Values",

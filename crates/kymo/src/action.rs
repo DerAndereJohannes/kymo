@@ -56,6 +56,9 @@ pub enum Action {
     /// Taller traces: a smaller amplitude per channel spacing.
     ScaleUp,
     ScaleDown,
+    /// Taller traces for the selected channels alone (see [`crate::view::ViewState::scale_channels`]).
+    ScaleSelectedUp,
+    ScaleSelectedDown,
     /// Fits each channel type's amplitude to what the window shows (see [`crate::scale`]),
     /// once the window is complete.
     AutoScale,
@@ -92,7 +95,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 51] = [
+    pub const ALL: [Action; 53] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -128,6 +131,8 @@ impl Action {
         Action::FewerChannels,
         Action::ScaleUp,
         Action::ScaleDown,
+        Action::ScaleSelectedUp,
+        Action::ScaleSelectedDown,
         Action::AutoScale,
         Action::DefaultScale,
         Action::ToggleDc,
@@ -185,6 +190,8 @@ impl Action {
             Action::FewerChannels => "Fewer Channels",
             Action::ScaleUp => "Scale Up",
             Action::ScaleDown => "Scale Down",
+            Action::ScaleSelectedUp => "Scale Selected Channels Up",
+            Action::ScaleSelectedDown => "Scale Selected Channels Down",
             Action::AutoScale => "Auto Scale",
             Action::DefaultScale => "Default Scale",
             Action::ToggleDc => "Remove DC",
@@ -294,4 +301,9 @@ pub enum Gesture {
     Zoom { factor: f64 },
     /// Makes traces `factor` times taller.
     Scale { factor: f64 },
+    /// Shows `factor` times fewer rows (above 1 magnifies them).
+    Rows { factor: f64 },
+    /// Makes the trace under the pointer `factor` times taller, or the selected channels'
+    /// where it is one of them.
+    ScaleChannel { factor: f64 },
 }
