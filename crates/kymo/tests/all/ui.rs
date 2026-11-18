@@ -8274,9 +8274,20 @@ fn a_channel_scales_alone() {
     harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
     harness.run_steps(2);
     assert!(!viewer(&harness).status().left.contains(&hint));
-    // Marked in the channel list; its menu returns it.
+    // Marked in the channel list, after its whole name (nothing is shortened), before its
+    // Bad toggle; its menu returns it.
     assert_eq!(harness.query_all_by_label(ALONE_LABEL).count(), 1);
     let second_name = name(&harness, second);
+    assert_eq!(painted(&harness, "\u{2026}"), Vec::<String>::new());
+    let label = harness.get_by_role_and_label(Role::Label, &second_name);
+    let mark = harness.get_by_label(ALONE_LABEL).rect();
+    let bad = harness.get_by_label(&format!("{second_name} bad")).rect();
+    assert!(
+        mark.left() >= label.rect().right() - 0.5,
+        "{mark:?} {:?}",
+        label.rect()
+    );
+    assert!(mark.right() <= bad.left(), "{mark:?} {bad:?}");
     channel_options(&mut harness, &second_name);
     menu_path(&mut harness, &[SCALE_WITH_TYPE]);
     assert_eq!(channel_amplitudes(&harness), start);
@@ -8314,11 +8325,35 @@ fn a_channel_scales_alone() {
         );
     }
     assert_eq!(harness.query_all_by_label(ALONE_LABEL).count(), 2);
+    // A click on a mark returns its channel alone.
+    let marks: Vec<egui::Rect> = harness
+        .query_all_by_label(ALONE_LABEL)
+        .map(|n| n.rect())
+        .collect();
+    let third_row = harness
+        .get_by_role_and_label(Role::Label, &third_name)
+        .rect();
+    let third_mark = marks
+        .iter()
+        .find(|r| (r.center().y - third_row.center().y).abs() < 2.0)
+        .unwrap();
+    click(&mut harness, third_mark.center());
+    harness.run_steps(2);
+    assert_eq!(harness.query_all_by_label(ALONE_LABEL).count(), 1);
+    assert_eq!(
+        viewer(&harness).view().channel_amplitude(third),
+        start[third.0 as usize]
+    );
+    assert!(viewer(&harness).view().scaled_alone(first));
+    // Scrolled again over the third, both scale: the first is now at 4 times its amplitude.
+    hover(&mut harness, at);
+    scroll(&mut harness, egui::vec2(0.0, -200.0), all);
+    assert!(viewer(&harness).view().scaled_alone(third));
     // ⌥⇧⌘− scales them down, only while something is selected.
     press(&mut harness, all, Key::Minus);
     let step = kymo::view::SCALE_STEP;
     let down = viewer(&harness).view().channel_amplitude(first);
-    assert!((down - start[first.0 as usize] * 2.0 * step).abs() <= 1e-9 * down);
+    assert!((down - start[first.0 as usize] * 4.0 * step).abs() <= 1e-9 * down);
     press(&mut harness, Modifiers::NONE, Key::Escape);
     assert!(viewer(&harness).view().selected().is_empty());
     let before = channel_amplitudes(&harness);
@@ -8357,4 +8392,46 @@ fn a_channel_scales_alone() {
         .collect();
     assert_eq!(channel_amplitudes(&harness), defaults);
     assert!(harness.query_by_label(ALONE_LABEL).is_none());
+}
+
+/// The mark of a channel scaled on its own widens the names' column where there is room, so
+/// the longest name stays whole beside it, as a click on it returns the channel.
+#[test]
+fn the_mark_widens_the_names_column() {
+    use egui::accesskit::Role;
+    use kymo::ui::header::ALONE_LABEL;
+    use kymo_testgen::{ChannelSpec, Spec, XdfFormat};
+    let long = "Interpupillary distance, both eyes";
+    let channels = vec![
+        ChannelSpec::xdf("Fz", "EEG", "microvolts", 100, XdfFormat::F32),
+        ChannelSpec::xdf(long, "EEG", "microvolts", 100, XdfFormat::F32),
+    ];
+    let file = TempFile::written(&Spec::new(kymo_testgen::Format::Xdf, channels, 1.0, 30));
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    sidebar_to(&mut harness, 600.0);
+    // Shortened beside the traces (at most 10 em), whole in the sidebar.
+    let shortened = painted(&harness, "\u{2026}");
+    assert_eq!(shortened.len(), 1, "{shortened:?}");
+    let id = channel_named(&harness, long);
+    let row = viewer(&harness).view().row_of(id).unwrap();
+    let at = row_middle(&harness, row);
+    hover(&mut harness, at);
+    let all = command() | Modifiers::ALT | Modifiers::SHIFT;
+    scroll(&mut harness, egui::vec2(0.0, 200.0), all);
+    harness.run_steps(2);
+    assert!(viewer(&harness).view().scaled_alone(id));
+    assert_eq!(painted(&harness, "\u{2026}"), shortened);
+    let name = harness.get_by_role_and_label(Role::Label, long).rect();
+    let mark = harness.get_by_label(ALONE_LABEL).rect();
+    let bad = harness.get_by_label(&format!("{long} bad")).rect();
+    assert!(mark.left() >= name.right() - 0.5, "{mark:?} {name:?}");
+    assert!(mark.right() <= bad.left(), "{mark:?} {bad:?}");
+    // A click on it returns the channel, and the column narrows again.
+    click(&mut harness, mark.center());
+    harness.run_steps(2);
+    assert!(!viewer(&harness).view().scaled_alone(id));
+    assert!(harness.query_by_label(ALONE_LABEL).is_none());
+    let bad_after = harness.get_by_label(&format!("{long} bad")).rect();
+    assert!(bad_after.left() < bad.left() - 5.0, "{bad_after:?} {bad:?}");
 }

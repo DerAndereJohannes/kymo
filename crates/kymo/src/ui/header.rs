@@ -820,7 +820,8 @@ struct Measured {
 
 impl Columns {
     /// The widths for `document`'s channels in `ui`'s body font, measured once per document,
-    /// font, scale and set of units shown, and again after [`forget_text_widths`]; `grouped`,
+    /// font, scale, set of units shown and of channels scaled on their own (whose names the
+    /// mark follows, see [`alone_mark`]), and again after [`forget_text_widths`]; `grouped`,
     /// the names within their streams (see [`list_name`]). Only channels of a type row whose
     /// channels differ in unit show theirs (see [`shared_units`]); without any, the unit
     /// column is 0 wide.
@@ -844,12 +845,17 @@ impl Columns {
                 mixed.then(|| display_unit(view.kind_of(id), &channel.unit).0)
             })
             .collect();
+        let alone: Vec<ChannelId> = (0..channels.len() as u32)
+            .map(ChannelId)
+            .filter(|&c| view.scaled_alone(c))
+            .collect();
         let key = Id::unique((
             "kymo channel columns",
             &document.path,
             channels.len(),
             grouped,
             &units,
+            &alone,
         ));
         if let Some(m) = ui.data(|d| d.get_temp::<Measured>(key))
             && m.font == font
@@ -868,8 +874,20 @@ impl Columns {
                     .fold(0.0, f32::max)
             })
         };
+        // The names the mark follows are wider by it.
+        let marked = widest(
+            &mut alone
+                .iter()
+                .map(|&c| list_name(rec.channel(c), grouped).to_owned()),
+        );
+        let marked = if alone.is_empty() {
+            0.0
+        } else {
+            marked + alone_mark_width(ui)
+        };
         let columns = Columns {
-            name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned())),
+            name: widest(&mut channels.iter().map(|c| list_name(c, grouped).to_owned()))
+                .max(marked),
             unit: widest(&mut units.into_iter()),
         };
         ui.data_mut(|d| {
@@ -1313,8 +1331,8 @@ fn channel_list(
                 if text != name {
                     accessible_text(ui, &response, name.clone());
                 }
-                if alone {
-                    alone_mark(ui, response.rect, platform, id);
+                if alone && alone_mark(ui, response.rect, platform, id) {
+                    view.rejoin(&[id]);
                 }
                 let hover = match (&full, shown) {
                     (Some(full), true) => Some(format!("{full}\n\nShow in Traces")),
@@ -1482,8 +1500,9 @@ fn alone_mark_width(ui: &Ui) -> f32 {
 }
 
 /// The mark of `channel`, scaled on its own, right after its name (`name`, the name's
-/// label): a vertical arrow pointing both ways, weak, explained on hover.
-fn alone_mark(ui: &mut Ui, name: egui::Rect, platform: Platform, channel: ChannelId) {
+/// label): a vertical arrow pointing both ways, weak, explained on hover, a button that
+/// returns the channel to its type's scale. Returns whether it was clicked.
+fn alone_mark(ui: &mut Ui, name: egui::Rect, platform: Platform, channel: ChannelId) -> bool {
     let width = alone_mark_width(ui);
     let height = ui.text_style_height(&TextStyle::Body) * 0.8;
     let rect = egui::Rect::from_min_size(
@@ -1493,10 +1512,10 @@ fn alone_mark(ui: &mut Ui, name: egui::Rect, platform: Platform, channel: Channe
     let response = ui.interact(
         rect,
         Id::unique(("kymo scaled alone", channel)),
-        Sense::hover(),
+        Sense::click(),
     );
     ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.set_role(egui::accesskit::Role::Image);
+        node.set_role(egui::accesskit::Role::Button);
         node.set_label(ALONE_LABEL);
     });
     let color = if response.hovered() {
@@ -1517,10 +1536,12 @@ fn alone_mark(ui: &mut Ui, name: egui::Rect, platform: Platform, channel: Channe
     let default_scale = Keymap::chord(Action::DefaultScale)
         .map(|c| format!(" ({})", c.display(platform)))
         .unwrap_or_default();
-    response.on_hover_text(format!(
-        "{ALONE_LABEL}\n\n{} in its menu returns it to its type's scale, Default Scale{default_scale} every channel.",
-        crate::ui::types::SCALE_WITH_TYPE
-    ));
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(format!(
+            "{ALONE_LABEL}\n\nClick to scale it with its type (Default Scale{default_scale} does so for every channel)."
+        ))
+        .clicked()
 }
 
 /// A disclosure chevron centered on `center`, pointing right (closed) or down (open), as
