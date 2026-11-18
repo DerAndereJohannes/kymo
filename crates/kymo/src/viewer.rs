@@ -1662,9 +1662,14 @@ impl Viewer {
         if response.is_pointer_button_down_on() {
             ui.memory_mut(|m| m.stop_text_input());
         }
-        let shift = ui.input(|i| i.modifiers.shift);
-        // ⌥⇧⌘ held: scrolling scales the channel under the pointer instead.
-        let channel_keys = ui.input(|i| shift && i.modifiers.alt && keymap.command(i.modifiers));
+        // ⇧ alone measures (its dot, hint and crosshair too); with other keys it means
+        // something else, ⌥⇧⌘ scaling the channel under the pointer.
+        let shift = ui.input(|i| {
+            let m = i.modifiers;
+            m.shift && !(m.alt || m.ctrl || m.mac_cmd || m.command)
+        });
+        let channel_keys =
+            ui.input(|i| i.modifiers.shift && i.modifiers.alt && keymap.command(i.modifiers));
         if response.drag_started()
             && shift
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -1711,17 +1716,16 @@ impl Viewer {
         }
         // Where a ⇧-drag would start: the sample nearest the pointer on the channel it
         // would measure.
-        self.measure_start =
-            (shift && !channel_keys && response.hovered() && self.measuring.is_none())
-                .then(|| response.hover_pos())
-                .flatten()
-                .and_then(|p| {
-                    let channel = self.channel_near(f64::from(p.y - traces.top()), area.height)?;
-                    let rec = &self.document.recording;
-                    let grid = rec.grid(rec.channel(channel).grid);
-                    let time = self.time_at_x(f64::from(p.x - traces.left()), area.width);
-                    Some((channel, measure::snap(grid, time)))
-                });
+        self.measure_start = (shift && response.hovered() && self.measuring.is_none())
+            .then(|| response.hover_pos())
+            .flatten()
+            .and_then(|p| {
+                let channel = self.channel_near(f64::from(p.y - traces.top()), area.height)?;
+                let rec = &self.document.recording;
+                let grid = rec.grid(rec.channel(channel).grid);
+                let time = self.time_at_x(f64::from(p.x - traces.left()), area.width);
+                Some((channel, measure::snap(grid, time)))
+            });
         let scaled = (channel_keys && response.hovered() && self.measuring.is_none())
             .then(|| response.hover_pos())
             .flatten()

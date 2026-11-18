@@ -8190,9 +8190,30 @@ fn holding_shift_over_the_traces_suggests_measuring() {
     harness.run_steps(2);
     let left = viewer(&harness).status().left.clone();
     assert!(left.starts_with(&format!("{hint} \u{b7} ")), "{left}");
+    assert_eq!(painted_dots(&harness).len(), 1, "where a drag would start");
     harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
     harness.run_steps(2);
     assert!(!viewer(&harness).status().left.contains(hint));
+    assert!(painted_dots(&harness).is_empty());
+    // ⇧ with other keys means something else: no hint, no dot, and dragging doesn't measure.
+    for modifiers in [
+        command() | Modifiers::SHIFT,
+        Modifiers::ALT | Modifiers::SHIFT,
+        command() | Modifiers::ALT | Modifiers::SHIFT,
+        Modifiers::CTRL | Modifiers::SHIFT,
+    ] {
+        harness.event(egui::Event::ModifiersChanged(modifiers));
+        harness.run_steps(2);
+        let left = viewer(&harness).status().left.clone();
+        assert!(!left.contains(hint), "{modifiers:?}: {left}");
+        assert!(painted_dots(&harness).is_empty(), "{modifiers:?}");
+    }
+    harness.event(egui::Event::ModifiersChanged(command() | Modifiers::SHIFT));
+    let width = viewer(&harness).layout().unwrap().traces.width();
+    drag(&mut harness, center, center + egui::vec2(width / 4.0, 0.0));
+    assert!(viewer(&harness).measurement().is_none());
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
     // Not over the traces.
     hover(&mut harness, egui::pos2(5.0, 300.0));
     harness.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
