@@ -7656,7 +7656,7 @@ fn node_text(node: &egui_kittest::Node<'_>) -> String {
 /// The measurement label's two lines: its interval, and its channel with the amplitude.
 fn measurement_label(harness: &Harness<'_, KymoApp>) -> Option<[String; 2]> {
     use egui::accesskit::Role;
-    let values = harness.query_by_label_contains("PTP ")?;
+    let values = harness.query_by_label_contains(" PTP")?;
     let below = values.rect();
     // The line right above it, from the same left edge.
     let interval = harness.query_all_by_role(Role::Label).find(|n| {
@@ -7726,15 +7726,9 @@ fn measured_numbers(details: &str) -> (Vec<f64>, String) {
     (numbers, unit)
 }
 
-/// The number in a label's "PTP 86.40 µV".
+/// The number in a label's "Cz 86.40 µV PTP".
 fn peak_to_peak(line: &str) -> f64 {
-    let number = line
-        .split_once("PTP ")
-        .unwrap()
-        .1
-        .split(' ')
-        .next()
-        .unwrap();
+    let number = line.split(' ').nth(1).unwrap();
     number.replace('\u{2212}', "-").parse().unwrap()
 }
 
@@ -7821,8 +7815,11 @@ fn shift_dragging_measures_time_and_values() {
             (l.min(v), h.max(v))
         });
     let close = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs().max(1e-9);
-    assert!(values.starts_with("Cz PTP "), "{values}");
-    assert!(values.ends_with(&format!(" {unit}")), "{values}");
+    assert!(
+        values.starts_with("Cz ") && values.ends_with(" PTP"),
+        "{values}"
+    );
+    assert!(values.ends_with(&format!(" {unit} PTP")), "{values}");
     let pp = peak_to_peak(&values);
     assert!(
         close(pp, (hi - lo) * factor),
@@ -7888,8 +7885,11 @@ fn the_amplitude_is_in_the_readouts_unit() {
     shift_drag(&mut harness, from, to);
     assert_eq!(viewer(&harness).measurement().unwrap().channel, pz);
     let [_, values] = settled_measurement(&mut harness);
-    assert!(values.starts_with("Pz PTP "), "{values}");
-    assert!(values.ends_with(" \u{b5}V"), "{values}");
+    assert!(
+        values.starts_with("Pz ") && values.ends_with(" PTP"),
+        "{values}"
+    );
+    assert!(values.ends_with(" \u{b5}V PTP"), "{values}");
     let samples = samples_of(&harness, pz, 41..106);
     let (lo, hi) = samples
         .iter()
@@ -7922,7 +7922,10 @@ fn the_amplitude_asks_for_its_own_tiles() {
     viewer(&harness).cache().clear();
     harness.step();
     let [_, cleared] = measurement_label(&harness).unwrap();
-    assert!(cleared.ends_with(kymo::measure::NO_READING), "{cleared}");
+    assert!(
+        cleared.ends_with(&format!(" {} PTP", kymo::measure::NO_READING)),
+        "{cleared}"
+    );
     let [_, after] = settled_measurement(&mut harness);
     assert_eq!(after, before);
 }
@@ -7943,7 +7946,7 @@ fn the_label_keeps_its_lines_whole_as_it_grows() {
                 assert_eq!(g.rows.len(), 1, "{line} wrapped: {:?}", g.text());
             }
         }
-        let label = harness.query_by_label_contains("PTP ").unwrap().rect();
+        let label = harness.query_by_label_contains(" PTP").unwrap().rect();
         assert!(traces.contains_rect(label), "{label:?} beyond {traces:?}");
     };
     // Short at first, near the right edge, then long: the label laid out for the short

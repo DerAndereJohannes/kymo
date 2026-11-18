@@ -172,9 +172,9 @@ fn irregular_grids_measure_the_pointer_times() {
 
 #[test]
 fn amplitudes() {
-    assert_eq!(amplitude_text(Some(86.4), "\u{b5}V"), "PTP 86.40 \u{b5}V");
-    assert_eq!(amplitude_text(Some(5.0), ""), "PTP 5.000");
-    assert_eq!(amplitude_text(None, "\u{b5}V"), "PTP \u{2013}");
+    assert_eq!(amplitude_text(Some(86.4), "\u{b5}V"), "86.40 \u{b5}V PTP");
+    assert_eq!(amplitude_text(Some(5.0), ""), "5.000 PTP");
+    assert_eq!(amplitude_text(None, "\u{b5}V"), "\u{2013} PTP");
 }
 
 #[test]

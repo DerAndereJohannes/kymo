@@ -135,12 +135,12 @@ pub fn frequency_text(span: &Span) -> Option<String> {
     (span.dt > 0.0).then(|| format_significant(1.0 / span.dt, 3, "Hz"))
 }
 
-/// "PTP 86.40 µV": the peak-to-peak amplitude in the band, – until it is known or where no
+/// "86.40 µV PTP": the peak-to-peak amplitude in the band, – until it is known or where no
 /// sample has a value.
 pub fn amplitude_text(peak_to_peak: Option<f64>, unit: &str) -> String {
     match peak_to_peak {
-        Some(v) => format!("PTP {}", format_value(v, unit)),
-        None => format!("PTP {NO_READING}"),
+        Some(v) => format!("{} PTP", format_value(v, unit)),
+        None => format!("{NO_READING} PTP"),
     }
 }
 
