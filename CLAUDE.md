@@ -32,6 +32,7 @@ docs/phase3-plan.md  plan for phase 3 (viewer features), done
 docs/phase4-plan.md  plan for phase 4 (file formats, part 1)
 docs/phase5-plan.md  plan for phase 5 (channels and measuring)
 docs/phase6-plan.md  plan for phase 6 (display filters)
+docs/release-plan.md plan for the first GitHub release (0.1.0, after phase 5)
 ```
 
 ## Non-negotiables
