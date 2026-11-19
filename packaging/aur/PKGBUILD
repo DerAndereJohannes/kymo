@@ -1,7 +1,9 @@
 # Maintainer: Clemens Brunner <clemens.brunner@gmail.com>
 #
-# Kept in cbrnr/kymo (packaging/aur) and copied to the AUR's kymo repository after each
-# release, with pkgver, sha256sums (updpkgsums) and .SRCINFO (makepkg --printsrcinfo) updated.
+# Kept in cbrnr/kymo (packaging/aur), where the binaries workflow builds it from the current
+# tree. Pushed to the AUR by hand for the first release (with updpkgsums); after that
+# cbrnr/aur-pkgbuild-updater opens a pull request with pkgver and sha256sums for each new
+# GitHub release. Changes beyond those go into both copies.
 
 pkgname=kymo
 pkgver=0.1.0
@@ -16,7 +18,8 @@ depends=('gcc-libs' 'glibc' 'hicolor-icon-theme' 'libxkbcommon' 'vulkan-icd-load
          'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'xdg-desktop-portal')
 makedepends=('cargo')
 optdepends=('vulkan-driver: GPU rendering (mesa or the vendor driver provide one)')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/cbrnr/kymo/archive/refs/tags/v$pkgver.tar.gz")
+# ${pkgver} with braces: the updater then bumps pkgver= and leaves the URL as it is.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/cbrnr/kymo/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
