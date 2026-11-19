@@ -1,9 +1,8 @@
 # Maintainer: Clemens Brunner <clemens.brunner@gmail.com>
 #
-# Kept in cbrnr/kymo (packaging/aur), where the binaries workflow builds it from the current
-# tree. Pushed to the AUR by hand for the first release (with updpkgsums); after that
-# cbrnr/aur-pkgbuild-updater opens a pull request with pkgver and sha256sums for each new
-# GitHub release. Changes beyond those go into both copies.
+# The first release's PKGBUILD, pushed to the AUR by hand (after updpkgsums and makepkg
+# --printsrcinfo) and then removed from cbrnr/kymo: from there on the AUR's copy is the only
+# one, which cbrnr/aur-pkgbuild-updater updates with a pull request for each GitHub release.
 
 pkgname=kymo
 pkgver=0.1.0

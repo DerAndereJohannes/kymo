@@ -11,9 +11,7 @@ name: Binaries
 #   `kymo-<version>-windows-x86_64.zip`, the portable binary and the license;
 # - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the binary, the license, the desktop
 #   entry, icons and file types (`share/`) and `install.sh`, which installs them for the user.
-#
-# The `aur` job builds the AUR package (packaging/aur) from this checkout on Arch Linux and
-# checks it with namcap; it uploads nothing.
+
 #
 # The commit follows the version unless the run is for a tag (`kymo-0.1.0-abc1234-…`).
 # Download them from the run's page or with `gh api repos/OWNER/REPO/actions/artifacts/ID/zip
@@ -348,50 +346,3 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: ${{ inputs.retention-days }}
-
-  # The AUR package, built as makepkg builds it, from this checkout instead of the tag's
-  # archive, and checked with namcap; its .SRCINFO is the one makepkg writes.
-  aur:
-    name: aur
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build the package
-        shell: bash
-        run: |
-          set -euo pipefail
-          pacman -Syu --noconfirm --needed cargo namcap
-          # The package's dependencies, as makepkg -s would install them.
-          source packaging/aur/PKGBUILD
-          pacman -S --noconfirm --needed "${depends[@]}"
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ "$pkgver" != "$version" ]; then
-            echo "::error::PKGBUILD has pkgver $pkgver, the workspace $version"
-            exit 1
-          fi
-          useradd -m builder
-          build=/home/builder/build
-          mkdir -p "$build/src-tree"
-          # The tag's archive as GitHub makes it: the tree in kymo-<version>/.
-          tar --exclude=.git -cf - . | (mkdir "$build/src-tree/kymo-$pkgver" && cd "$build/src-tree/kymo-$pkgver" && tar -xf -)
-          tar -C "$build/src-tree" -czf "$build/kymo-$pkgver.tar.gz" "kymo-$pkgver"
-          sed "s|^source=.*|source=(\"kymo-$pkgver.tar.gz\")|" packaging/aur/PKGBUILD > "$build/PKGBUILD"
-          cp packaging/aur/PKGBUILD "$build/PKGBUILD.orig"
-          chown -R builder "$build"
-          cd "$build"
-          su builder -c "makepkg --noconfirm"
-          # .SRCINFO as makepkg writes it for the committed PKGBUILD.
-          su builder -c "cp PKGBUILD.orig PKGBUILD && makepkg --printsrcinfo" > srcinfo
-          diff -u "$GITHUB_WORKSPACE/packaging/aur/.SRCINFO" srcinfo
-          # The package, not makepkg's kymo-debug, whose links to the binary namcap takes for
-          # broken. Its warnings are expected: the libraries Kymo loads at run time, which it
-          # doesn't link, look unneeded to it.
-          package=$(ls kymo-[0-9]*.pkg.tar.zst)
-          namcap PKGBUILD.orig | tee namcap.txt
-          namcap "$package" | tee -a namcap.txt
-          if grep -q ' E: ' namcap.txt; then
-            echo "::error::namcap reports errors"
-            exit 1
-          fi
-          pacman -Qip "$package"
