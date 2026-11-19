@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kymo
+GenericName=EEG/MEG Viewer
+Comment=View large EEG and MEG recordings
+Exec=kymo %f
+Icon=kymo
+Terminal=false
+Categories=Science;MedicalSoftware;Education;
+Keywords=EEG;MEG;EDF;BDF;BrainVision;EEGLAB;FIFF;GDF;XDF;biosignal;
+MimeType=application/x-edf;application/x-bdf;application/x-brainvision-header;application/x-bvrf-header;application/x-eeglab;application/x-fiff;application/x-gdf;application/x-xdf;
+StartupWMClass=kymo

@@ -9,7 +9,11 @@ name: Binaries
 # - Windows: `Kymo-<version>-windows-x86_64-setup.exe`, an installer (Inno Setup; per user by
 #   default, Start menu, Open With, PATH if chosen; unsigned), and
 #   `kymo-<version>-windows-x86_64.zip`, the portable binary and the license;
-# - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the same.
+# - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the binary, the license, the desktop
+#   entry, icons and file types (`share/`) and `install.sh`, which installs them for the user.
+#
+# The `aur` job builds the AUR package (packaging/aur) from this checkout on Arch Linux and
+# checks it with namcap; it uploads nothing.
 #
 # The commit follows the version unless the run is for a tag (`kymo-0.1.0-abc1234-…`).
 # Download them from the run's page or with `gh api repos/OWNER/REPO/actions/artifacts/ID/zip
@@ -136,6 +140,17 @@ jobs:
           name="kymo-$stem"
           mkdir "$name"
           cp "$binary" LICENSE "$name/"
+          if [ "$RUNNER_OS" = Linux ]; then
+            # The desktop entry, icons and file types, and the script that installs them.
+            cp packaging/linux/install.sh "$name/"
+            install -Dm644 packaging/linux/kymo.desktop "$name/share/applications/kymo.desktop"
+            install -Dm644 packaging/linux/kymo.xml "$name/share/mime/packages/kymo.xml"
+            for size in 16 24 32 48 64 128 256 512; do
+              install -Dm644 "crates/kymo/assets/png/kymo-$size.png" \
+                "$name/share/icons/hicolor/${size}x${size}/apps/kymo.png"
+            done
+          fi
+          echo "dir=$name" >> "$GITHUB_OUTPUT"
           # tar keeps the executable bit, which upload-artifact's own zip would drop.
           if [ "$RUNNER_OS" = Windows ]; then
             7z a "$name.zip" "$name"
@@ -144,6 +159,33 @@ jobs:
             tar czf "$name.tar.gz" "$name"
             echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
+      # The desktop entry is valid, and install.sh installs it, the icons and the file types
+      # into a home of its own and removes them again.
+      - name: Check the desktop files
+        if: runner.os == 'Linux'
+        env:
+          DIR: ${{ steps.package.outputs.dir }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq desktop-file-utils shared-mime-info libxml2-utils > /dev/null
+          desktop-file-validate packaging/linux/kymo.desktop
+          xmllint --noout packaging/linux/kymo.xml
+          export HOME=$(mktemp -d)
+          "$DIR/install.sh"
+          test -x "$HOME/.local/bin/kymo"
+          "$HOME/.local/bin/kymo" --version
+          grep -qx "Exec=$HOME/.local/bin/kymo %f" "$HOME/.local/share/applications/kymo.desktop"
+          test -f "$HOME/.local/share/icons/hicolor/256x256/apps/kymo.png"
+          # update-mime-database turned the definitions into types, each with its globs.
+          for type in edf bdf brainvision-header bvrf-header eeglab fiff gdf xdf; do
+            test -f "$HOME/.local/share/mime/application/x-$type.xml"
+          done
+          grep -q 'application/x-edf:\*\.edf' "$HOME/.local/share/mime/globs2"
+          "$DIR/install.sh" --uninstall
+          test ! -e "$HOME/.local/bin/kymo"
+          test ! -e "$HOME/.local/share/applications/kymo.desktop"
+          test ! -e "$HOME/.local/share/mime/application/x-edf.xml"
       - name: Build the installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -306,3 +348,46 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: ${{ inputs.retention-days }}
+
+  # The AUR package, built as makepkg builds it, from this checkout instead of the tag's
+  # archive, and checked with namcap; its .SRCINFO is the one makepkg writes.
+  aur:
+    name: aur
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed cargo namcap
+          # The package's dependencies, as makepkg -s would install them.
+          source packaging/aur/PKGBUILD
+          pacman -S --noconfirm --needed "${depends[@]}"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$pkgver" != "$version" ]; then
+            echo "::error::PKGBUILD has pkgver $pkgver, the workspace $version"
+            exit 1
+          fi
+          useradd -m builder
+          build=/home/builder/build
+          mkdir -p "$build/src-tree"
+          # The tag's archive as GitHub makes it: the tree in kymo-<version>/.
+          tar --exclude=.git -cf - . | (mkdir "$build/src-tree/kymo-$pkgver" && cd "$build/src-tree/kymo-$pkgver" && tar -xf -)
+          tar -C "$build/src-tree" -czf "$build/kymo-$pkgver.tar.gz" "kymo-$pkgver"
+          sed "s|^source=.*|source=(\"kymo-$pkgver.tar.gz\")|" packaging/aur/PKGBUILD > "$build/PKGBUILD"
+          cp packaging/aur/PKGBUILD "$build/PKGBUILD.orig"
+          chown -R builder "$build"
+          cd "$build"
+          su builder -c "makepkg --noconfirm"
+          # .SRCINFO as makepkg writes it for the committed PKGBUILD.
+          su builder -c "cp PKGBUILD.orig PKGBUILD && makepkg --printsrcinfo" > srcinfo
+          diff -u "$GITHUB_WORKSPACE/packaging/aur/.SRCINFO" srcinfo
+          namcap PKGBUILD.orig | tee namcap.txt
+          namcap kymo-*.pkg.tar.zst | tee -a namcap.txt
+          if grep -q ' E: ' namcap.txt; then
+            echo "::error::namcap reports errors"
+            exit 1
+          fi
+          pacman -Qip kymo-*.pkg.tar.zst

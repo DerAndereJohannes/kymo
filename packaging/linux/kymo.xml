@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The recordings Kymo reads, as file types for file managers (shared-mime-info has none of
+     them): by extension, and where a format starts with fixed bytes also by those. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-edf">
+    <comment>EDF recording</comment>
+    <acronym>EDF</acronym>
+    <expanded-acronym>European Data Format</expanded-acronym>
+    <glob pattern="*.edf"/>
+    <!-- The version field: "0" and seven spaces. -->
+    <magic priority="50">
+      <match type="string" offset="0" value="0       "/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-bdf">
+    <comment>BDF recording</comment>
+    <acronym>BDF</acronym>
+    <expanded-acronym>BioSemi Data Format</expanded-acronym>
+    <glob pattern="*.bdf"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="\xffBIOSEMI"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-brainvision-header">
+    <comment>BrainVision recording</comment>
+    <glob pattern="*.vhdr"/>
+    <magic priority="50">
+      <match type="string" offset="0:3" value="Brain Vision "/>
+      <match type="string" offset="0:3" value="BrainVision "/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-bvrf-header">
+    <comment>BrainVision Recording Format recording</comment>
+    <acronym>BVRF</acronym>
+    <glob pattern="*.bvrh"/>
+  </mime-type>
+  <mime-type type="application/x-eeglab">
+    <comment>EEGLAB dataset</comment>
+    <glob pattern="*.set"/>
+  </mime-type>
+  <mime-type type="application/x-fiff">
+    <comment>FIFF recording</comment>
+    <acronym>FIFF</acronym>
+    <expanded-acronym>Functional Imaging File Format</expanded-acronym>
+    <glob pattern="*.fif"/>
+    <!-- The file id tag: kind 100, type 31 (big-endian). -->
+    <magic priority="50">
+      <match type="big32" offset="0" value="100">
+        <match type="big32" offset="4" value="31"/>
+      </match>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-gdf">
+    <comment>GDF recording</comment>
+    <acronym>GDF</acronym>
+    <expanded-acronym>General Data Format</expanded-acronym>
+    <glob pattern="*.gdf"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="GDF"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/x-xdf">
+    <comment>XDF recording</comment>
+    <acronym>XDF</acronym>
+    <expanded-acronym>Extensible Data Format</expanded-acronym>
+    <glob pattern="*.xdf"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="XDF:"/>
+    </magic>
+  </mime-type>
+</mime-info>

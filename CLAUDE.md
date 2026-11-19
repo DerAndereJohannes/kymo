@@ -77,7 +77,7 @@ scripts/compare_mne.py --testgen     # check kymo-testgen presets against MNE
 scripts/compare_mne.py --annotations ...   # also annotation files both ways
 scripts/compare_mne.py --channels ...      # also channels.tsv files both ways, against MNE-BIDS
 scripts/icons.sh                       # renders the icon's PNGs from crates/kymo/assets/Kymo.icon (macOS, needs Icon Composer)
-gh workflow run binaries.yml            # release binaries as artifacts, not zipped again: a signed, notarized .dmg with Kymo.app (macOS arm64), an installer and a .zip (Windows), a .tar.gz (Linux x86_64 and arm64)
+gh workflow run binaries.yml            # release binaries as artifacts, not zipped again: a signed, notarized .dmg with Kymo.app (macOS arm64), an installer and a .zip (Windows), a .tar.gz with install.sh and the desktop files (Linux x86_64 and arm64); its aur job builds packaging/aur on Arch
 packaging/macos/bundle.sh BINARY VERSION DIR   # builds Kymo.app around a binary (unsigned; the workflow signs it); dmg.sh puts it in a disk image
 gh api repos/cbrnr/kymo/actions/runs/RUN/artifacts --jq '.artifacts[] | "\(.id) \(.name)"'   # their ids; then
 gh api repos/cbrnr/kymo/actions/artifacts/ID/zip > NAME   # fetches one as is (`gh run download` expects a zip and fails)
