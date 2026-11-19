@@ -13,6 +13,7 @@ mod app_mode;
 mod axis;
 mod frame;
 mod history;
+mod icon;
 mod keymap;
 mod measure;
 mod menu;

@@ -35,6 +35,14 @@ use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
 
+/// The app's icon, for the window: the title bar and taskbar's on Windows and X11 and the
+/// Dock's on macOS. Wayland takes it from the desktop entry instead.
+pub fn icon() -> egui::IconData {
+    // Embedded, so it can only fail if the file in the repository is broken, which a test checks.
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/png/kymo-256.png"))
+        .expect("the embedded icon is a valid PNG")
+}
+
 /// How the window keeps recordings and shows its menus, and the settings it starts with.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -1437,6 +1445,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_app_id("kymo")
+            .with_icon(icon())
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
