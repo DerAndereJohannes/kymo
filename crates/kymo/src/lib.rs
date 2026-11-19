@@ -19,6 +19,7 @@ pub mod native_menu;
 #[cfg(not(any(target_os = "macos", windows)))]
 #[path = "no_native_menu.rs"]
 pub mod native_menu;
+pub mod opened;
 pub mod recent;
 pub mod render;
 pub mod scale;

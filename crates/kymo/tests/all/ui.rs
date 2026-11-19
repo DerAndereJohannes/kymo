@@ -6188,6 +6188,62 @@ fn dropped_files_open_or_load_their_annotations() {
     assert_eq!(viewer(&harness).document().path, other.path());
 }
 
+#[test]
+fn files_handed_over_by_the_system_open_as_dropped_ones() {
+    let file = without_triggers("bdf+c-small");
+    let other = without_triggers("bdf+c-small");
+    let dir = TempDir::new();
+    let events = dir.path().join("events.tsv");
+    std::fs::write(&events, "onset\tduration\ttrial_type\n1.5\t1\thanded\n").unwrap();
+    let inbox = std::sync::Arc::new(kymo::opened::Inbox::new());
+    // Started without a recording, as Finder starts an app bundle, with the file it was
+    // started for already handed over: it opens instead of the file dialog (which would
+    // pick `other`).
+    inbox.push([file.path().to_owned()]);
+    let receiving = inbox.clone();
+    let picked = other.path().to_owned();
+    let mut harness = Harness::builder().with_size(SIZE).build_eframe(move |cc| {
+        system_fonts(&cc.egui_ctx);
+        let mut app = KymoApp::new(
+            &cc.egui_ctx,
+            Gpu::none("no GPU in this test"),
+            options(),
+            None,
+        );
+        app.answer_file_dialogs([Some(picked)]);
+        app.receive_opened(&cc.egui_ctx, receiving);
+        app
+    });
+    ready(&mut harness);
+    harness.run_steps(4);
+    assert_eq!(viewer(&harness).document().path, file.path());
+
+    // Annotations load into the open recording.
+    inbox.push([events.clone()]);
+    harness.run_steps(2);
+    assert_eq!(viewer_spans(&harness), [(1.5, 2.5, "handed".into())]);
+
+    // With unsaved changes, another recording waits for the answer, and a file handed over
+    // meanwhile waits for it to be given.
+    inbox.push([other.path().to_owned()]);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().leaving(),
+        Some(kymo::app::Leave::OpenPath(other.path().to_owned()))
+    );
+    inbox.push([file.path().to_owned()]);
+    harness.run_steps(2);
+    assert!(!inbox.is_empty());
+    // Given, the other recording opens, and then, without a question (nothing is edited
+    // any more), the one that waited replaces it.
+    harness.get_by_label("Don't Save").click();
+    harness.run_steps(2);
+    assert!(inbox.is_empty());
+    assert_eq!(harness.state().leaving(), None);
+    ready(&mut harness);
+    assert_eq!(viewer(&harness).document().path, file.path());
+}
+
 /// Opens File → Open Recent and clicks `item` in it.
 fn choose_recent(harness: &mut Harness<'_, KymoApp>, item: &str) {
     harness.get_by_label("File").click();

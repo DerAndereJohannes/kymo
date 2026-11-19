@@ -25,11 +25,18 @@ thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda.workspace = true
+objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
+winit.workspace = true
 
 # The System theme on Linux (and the other Unix systems winit runs on): the desktop portal's
 # color-scheme over D-Bus. Already pulled in by eframe (accessibility).
+# The test of the open-files method sends it to a class of its own.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus.workspace = true
 

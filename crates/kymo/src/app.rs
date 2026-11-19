@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use eframe::egui::{self, Align, Color32, Event, Layout, RichText, Ui};
@@ -20,6 +21,7 @@ use crate::disk_cache::DiskCache;
 use crate::document::{self, Document, Loading, error_text, file_name, format_duration, plural};
 use crate::keymap::{Keymap, Platform};
 use crate::native_menu::NativeMenu;
+use crate::opened::Inbox;
 use crate::recent::Recent;
 use crate::settings::{Settings, Theme, load_annotation_colors, save_annotation_colors};
 use crate::ui::Overlay;
@@ -130,6 +132,9 @@ pub struct KymoApp {
     /// frame.
     fonts_applied: bool,
     fonts_set: bool,
+    /// Files the system hands over (Finder on macOS), once [`receive_opened`](Self::receive_opened)
+    /// connects it.
+    opened: Option<Arc<Inbox>>,
 }
 
 /// What the unsaved changes question holds up.
@@ -210,6 +215,7 @@ impl KymoApp {
             theme_applied: None,
             fonts_applied: system_font,
             fonts_set: false,
+            opened: None,
         };
         if let Some(path) = path {
             app.open(ctx, path);
@@ -293,6 +299,13 @@ impl KymoApp {
     /// of the system's theme as winit reports it, wherever the mode is known.
     pub fn follow_app_mode(&mut self, mode: AppMode) {
         self.app_mode = mode;
+    }
+
+    /// Opens the files the system hands over through `inbox` (see [`crate::opened`]) as
+    /// dropped ones: a recording replaces the open one, after asking about unsaved changes.
+    pub fn receive_opened(&mut self, ctx: &egui::Context, inbox: Arc<Inbox>) {
+        inbox.wake(ctx);
+        self.opened = Some(inbox);
     }
 
     /// Applies the theme before the first frame, which the startup file dialog (opened
@@ -474,6 +487,9 @@ impl KymoApp {
         // The startup dialog is modal: show it once the window has been drawn and has focus.
         // On macOS a panel opened before the app is active is canceled at once; gaining
         // focus repaints, which brings us back here.
+        // Before the file dialog a window started without a recording shows: Finder starts
+        // an app bundle without arguments and hands over the file it was started for.
+        self.take_opened(&ctx);
         if self.pick_file {
             let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
             if self.shown && focused {
@@ -850,6 +866,28 @@ impl KymoApp {
         if self.leaving.is_some() || self.notice.is_some() {
             return;
         }
+        self.open_file(ctx, path);
+    }
+
+    /// Opens a file the system handed over (the first, if several) as a dropped one (see
+    /// [`take_dropped`](Self::take_dropped)). While a question or notice is shown, it waits.
+    fn take_opened(&mut self, ctx: &egui::Context) {
+        let Some(inbox) = &self.opened else {
+            return;
+        };
+        if self.leaving.is_some() || self.notice.is_some() || inbox.is_empty() {
+            return;
+        }
+        let Some(path) = inbox.take().into_iter().next() else {
+            return;
+        };
+        self.pick_file = false;
+        self.open_file(ctx, path);
+    }
+
+    /// Opens `path` as a recording, or loads it into the open one if it holds channels or
+    /// annotations, by its name.
+    fn open_file(&mut self, ctx: &egui::Context, path: PathBuf) {
         if Format::of(&path).is_none() {
             self.leave(ctx, Leave::OpenPath(path));
         } else if self.viewer().is_some() && is_channels_file(&path) {
@@ -1450,30 +1488,73 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
-    eframe::run_native(
-        APP_NAME,
-        options,
-        Box::new(|cc| {
-            let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
-            let options = Options {
-                settings: Settings::load(cc.storage),
-                annotation_colors: load_annotation_colors(cc.storage),
-                recent: Recent::load(cc.storage),
-                ..Options::default()
-            };
-            let native = options.menus == Menus::Native;
-            let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
-            app.follow_app_mode(AppMode::watch(&cc.egui_ctx));
-            // Without it, egui draws the menu bar.
-            if native {
-                match NativeMenu::attach(cc) {
-                    Ok(menu) => app.set_native_menu(menu),
-                    Err(error) => eprintln!("kymo: no native menu bar: {error}"),
-                }
+    let inbox = Arc::new(Inbox::new());
+    let receiving = inbox.clone();
+    let creator: eframe::AppCreator<'static> = Box::new(move |cc| {
+        let gpu = Gpu::new(cc.wgpu_render_state.as_ref());
+        let options = Options {
+            settings: Settings::load(cc.storage),
+            annotation_colors: load_annotation_colors(cc.storage),
+            recent: Recent::load(cc.storage),
+            ..Options::default()
+        };
+        let native = options.menus == Menus::Native;
+        let mut app = KymoApp::new(&cc.egui_ctx, gpu, options, path);
+        app.follow_app_mode(AppMode::watch(&cc.egui_ctx));
+        // Without it, egui draws the menu bar.
+        if native {
+            match NativeMenu::attach(cc) {
+                Ok(menu) => app.set_native_menu(menu),
+                Err(error) => eprintln!("kymo: no native menu bar: {error}"),
             }
-            app.start(&cc.egui_ctx);
-            Ok(Box::new(app))
-        }),
-    )
-    .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))
+        }
+        app.receive_opened(&cc.egui_ctx, receiving);
+        app.start(&cc.egui_ctx);
+        Ok(Box::new(app))
+    });
+    run_window(options, creator, inbox)
+}
+
+/// Runs the window on eframe's own event loop: Windows and Linux hand over files only as
+/// arguments.
+#[cfg(not(target_os = "macos"))]
+fn run_window(
+    options: eframe::NativeOptions,
+    creator: eframe::AppCreator<'static>,
+    _inbox: Arc<Inbox>,
+) -> Result<()> {
+    eframe::run_native(APP_NAME, options, creator)
+        .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))
+}
+
+/// Runs the window on an event loop built here, so that winit's app delegate can receive
+/// the files Finder hands over (into `inbox`) before the app has launched: those it was
+/// started for arrive before then.
+#[cfg(target_os = "macos")]
+fn run_window(
+    options: eframe::NativeOptions,
+    creator: eframe::AppCreator<'static>,
+    inbox: Arc<Inbox>,
+) -> Result<()> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))?;
+    crate::opened::receive_on(inbox);
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| anyhow::anyhow!("the window must be opened on the main thread"))?;
+    // Winit's delegate, which it set while building the event loop.
+    match NSApplication::sharedApplication(mtm).delegate() {
+        Some(delegate) => {
+            let delegate: &objc2::runtime::AnyObject = delegate.as_ref();
+            crate::opened::add_open_urls(delegate.class());
+        }
+        None => eprintln!("kymo: no app delegate, files from Finder can't be opened"),
+    }
+    let mut app = eframe::create_native(APP_NAME, options, creator, &event_loop);
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| anyhow::anyhow!("cannot open a window: {e}"))
 }

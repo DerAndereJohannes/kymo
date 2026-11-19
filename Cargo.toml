@@ -30,13 +30,20 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 memmap2 = "0.9"
 # Native menu bars on macOS and Windows; default features (GTK) are Linux-only and unused.
 muda = { version = "0.21", default-features = false }
-# macOS only, already pulled in by eframe; names the process for the app menu.
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
+# macOS only, already pulled in by objc2-app-kit; adds the method that receives files from
+# Finder to winit's app delegate.
+objc2 = "0.6.5"
+# macOS only, already pulled in by eframe; names the process for the app menu and reads the
+# files Finder hands over.
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSProcessInfo", "NSString", "NSURL"] }
 # macOS only, already pulled in by winit; lets the menus take the theme setting.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSResponder"] }
 pollster = "1.0"
 proptest = "1"
 rfd = "0.17.2"
+# macOS only, already pulled in by eframe (the same version and features): Kymo builds the
+# event loop itself there, to add the open-files method to winit's app delegate before it runs.
+winit = { version = "0.30.13", default-features = false }
 # BVRF headers (JSON); already in the lock file through criterion.
 serde_json = "1.0"
 thiserror = "2"
