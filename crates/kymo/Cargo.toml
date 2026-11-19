@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# The icon and version information as resources in kymo.exe (build.rs; Windows only).
+[build-dependencies]
+winresource = "0.1"
+
 # The binary only dispatches the parsed command; its parts are tested in the library.
 [[bin]]
 name = "kymo"

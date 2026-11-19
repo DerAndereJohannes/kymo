@@ -55,3 +55,29 @@ fn every_png_has_its_size() {
         assert_eq!(center[3], 255, "{}", path.display());
     }
 }
+
+#[test]
+fn windows_icon_holds_each_size_as_a_png() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/kymo.ico");
+    let ico = std::fs::read(path).unwrap();
+    let u16_at = |i: usize| u16::from_le_bytes([ico[i], ico[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes(ico[i..i + 4].try_into().unwrap());
+    // An icon file (type 1) with one entry per size.
+    assert_eq!((u16_at(0), u16_at(2)), (0, 1));
+    let count = u16_at(4) as usize;
+    let mut sizes = Vec::new();
+    for entry in 0..count {
+        let at = 6 + 16 * entry;
+        // 0 stands for 256.
+        let width = if ico[at] == 0 {
+            256
+        } else {
+            u32::from(ico[at])
+        };
+        let (len, offset) = (u32_at(at + 8) as usize, u32_at(at + 12) as usize);
+        let png = eframe::icon_data::from_png_bytes(&ico[offset..offset + len]).unwrap();
+        assert_eq!((png.width, png.height), (width, width));
+        sizes.push(width);
+    }
+    assert_eq!(sizes, [16, 24, 32, 48, 64, 256]);
+}

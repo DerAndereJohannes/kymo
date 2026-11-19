@@ -6,7 +6,9 @@ name: Binaries
 #
 # - macOS: `Kymo-<version>-macos-arm64.dmg`, a disk image with Kymo.app (signed with the
 #   Developer ID, notarized and stapled, as is the image) and a link to /Applications;
-# - Windows: `kymo-<version>-windows-x86_64.zip`, the binary and the license;
+# - Windows: `Kymo-<version>-windows-x86_64-setup.exe`, an installer (Inno Setup; per user by
+#   default, Start menu, Open With, PATH if chosen; unsigned), and
+#   `kymo-<version>-windows-x86_64.zip`, the portable binary and the license;
 # - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the same.
 #
 # The commit follows the version unless the run is for a tag (`kymo-0.1.0-abc1234-…`).
@@ -119,6 +121,8 @@ jobs:
           else
             stem="$version-${GITHUB_SHA::7}-${{ matrix.name }}"
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "stem=$stem" >> "$GITHUB_OUTPUT"
           if [ "$RUNNER_OS" = macOS ]; then
             # Signed, notarized and put in a disk image by the steps below.
             mkdir dist
@@ -140,6 +144,73 @@ jobs:
             tar czf "$name.tar.gz" "$name"
             echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
+      - name: Build the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+          STEM: ${{ steps.package.outputs.stem }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          # Version information takes numbers only (0.1.0-rc.1 gives 0.1.0).
+          $numeric = $env:VERSION.Split('-')[0]
+          & $iscc /Qp "/DVersion=$env:VERSION" "/DNumericVersion=$numeric" `
+            "/DBinary=$PWD\target\$env:TARGET\release\kymo.exe" `
+            "/DOutput=Kymo-$env:STEM-setup" "/O$PWD" packaging\windows\kymo.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "file=Kymo-$env:STEM-setup.exe" >> $env:GITHUB_OUTPUT
+        id: installer
+      # Installs for the current user with Kymo on PATH, as a user would, checks what it put
+      # in place, uninstalls, and checks that it is gone.
+      - name: Check the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SETUP: ${{ steps.installer.outputs.file }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Fail($message) { Write-Output "::error::$message"; exit 1 }
+          $app = "$env:LOCALAPPDATA\Programs\Kymo"
+          $classes = 'HKCU:\Software\Classes'
+          Start-Process -Wait -FilePath ".\$env:SETUP" `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/TASKS=addtopath'
+          if (-not (Test-Path "$app\kymo.exe")) { Fail "no $app\kymo.exe" }
+          $info = (Get-Item "$app\kymo.exe").VersionInfo
+          Write-Output "kymo.exe: $($info.ProductName) $($info.FileVersion)"
+          if ($info.ProductName -ne 'Kymo') { Fail 'kymo.exe has no version information' }
+          foreach ($ext in 'edf', 'bdf', 'vhdr', 'bvrh', 'set', 'fif', 'gdf', 'xdf') {
+            $progids = Get-ItemProperty "$classes\.$ext\OpenWithProgids" -ErrorAction SilentlyContinue
+            if (-not $progids -or $null -eq $progids.'Kymo.Recording') { Fail "Open With misses .$ext" }
+          }
+          $command = (Get-ItemProperty "$classes\Kymo.Recording\shell\open\command").'(default)'
+          Write-Output "open command: $command"
+          if ($command -ne "`"$app\kymo.exe`" `"%1`"") { Fail "wrong open command: $command" }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($path.Split(';') -contains $app)) { Fail "Kymo is not on PATH: $path" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Kymo.lnk")) {
+            Fail 'no Start menu entry'
+          }
+
+          # The uninstaller starts a copy of itself and returns at once.
+          Start-Process -Wait -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES'
+          for ($i = 0; $i -lt 60 -and (Test-Path "$app\kymo.exe"); $i++) { Start-Sleep 1 }
+          if (Test-Path "$app\kymo.exe") { Fail 'kymo.exe is still installed' }
+          if (Test-Path "$classes\Kymo.Recording") { Fail 'the file type is still registered' }
+          $progids = Get-ItemProperty "$classes\.edf\OpenWithProgids" -ErrorAction SilentlyContinue
+          if ($progids -and $null -ne $progids.'Kymo.Recording') { Fail 'Open With still lists Kymo' }
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($path -and ($path.Split(';') -contains $app)) { Fail "Kymo is still on PATH: $path" }
+          Write-Output 'Installed, checked and uninstalled'
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          path: ${{ steps.installer.outputs.file }}
+          archive: false
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
       # A temporary keychain with the Developer ID certificate, as MNELAB's workflow has it.
       - name: Import the signing certificate
         if: runner.os == 'macOS'
