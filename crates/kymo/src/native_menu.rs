@@ -22,7 +22,7 @@ use crate::keymap::{Chord, Platform};
 use crate::menu::{Item, Role, SystemItem, menu_bar};
 use crate::recent::Recent;
 use crate::settings::Theme;
-use crate::ui::menus::{ABOUT, LICENSE, MenuState, RECENT_TITLE};
+use crate::ui::menus::{ABOUT, COPYRIGHT, LICENSE, MenuState, RECENT_TITLE};
 
 /// The menu bar and its action items.
 pub struct NativeMenu {
@@ -340,8 +340,10 @@ fn system_item(item: SystemItem) -> PredefinedMenuItem {
             Some(AboutMetadata {
                 name: Some("Kymo".into()),
                 version: Some(kymo_core::version().into()),
-                comments: Some(ABOUT.into()),
-                license: Some(LICENSE.into()),
+                // macOS's panel shows only name, version, copyright and credits, not
+                // comments or license, so the credits carry both.
+                copyright: Some(COPYRIGHT.into()),
+                credits: Some(format!("{ABOUT}\n{LICENSE}")),
                 ..Default::default()
             }),
         ),

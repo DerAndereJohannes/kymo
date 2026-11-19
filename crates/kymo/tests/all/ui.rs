@@ -3751,6 +3751,7 @@ fn the_shortcut_overview_and_about_open() {
     choose(&mut harness, "Help", "About Kymo");
     assert!(harness.state().about_open());
     harness.get_by_label(kymo::ui::menus::ABOUT);
+    harness.get_by_label(kymo::ui::menus::COPYRIGHT);
 }
 
 #[test]

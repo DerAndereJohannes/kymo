@@ -280,6 +280,7 @@ pub fn about_window(ctx: &egui::Context, open: &mut bool) {
                 ui.add_space(6.0);
                 ui.label(ABOUT);
                 ui.add_space(6.0);
+                ui.label(COPYRIGHT);
                 ui.label(RichText::new(LICENSE).weak());
             });
         });
@@ -290,4 +291,5 @@ pub const RECENT_TITLE: &str = "Open Recent";
 
 /// What Kymo is, for About windows and panels.
 pub const ABOUT: &str = "A viewer for large EEG and MEG recordings.";
+pub const COPYRIGHT: &str = "© Kymo developers";
 pub const LICENSE: &str = "BSD 3-Clause License";
