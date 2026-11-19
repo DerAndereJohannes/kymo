@@ -61,3 +61,22 @@ cargo test --workspace
 If your change is visible to users, add a line for it to `CHANGELOG.md` under `[UNRELEASED]`, in the section that fits (✨ Added, 🌀 Changed, 🗑️ Removed, 🔧 Fixed): one sentence starting with a verb in the imperative, followed by your pull request and name, for example `([#12](https://github.com/cbrnr/kymo/pull/12) by [Clemens Brunner](https://github.com/cbrnr))`.
 
 Read `docs/design.md` before changing anything architectural, and `CLAUDE.md` for the project's rules and conventions.
+
+## Releasing
+
+Releases are made from `main` by pushing a tag; `.github/workflows/release.yml` does the rest up to a draft release.
+
+1. Set the version in the workspace's `Cargo.toml` (`version = "X.Y.Z"`; a pre-release such as `X.Y.Z-rc.1` becomes a GitHub pre-release) and run `cargo build` to update `Cargo.lock`.
+2. In `CHANGELOG.md`, rename the `[UNRELEASED]` heading to `[X.Y.Z]` with today's date.
+3. Commit both, and tag and push the commit:
+
+   ```sh
+   git commit -am "Release X.Y.Z"
+   git tag vX.Y.Z
+   git push origin main vX.Y.Z
+   ```
+
+   The workflow checks that the tag matches the version and that the changelog has an entry for it, runs the tests, builds the macOS disk image (signed and notarized), the Windows installer and archive and the Linux archives, and creates a draft release with them, `SHA256SUMS` and the changelog's entry as its notes.
+4. Review the draft on the [Releases](https://github.com/cbrnr/kymo/releases) page and publish it.
+5. The AUR package follows: [aur-pkgbuild-updater](https://github.com/cbrnr/aur-pkgbuild-updater) opens a pull request with the new version within a few hours; merge it to push the update to the AUR.
+6. Add a new `## [UNRELEASED]` heading at the top of `CHANGELOG.md` for the next changes.

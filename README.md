@@ -6,7 +6,7 @@ Kymo is a cross-platform, highly optimized, blazingly fast viewer for EEG and ME
 
 Kymo is named after the kymograph, a rotating drum used to record physiological signals in the 19th century.
 
-> Kymo is under active development and has not been released yet. It already runs as a standalone viewer on macOS, Windows, and Linux. Integration with [MNE-Python](https://mne.tools) and [MNELAB](https://github.com/cbrnr/mnelab) is planned (see the [roadmap](#roadmap)).
+> Kymo is under active development, and its first release is in preparation. Until then, [build it from source](#building-from-source). It already runs as a standalone viewer on macOS, Windows, and Linux. Integration with [MNE-Python](https://mne.tools) and [MNELAB](https://github.com/cbrnr/mnelab) is planned (see the [roadmap](#roadmap)).
 
 ## Why Kymo?
 
@@ -59,7 +59,7 @@ The following sections show keyboard shortcuts for macOS. On Windows and Linux, 
 - Scroll and zoom with the trackpad, mouse wheel, or keyboard. Jump to the beginning or end, go to a specific time, or fit the entire recording on the screen.
 - Move through the channels and choose how many to display at once.
 - Hover over a trace to see its value at that point.
-- Open recordings from the command line, the **File** menu, the recent files list, or by dragging them onto the window (currently not supported on Linux using Wayland).
+- Open recordings from the file manager (**Open With**, or a double-click once Kymo is the default app for a file type), the command line, the **File** menu, the recent files list, or by dragging them onto the window (currently not supported on Linux using Wayland). Opening a recording while another one is open replaces it, after asking about unsaved annotations.
 - **File → Recording Info** shows the recording's header fields, start time, duration, sampling rates, streams, and channel groups.
 
 ### Channels and scaling
@@ -96,7 +96,39 @@ The following sections show keyboard shortcuts for macOS. On Windows and Linux, 
 
 ## Installation
 
-Until the first release, you need to build Kymo from source. This requires [Rust](https://rustup.rs) 1.95 or later and a C compiler. See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup instructions.
+Download Kymo for your platform from the [Releases](https://github.com/cbrnr/kymo/releases) page. Kymo needs a graphics driver that supports Metal (macOS), DirectX 12 or Vulkan (Windows), or Vulkan (Linux).
+
+### macOS
+
+Kymo runs on Macs with Apple silicon and macOS 11 or later. Open `Kymo-<version>-macos-arm64.dmg` and drag **Kymo** to **Applications**. The app is signed and notarized, so it opens without warnings.
+
+### Windows
+
+Kymo runs on 64-bit Windows 10 and 11. Run `Kymo-<version>-windows-x86_64-setup.exe`. By default, Kymo is installed for the current user only, which needs no administrator rights. Optionally, the installer creates a desktop shortcut and adds Kymo to `PATH`. Kymo appears under **Open With** for the recordings it reads, without becoming their default app.
+
+The installer is not signed yet, so Microsoft Defender SmartScreen may warn about it the first time. Click **More info**, then **Run anyway**.
+
+Uninstall Kymo from **Settings → Apps**. The uninstaller asks whether to also remove Kymo's settings and its cache of recording overviews (they are kept unless you choose to remove them).
+
+If you prefer not to install anything, `kymo-<version>-windows-x86_64.zip` contains the executable, which runs from any folder.
+
+### Linux
+
+On Arch Linux and its derivatives, install the [`kymo`](https://aur.archlinux.org/packages/kymo) package from the AUR, for example with `paru -S kymo`.
+
+On other distributions, download `kymo-<version>-linux-x86_64.tar.gz` (or `-linux-arm64.tar.gz`), extract it, and run the included install script:
+
+```sh
+tar xzf kymo-<version>-linux-x86_64.tar.gz
+cd kymo-<version>-linux-x86_64
+./install.sh
+```
+
+This installs Kymo for the current user (no root needed): the executable in `~/.local/bin`, and a launcher entry, icons, and file types for recordings in `~/.local/share`, so file managers offer Kymo under **Open With**. `./install.sh --uninstall` removes them again. The executable needs glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36, or newer) and runs on Wayland and X11.
+
+### Building from source
+
+Building Kymo requires [Rust](https://rustup.rs) 1.95 or later and a C compiler. See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup instructions.
 
 ```sh
 git clone https://github.com/cbrnr/kymo.git
@@ -106,14 +138,19 @@ cargo build --release -p kymo
 
 The executable is available at `target/release/kymo` (`kymo.exe` on Windows).
 
-Kymo requires a graphics driver that supports Metal (macOS), DirectX 12 or Vulkan (Windows), or Vulkan (Linux).
-
 ## Usage
 
 ```sh
 kymo recording.bdf          # open a recording
 kymo                        # choose a file in a dialog
 kymo --info recording.fif   # print a recording summary without opening a window
+```
+
+On Windows, `kymo` works in a terminal if you chose **Add Kymo to PATH** during installation; on Linux, if `~/.local/bin` is on your `PATH` (the install script tells you if it isn't). On macOS, link the executable inside the app bundle to a folder on your `PATH`, for example:
+
+```sh
+sudo mkdir -p /usr/local/bin
+sudo ln -s /Applications/Kymo.app/Contents/MacOS/kymo /usr/local/bin/kymo
 ```
 
 ## Roadmap
