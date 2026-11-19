@@ -82,6 +82,7 @@ gh api repos/cbrnr/kymo/actions/artifacts/ID/zip > NAME   # fetches one as is (`
 ## Working style
 
 - Work in small, reviewable steps; each ends with passing tests and a commit.
+- Keep commit messages short: a subject line of about 72 characters at most saying what changed; details, if needed, in a brief body.
 - Never add a `Co-Authored-By` line or any other AI attribution, anywhere: commits, PRs, issues, comments.
 - Before a larger step, propose a short plan and wait for approval.
 - When unsure about a requirement, ask rather than guess.
