@@ -498,7 +498,11 @@ fn tile_draw(
         None if reaches => x(samples.end),
         None => x(samples.end - 1),
     };
-    let domain = [x(samples.start), end];
+    // At the shader's precision, so the columns below and the seam agree with where it
+    // places the edges (a seam taken from 1236.99999 would be column 1236, while the shader
+    // puts the next tile's first item at 1237.0).
+    let domain = [x(samples.start), end].map(|d| f64::from(d as f32));
+    let end = domain[1];
     let tolerance = f64::from(EDGE_TOLERANCE);
     // The column holding the next tile's first item ends this draw. Without a neighbor,
     // anti-aliased traces reach a column past the samples.

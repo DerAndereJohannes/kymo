@@ -290,17 +290,20 @@ proptest! {
         let per_px = f64::from(width) / span;
         let present = |i: u64| grid.segments().iter().any(|s| s.contains(&i));
         let mut checked = 0;
-        for draw in &frame.draws {
-            let key = draw.part.tile.key();
+        // A draw's own items and its neighbors': the column where the next tile starts is
+        // the draw's last, which draws the next tile's first item from `next` (the next
+        // draw, if no other column is left to it, is dropped).
+        for part in frame.draws.iter().flat_map(|d| [d.prev.as_ref(), Some(&d.part), d.next.as_ref()]).flatten() {
+            let key = part.tile.key();
             let bucket = key.level.bucket_len();
-            for item in draw.part.items.clone() {
+            for item in part.items.clone() {
                 let sample = key.sample_range().start + u64::from(item) * bucket;
                 let exact = (grid.time_of(sample) - start) * per_px;
                 if !present(sample) || !(-2.0..f64::from(width) + 2.0).contains(&exact) {
                     continue;
                 }
-                let placed = f64::from(draw.part.anchor_x)
-                    + (f64::from(item) - f64::from(draw.part.anchor)) * f64::from(draw.part.item_width);
+                let placed = f64::from(part.anchor_x)
+                    + (f64::from(item) - f64::from(part.anchor)) * f64::from(part.item_width);
                 prop_assert!((placed - exact).abs() < 1e-3, "{key:?} item {item}: {placed} vs {exact}");
                 checked += 1;
             }
