@@ -384,10 +384,14 @@ jobs:
           # .SRCINFO as makepkg writes it for the committed PKGBUILD.
           su builder -c "cp PKGBUILD.orig PKGBUILD && makepkg --printsrcinfo" > srcinfo
           diff -u "$GITHUB_WORKSPACE/packaging/aur/.SRCINFO" srcinfo
+          # The package, not makepkg's kymo-debug, whose links to the binary namcap takes for
+          # broken. Its warnings are expected: the libraries Kymo loads at run time, which it
+          # doesn't link, look unneeded to it.
+          package=$(ls kymo-[0-9]*.pkg.tar.zst)
           namcap PKGBUILD.orig | tee namcap.txt
-          namcap kymo-*.pkg.tar.zst | tee -a namcap.txt
+          namcap "$package" | tee -a namcap.txt
           if grep -q ' E: ' namcap.txt; then
             echo "::error::namcap reports errors"
             exit 1
           fi
-          pacman -Qip kymo-*.pkg.tar.zst
+          pacman -Qip "$package"

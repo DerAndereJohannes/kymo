@@ -14,7 +14,7 @@ url="https://github.com/cbrnr/kymo"
 license=('BSD-3-Clause')
 # Loaded at run time rather than linked: Vulkan for wgpu, the window system for winit, the
 # desktop portal for file dialogs.
-depends=('gcc-libs' 'glibc' 'hicolor-icon-theme' 'libxkbcommon' 'vulkan-icd-loader'
+depends=('libgcc' 'glibc' 'hicolor-icon-theme' 'libxkbcommon' 'vulkan-icd-loader'
          'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'xdg-desktop-portal')
 makedepends=('cargo')
 optdepends=('vulkan-driver: GPU rendering (mesa or the vendor driver provide one)')
