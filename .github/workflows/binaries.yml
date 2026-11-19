@@ -1,6 +1,7 @@
 name: Binaries
 
-# Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64) and
+# Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64; built on
+# Ubuntu 22.04, so the binaries need glibc 2.35 or newer, which a step checks) and
 # uploads one artifact per platform, the archive itself (a .tar.gz, a .zip on Windows), not
 # zipped again: `kymo-<version>-<os>-<arch>.tar.gz` (`macos-arm64`, `windows-x86_64`,
 # `linux-x86_64`, `linux-arm64`), with the commit after the version unless the run is for a
@@ -45,10 +46,10 @@ jobs:
             os: windows-latest
           - name: linux-x86_64
             target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
           - name: linux-arm64
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -62,6 +63,20 @@ jobs:
       - run: cargo build --release --locked -p kymo --target ${{ matrix.target }}
         env:
           CARGO_PROFILE_RELEASE_STRIP: ${{ runner.os == 'Windows' && 'none' || 'symbols' }}
+      # Ubuntu 22.04 and Debian 12 have glibc 2.35 or newer (RHEL 9 has 2.34); a symbol versioned
+      # above it would keep the binary from starting there.
+      - name: Check glibc
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          max=2.35
+          newest=$(objdump -T "target/${{ matrix.target }}/release/kymo" \
+            | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1)
+          echo "Newest glibc symbol version: $newest (allowed: $max)"
+          if [ "$(printf '%s\n%s\n' "$newest" "$max" | sort -V | tail -n1)" != "$max" ]; then
+            echo "::error::The binary needs glibc $newest, newer than $max"
+            exit 1
+          fi
       - name: Package
         id: package
         shell: bash
