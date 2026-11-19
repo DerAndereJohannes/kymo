@@ -2,14 +2,24 @@ name: Binaries
 
 # Builds the viewer for macOS (Apple silicon), Windows and Linux (x86_64 and arm64; built on
 # Ubuntu 22.04, so the binaries need glibc 2.35 or newer, which a step checks) and
-# uploads one artifact per platform, the archive itself (a .tar.gz, a .zip on Windows), not
-# zipped again: `kymo-<version>-<os>-<arch>.tar.gz` (`macos-arm64`, `windows-x86_64`,
-# `linux-x86_64`, `linux-arm64`), with the commit after the version unless the run is for a
-# tag (`kymo-0.1.0-abc1234-linux-x86_64.tar.gz`). Download them from the run's
-# page or with `gh api repos/OWNER/REPO/actions/artifacts/ID/zip > NAME` (`gh run download`
-# expects a zip and fails). Run it by hand (Actions tab, or
+# uploads one artifact per platform, the file itself, not zipped again:
+#
+# - macOS: `Kymo-<version>-macos-arm64.dmg`, a disk image with Kymo.app (signed with the
+#   Developer ID, notarized and stapled, as is the image) and a link to /Applications;
+# - Windows: `kymo-<version>-windows-x86_64.zip`, the binary and the license;
+# - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the same.
+#
+# The commit follows the version unless the run is for a tag (`kymo-0.1.0-abc1234-…`).
+# Download them from the run's page or with `gh api repos/OWNER/REPO/actions/artifacts/ID/zip
+# > NAME` (`gh run download` expects a zip and fails). Run it by hand (Actions tab, or
 # `gh workflow run binaries.yml`), or call it from another workflow (the release one) with
-# `uses: ./.github/workflows/binaries.yml` and download the artifacts in a later job.
+# `uses: ./.github/workflows/binaries.yml` and `secrets: inherit`, and download the
+# artifacts in a later job.
+#
+# Signing needs the repository's secrets MACOS_CERT_P12_BASE64 (the Developer ID Application
+# certificate with its key, a .p12 in base64), MACOS_CERT_PASSWORD (its password),
+# AC_USERNAME (the Apple ID) and AC_PASSWORD (an app-specific password for notarytool);
+# without them the macOS job fails rather than build an unsigned app.
 
 on:
   workflow_dispatch:
@@ -24,12 +34,25 @@ on:
         description: Days to keep the artifacts
         type: number
         default: 30
+    secrets:
+      MACOS_CERT_P12_BASE64:
+        required: true
+      MACOS_CERT_PASSWORD:
+        required: true
+      AC_USERNAME:
+        required: true
+      AC_PASSWORD:
+        required: true
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # The oldest macOS Kymo.app runs on (its LSMinimumSystemVersion), for C code too.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  MACOS_IDENTITY: "Developer ID Application: CLEMENS BRUNNER (9UC2D22DW3)"
+  MACOS_TEAM: 9UC2D22DW3
 
 jobs:
   build:
@@ -91,10 +114,20 @@ jobs:
           version=$("$binary" --version | cut -d' ' -f2)
           # Releases (runs for a tag) are named by version only, other builds by commit too.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            name="kymo-$version-${{ matrix.name }}"
+            stem="$version-${{ matrix.name }}"
           else
-            name="kymo-$version-${GITHUB_SHA::7}-${{ matrix.name }}"
+            stem="$version-${GITHUB_SHA::7}-${{ matrix.name }}"
           fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Signed, notarized and put in a disk image by the steps below.
+            mkdir dist
+            packaging/macos/bundle.sh "$binary" "$version" dist
+            # The bundle's binary starts.
+            dist/Kymo.app/Contents/MacOS/kymo --version
+            echo "file=Kymo-$stem.dmg" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name="kymo-$stem"
           mkdir "$name"
           cp "$binary" LICENSE "$name/"
           # tar keeps the executable bit, which upload-artifact's own zip would drop.
@@ -105,6 +138,94 @@ jobs:
             tar czf "$name.tar.gz" "$name"
             echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
+      # A temporary keychain with the Developer ID certificate, as MNELAB's workflow has it.
+      - name: Import the signing certificate
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for secret in MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD AC_USERNAME AC_PASSWORD; do
+            if [ -z "${!secret}" ]; then
+              echo "::error::The secret $secret is missing; Kymo.app is only built signed"
+              exit 1
+            fi
+          done
+          keychain="$RUNNER_TEMP/build.keychain"
+          password=$(openssl rand -hex 16)
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+      # Hardened runtime, a secure timestamp, no entitlements (wgpu on Metal needs none);
+      # nothing nested to sign, so no --deep.
+      - name: Sign Kymo.app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp --sign "$MACOS_IDENTITY" dist/Kymo.app
+          codesign --verify --strict --verbose=2 dist/Kymo.app
+          dist/Kymo.app/Contents/MacOS/kymo --version
+      - name: Notarize Kymo.app and its disk image
+        if: runner.os == 'macOS'
+        env:
+          AC_USERNAME: ${{ secrets.AC_USERNAME }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+          DMG: ${{ steps.package.outputs.file }}
+        run: |
+          set -euo pipefail
+          # Submits $1, waits for Apple's verdict, and prints the log if it isn't accepted.
+          notarize() {
+            result=$(xcrun notarytool submit "$1" --apple-id "$AC_USERNAME" \
+              --password "$AC_PASSWORD" --team-id "$MACOS_TEAM" --wait --output-format json)
+            echo "$result"
+            status=$(echo "$result" | jq -r .status)
+            if [ "$status" != Accepted ]; then
+              xcrun notarytool log "$(echo "$result" | jq -r .id)" --apple-id "$AC_USERNAME" \
+                --password "$AC_PASSWORD" --team-id "$MACOS_TEAM"
+              echo "::error::Notarizing $1 ended with: $status"
+              exit 1
+            fi
+          }
+          # Fetching the ticket from Apple often times out, so it is tried again.
+          staple() {
+            for attempt in 1 2 3 4 5; do
+              if perl -e 'alarm 120; exec @ARGV' xcrun stapler staple "$1"; then
+                xcrun stapler validate "$1"
+                return 0
+              fi
+              echo "Stapling $1 failed (attempt $attempt of 5)"
+              sleep 30
+            done
+            return 1
+          }
+          ditto -c -k --keepParent dist/Kymo.app "$RUNNER_TEMP/Kymo.zip"
+          notarize "$RUNNER_TEMP/Kymo.zip"
+          staple dist/Kymo.app
+          packaging/macos/dmg.sh dist/Kymo.app "$DMG"
+          codesign --force --timestamp --sign "$MACOS_IDENTITY" "$DMG"
+          notarize "$DMG"
+          staple "$DMG"
+      # What a Mac that downloaded them decides: both notarized Developer ID.
+      - name: Check Gatekeeper
+        if: runner.os == 'macOS'
+        env:
+          DMG: ${{ steps.package.outputs.file }}
+        run: |
+          set -euo pipefail
+          spctl --assess --type execute --verbose=4 dist/Kymo.app
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+      - name: Remove the keychain
+        if: runner.os == 'macOS' && always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain" || true
       # Unarchived, the artifact is named after the file (`name` would be ignored).
       - uses: actions/upload-artifact@v7
         with:

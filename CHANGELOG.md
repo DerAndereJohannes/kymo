@@ -9,4 +9,4 @@
 - Add measuring time, frequency and peak-to-peak amplitude by dragging across the traces with ⇧ held down.
 - Add annotations and stim channel events, an annotation editing mode with undo and redo, and saving and loading annotations as BIDS events files or MNE-Python annotation CSV files.
 - Add light and dark themes, custom colors, native menus and keyboard shortcuts, settings saved between sessions, and clearing the disk cache from Settings.
-- Add standalone builds for macOS (Apple silicon), Windows (x86_64) and Linux (x86_64 and arm64), with an app icon.
+- Add standalone builds for macOS (Apple silicon, a signed and notarized app in a disk image), Windows (x86_64) and Linux (x86_64 and arm64), with an app icon.
