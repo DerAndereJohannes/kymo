@@ -27,6 +27,7 @@ crates/kymo-testgen  generates synthetic EDF/BDF, BrainVision, EEGLAB, GDF, FIFF
 scripts/             Python helpers (validation against MNE)
 docs/design.md       design handoff
 CONTRIBUTING.md      toolchain setup per platform, build and checks
+CHANGELOG.md         release notes in MNELAB's format; user-visible changes add a line under [UNRELEASED]
 docs/phase2-plan.md  plan for phase 2 (the viewer), done
 docs/phase3-plan.md  plan for phase 3 (viewer features), done
 docs/phase4-plan.md  plan for phase 4 (file formats, part 1)
@@ -84,6 +85,7 @@ gh api repos/cbrnr/kymo/actions/artifacts/ID/zip > NAME   # fetches one as is (`
 
 - Work in small, reviewable steps; each ends with passing tests and a commit.
 - Keep commit messages short: a subject line of about 72 characters at most saying what changed; details, if needed, in a brief body.
+- A user-visible change adds one line to `CHANGELOG.md` under `[UNRELEASED]` (section, imperative sentence, its pull request and author, or its commit if there is none) and updates that heading's date.
 - Never add a `Co-Authored-By` line or any other AI attribution, anywhere: commits, PRs, issues, comments.
 - Before a larger step, propose a short plan and wait for approval.
 - When unsure about a requirement, ask rather than guess.

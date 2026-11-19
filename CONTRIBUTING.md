@@ -58,4 +58,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+If your change is visible to users, add a line for it to `CHANGELOG.md` under `[UNRELEASED]`, in the section that fits (✨ Added, 🌀 Changed, 🗑️ Removed, 🔧 Fixed): one sentence starting with a verb in the imperative, followed by your pull request and name, for example `([#12](https://github.com/cbrnr/kymo/pull/12) by [Clemens Brunner](https://github.com/cbrnr))`.
+
 Read `docs/design.md` before changing anything architectural, and `CLAUDE.md` for the project's rules and conventions.
