@@ -3,6 +3,10 @@
     {
       "layers": [
         {
+          "image-name": "stylus.svg",
+          "name": "stylus"
+        },
+        {
           "image-name": "trace.svg",
           "name": "trace"
         }
