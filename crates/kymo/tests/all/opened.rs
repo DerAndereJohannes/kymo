@@ -2,7 +2,6 @@
 //! delegate that fills it.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use kymo::opened::Inbox;
 
@@ -24,6 +23,8 @@ fn inbox_keeps_paths_until_taken() {
 #[test]
 #[allow(unsafe_code)]
 fn open_urls_puts_file_paths_in_the_inbox() {
+    use std::sync::Arc;
+
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{ClassType, define_class, msg_send};
