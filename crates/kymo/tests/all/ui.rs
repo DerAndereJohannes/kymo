@@ -3101,6 +3101,12 @@ fn stim_annotations_come_with_the_sidecar() {
         let mut harness = open(file.path());
         ready(&mut harness);
         assert_stim(&stim_annotations(&harness), &want);
+        // Until the sidecar is complete: closed while it builds, the next open would build
+        // it again (slow runners got there).
+        step_until(&mut harness, "the sidecar", |app| {
+            app.viewer()
+                .is_some_and(|v| !v.status().right.contains("Building"))
+        });
     }
     assert_eq!(
         std::fs::read_dir(dir.path()).unwrap().count(),
