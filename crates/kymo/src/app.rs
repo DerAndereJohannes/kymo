@@ -37,12 +37,38 @@ use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
 
-/// The app's icon, for the window: the title bar and taskbar's on Windows and X11 and the
-/// Dock's on macOS. Wayland takes it from the desktop entry instead.
+/// The app's icon, for the window: the title bar and taskbar's on Windows and X11. Wayland
+/// takes it from the desktop entry instead; macOS gets [`window_icon`]'s.
 pub fn icon() -> egui::IconData {
     // Embedded, so it can only fail if the file in the repository is broken, which a test checks.
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/png/kymo-256.png"))
         .expect("the embedded icon is a valid PNG")
+}
+
+/// The icon eframe gives the window, and on macOS the Dock while Kymo runs. In an app bundle
+/// that is none: the bundle's own icon adapts to light, dark, tinted and clear mode, which
+/// any image set at runtime (eframe would set egui's logo without one) would replace. eframe
+/// leaves the Dock alone when the image is invalid, as this one is. A bare binary has no
+/// bundle icon and gets one drawn on macOS's icon grid, with its margins, as the Dock expects.
+#[cfg(target_os = "macos")]
+fn window_icon() -> egui::IconData {
+    let bundled = objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .is_some();
+    if bundled {
+        return egui::IconData {
+            rgba: Vec::new(),
+            width: 1,
+            height: 1,
+        };
+    }
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/png/kymo-macos-256.png"))
+        .expect("the embedded icon is a valid PNG")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn window_icon() -> egui::IconData {
+    icon()
 }
 
 /// How the window keeps recordings and shows its menus, and the settings it starts with.
@@ -1483,7 +1509,7 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_app_id("kymo")
-            .with_icon(icon())
+            .with_icon(window_icon())
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()

@@ -25,6 +25,20 @@ fn window_icon_is_a_rounded_tile() {
 }
 
 #[test]
+fn macos_dock_icon_leaves_the_icon_grid_margins() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/png/kymo-macos-256.png");
+    let icon = eframe::icon_data::from_png_bytes(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!((icon.width, icon.height), (256, 256));
+    // The tile is 206 of 256 px (824 of 1024), centered: 25 px of margin on each side.
+    for (x, y) in [(10, 128), (245, 128), (128, 10), (128, 245)] {
+        assert_eq!(pixel(&icon, x, y)[3], 0, "margin ({x}, {y})");
+    }
+    for (x, y) in [(30, 128), (225, 128), (128, 30), (128, 225), (128, 128)] {
+        assert_eq!(pixel(&icon, x, y)[3], 255, "tile ({x}, {y})");
+    }
+}
+
+#[test]
 fn every_png_has_its_size() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/png");
     for size in [16, 24, 32, 48, 64, 128, 256, 512, 1024] {

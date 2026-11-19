@@ -35,7 +35,7 @@ muda = { version = "0.21", default-features = false }
 objc2 = "0.6.5"
 # macOS only, already pulled in by eframe; names the process for the app menu and reads the
 # files Finder hands over.
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSProcessInfo", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSProcessInfo", "NSString", "NSURL"] }
 # macOS only, already pulled in by winit; lets the menus take the theme setting.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSResponder"] }
 pollster = "1.0"
