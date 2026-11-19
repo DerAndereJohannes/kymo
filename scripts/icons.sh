@@ -1,11 +1,16 @@
 #!/bin/sh
-# Renders Kymo's icon to the PNG sizes in crates/kymo/assets/png, from kymo-small.svg up to
-# 32 px (thicker, smoother traces, no hub) and from kymo.svg above. Needs resvg
-# (`cargo install resvg`). Run it after changing either SVG and commit the PNGs.
+# Renders Kymo's icon (crates/kymo/assets/Kymo.icon, an Icon Composer document) to the PNG
+# sizes in crates/kymo/assets/png, as macOS draws it in light mode: the window's icon and
+# Windows' and Linux's. Needs macOS with Icon Composer (its ictool). Run it after changing
+# the icon and commit the PNGs; Kymo.app gets the icon itself, compiled by bundle.sh, which
+# adapts to light, dark, tinted and clear mode.
 set -eu
+ictool="/Applications/Icon Composer.app/Contents/Executables/ictool"
 cd "$(dirname "$0")/../crates/kymo/assets"
 mkdir -p png
 for size in 16 24 32 48 64 128 256 512 1024; do
-    if [ "$size" -le 32 ]; then svg=kymo-small.svg; else svg=kymo.svg; fi
-    resvg --width "$size" --height "$size" "$svg" "png/kymo-$size.png"
+    "$ictool" Kymo.icon --export-image --output-file "png/kymo-$size.png" --platform macOS \
+        --rendition Default --width "$size" --height "$size" --scale 1 > /dev/null
 done
+# ictool writes 16 bits per channel; 8 are plenty and a fraction of the size.
+swift ../../../scripts/png8.swift png/kymo-*.png

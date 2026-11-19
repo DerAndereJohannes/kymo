@@ -61,9 +61,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Xcode 26 or newer, whose actool compiles the icon (an Icon Composer document).
           - name: macos-arm64
             target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-26
           - name: windows-x86_64
             target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -121,6 +122,7 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then
             # Signed, notarized and put in a disk image by the steps below.
             mkdir dist
+            xcodebuild -version
             packaging/macos/bundle.sh "$binary" "$version" dist
             # The bundle's binary starts.
             dist/Kymo.app/Contents/MacOS/kymo --version

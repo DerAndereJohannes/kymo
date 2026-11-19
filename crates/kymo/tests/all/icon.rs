@@ -11,16 +11,17 @@ fn pixel(icon: &IconData, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[test]
-fn window_icon_is_the_tile_on_a_transparent_margin() {
+fn window_icon_is_a_rounded_tile() {
     let icon = kymo::app::icon();
     assert_eq!((icon.width, icon.height), (256, 256));
     assert_eq!(icon.rgba.len(), 256 * 256 * 4);
-    // macOS's icon grid: the tile leaves a transparent margin of about a tenth.
-    assert_eq!(pixel(&icon, 2, 2)[3], 0);
-    assert_eq!(pixel(&icon, 253, 128)[3], 0);
-    // Inside the tile, everything is opaque.
-    assert_eq!(pixel(&icon, 128, 40)[3], 255);
-    assert_eq!(pixel(&icon, 128, 128)[3], 255);
+    // The tile fills the image but for its rounded corners.
+    for (x, y) in [(2, 2), (253, 2), (2, 253), (253, 253)] {
+        assert_eq!(pixel(&icon, x, y)[3], 0, "corner ({x}, {y})");
+    }
+    for (x, y) in [(128, 2), (2, 128), (253, 128), (128, 253), (128, 128)] {
+        assert_eq!(pixel(&icon, x, y)[3], 255, "({x}, {y})");
+    }
 }
 
 #[test]

@@ -1,0 +1,45 @@
+{
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "trace.svg",
+          "name": "trace"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "lid.svg",
+          "name": "lid"
+        },
+        {
+          "image-name": "body.svg",
+          "name": "body"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
