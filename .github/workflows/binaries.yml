@@ -56,9 +56,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # The runner's image too: a cache from another one (24.04's, before the builds moved to
+      # 22.04) left the arm64 build without eframe's and zbus's crates.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.os }}
       # Strip symbols and debug info on macOS and Linux (MSVC keeps them in a .pdb anyway)
       - run: cargo build --release --locked -p kymo --target ${{ matrix.target }}
         env:
