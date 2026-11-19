@@ -40,4 +40,5 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers
           echo "KYMO_REQUIRE_GPU=1" >> "$GITHUB_ENV"
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # Every crate's tests, also after one fails, so a failure can't hide another.
+      - run: cargo test --workspace --no-fail-fast

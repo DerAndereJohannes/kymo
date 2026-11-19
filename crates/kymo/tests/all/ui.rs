@@ -84,6 +84,8 @@ fn window_from(
     path: &Path,
 ) -> Harness<'static, KymoApp> {
     builder.build_eframe(|cc| {
+        // eframe installs it before the app starts; the measurement's → needs it.
+        system_fonts(&cc.egui_ctx);
         KymoApp::new(
             &cc.egui_ctx,
             Gpu::none("no GPU in this test"),
@@ -2571,6 +2573,11 @@ fn the_shortcut_overview_scroll_bar_sits_at_the_border() {
     let mut builder = Harness::builder()
         .with_size(egui::vec2(800.0, 500.0))
         .with_context_setup(system_fonts);
+    // The app draws only its own platform's shortcuts; the Mac's ⌫ may be in no font here,
+    // as on Windows, and a box is as good for the bar's place.
+    if Platform::current() != Platform::Mac {
+        builder = builder.allow_missing_glyphs();
+    }
     if let Some(gpu) = shared_gpu() {
         builder = builder.wgpu_setup(egui_wgpu::WgpuSetup::Existing(gpu.clone()));
     }

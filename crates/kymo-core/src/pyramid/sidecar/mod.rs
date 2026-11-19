@@ -402,7 +402,11 @@ impl Sidecar {
         fs::rename(&state.path, &inner.final_path).map_err(io_error(&state.path))?;
         state.path = inner.final_path.clone();
         state.complete = true;
-        state.building = None;
+        // Unlocked explicitly: on Linux the lock belongs to the open file, which the
+        // writable mapping keeps open after the handle is closed.
+        if let Some(file) = state.building.take() {
+            let _ = file.unlock();
+        }
         Ok(true)
     }
 }
