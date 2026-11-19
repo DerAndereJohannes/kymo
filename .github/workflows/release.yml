@@ -1,0 +1,96 @@
+name: Release
+
+# On a pushed tag `vX.Y.Z`: checks that the tag is `v` and the workspace version and that
+# CHANGELOG.md has an entry for it (before anything is built), runs the tests (ci.yml),
+# builds every asset (binaries.yml, signing the macOS app with the repository's secrets) and
+# creates a draft release with them, a SHA256SUMS file and the changelog's entry as its
+# notes. A version with a hyphen (`0.1.0-rc.1`) makes a pre-release. The draft is reviewed
+# and published by hand (see "Releasing" in CONTRIBUTING.md).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag and the changelog
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match the workspace version $version"
+            exit 1
+          fi
+          # The entry: the lines after its heading (`## [0.1.0] · 2026-…`), up to the next.
+          awk -v heading="## [$version]" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, heading) == 1) found = 1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no entry for $version"
+            exit 1
+          fi
+          cat notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: notes.md
+          retention-days: 7
+
+  test:
+    name: Test
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build
+    needs: check
+    uses: ./.github/workflows/binaries.yml
+    with:
+      retention-days: 7
+    secrets:
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      AC_USERNAME: ${{ secrets.AC_USERNAME }}
+      AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+
+  release:
+    name: Create the draft release
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: downloads
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          # The assets, each its file as binaries.yml uploaded it; the notes apart.
+          find downloads -type f ! -name notes.md -exec mv {} dist/ \;
+          notes=$(find downloads -type f -name notes.md)
+          ls -l dist
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$notes" \
+            "${prerelease[@]}" dist/*
