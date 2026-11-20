@@ -92,8 +92,8 @@ EEGLAB, where Kymo deliberately differs from MNE:
   compared with duration 0.
 - Kymo leaves out events before the first sample (latency < 1); MNE keeps them. MNE's
   annotations with negative onsets are left out.
-- Float64 samples are read relative to each channel's first sample (see "Readers" in
-  docs/design.md), so their float32 precision follows their distance from it, not their
+- Float64 samples are read relative to each channel's first sample (see
+  kymo_core::decode), so their float32 precision follows their distance from it, not their
   size. Those channels may differ by float32 precision of that reference too.
 - Channel kinds are not compared: Kymo keeps each channel's type as written (a type MNE
   doesn't have is a type of its own, MNE makes it EEG), reads the types of channels without
@@ -440,7 +440,7 @@ def dump(path, out, max_values):
 
 
 def read_events_table(path):
-    """Kymo's events table as mne.Annotations (see docs/phase3-plan.md, step 5)."""
+    """Kymo's events table as mne.Annotations."""
     import pandas as pd
 
     events = pd.read_csv(

@@ -163,7 +163,7 @@ sudo ln -s /Applications/Kymo.app/Contents/MacOS/kymo /usr/local/bin/kymo
 
 ## Contributing
 
-Contributions are welcome! [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up your development environment, build Kymo, and run the checks. The [design document](docs/design.md) describes the architecture.
+Contributions are welcome! [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up your development environment, build Kymo, and run the checks, and gives an overview of the architecture.
 
 ## License
 

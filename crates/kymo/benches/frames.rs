@@ -1,6 +1,5 @@
-//! Frame times, step latency and peak memory of the viewer on a recording, for the phase 2
-//! measurements (`docs/phase2-plan.md`, step 7). It drives the real window through kymo's
-//! public API and egui's input, as the keys and the trackpad do:
+//! Frame times, step latency and peak memory of the viewer on a recording. It drives the
+//! real window through kymo's public API and egui's input, as the keys and the trackpad do:
 //!
 //! ```text
 //! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]
@@ -22,8 +21,8 @@
 //! - **pinch out, pinch in:** pinches of 2^(1/16) around the middle of the traces until the
 //!   whole recording shows, and as many back.
 //!
-//! With `--edit`, then annotation editing, one input per frame (for the phase 3 target of
-//! 60 Hz with 10,000 annotations, `kymo-testgen edf+c-annotations`): annotation mode on,
+//! With `--edit`, then annotation editing, one input per frame (for the target of 60 Hz
+//! with 10,000 annotations, `kymo-testgen edf+c-annotations`): annotation mode on,
 //!
 //! - **create:** a drag of [`EDIT_FRAMES`] points creating an annotation;
 //! - **move:** a drag of its middle by half as far;
