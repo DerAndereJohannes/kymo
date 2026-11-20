@@ -520,7 +520,7 @@ impl KymoApp {
             let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
             if self.shown && focused {
                 self.pick_file = false;
-                self.pick_and_open(&ctx);
+                self.pick_at_startup(&ctx);
             } else if !self.shown {
                 ctx.request_repaint();
             }
@@ -803,6 +803,54 @@ impl KymoApp {
         }
     }
 
+    /// The startup file dialog. On macOS it opens on the main queue's next turn and hands
+    /// its file over as Finder does: started from Finder or the Dock, the window's first
+    /// frames run while AppKit restores and draws it, inside a Core Animation commit, where
+    /// AppKit refuses a modal dialog and cancels it at once.
+    fn pick_at_startup(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        if self.dialog_answers.is_none()
+            && let Some(inbox) = &self.opened
+        {
+            let inbox = Arc::clone(inbox);
+            let files = self.open_dialog();
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                if let Some(path) = files.pick_file() {
+                    inbox.push([path]);
+                }
+            });
+            return;
+        }
+        self.pick_and_open(ctx);
+    }
+
+    /// The dialog that opens a recording, not yet shown.
+    fn open_dialog(&self) -> rfd::FileDialog {
+        let mut files = rfd::FileDialog::new();
+        if let Some(dir) = self.current_path().and_then(Path::parent) {
+            files = files.set_directory(dir);
+        }
+        files
+            .set_title("Open a Recording")
+            // The first filter is the one selected when the dialog opens.
+            .add_filter(
+                "All Supported File Types",
+                &[
+                    "edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf", "bvrh", "EDF", "BDF", "VHDR",
+                    "SET", "GDF", "FIF", "XDF", "BVRH",
+                ],
+            )
+            .add_filter("BDF", &["bdf", "BDF"])
+            .add_filter("BrainVision", &["vhdr", "VHDR"])
+            .add_filter("BVRF", &["bvrh", "BVRH"])
+            .add_filter("EDF", &["edf", "EDF"])
+            .add_filter("EEGLAB", &["set", "SET"])
+            .add_filter("FIFF", &["fif", "FIF"])
+            .add_filter("GDF", &["gdf", "GDF"])
+            .add_filter("XDF", &["xdf", "XDF"])
+            .add_filter("All Files", &["*"])
+    }
+
     /// Answers the next file dialogs with `answers`, in order, instead of showing the
     /// system's; `None` cancels one. For tests.
     pub fn answer_file_dialogs(&mut self, answers: impl IntoIterator<Item = Option<PathBuf>>) {
@@ -829,26 +877,7 @@ impl KymoApp {
             files.save_file()
         };
         match dialog {
-            Dialog::Open => files
-                .set_title("Open a Recording")
-                // The first filter is the one selected when the dialog opens.
-                .add_filter(
-                    "All Supported File Types",
-                    &[
-                        "edf", "bdf", "vhdr", "set", "gdf", "fif", "xdf", "bvrh", "EDF", "BDF",
-                        "VHDR", "SET", "GDF", "FIF", "XDF", "BVRH",
-                    ],
-                )
-                .add_filter("BDF", &["bdf", "BDF"])
-                .add_filter("BrainVision", &["vhdr", "VHDR"])
-                .add_filter("BVRF", &["bvrh", "BVRH"])
-                .add_filter("EDF", &["edf", "EDF"])
-                .add_filter("EEGLAB", &["set", "SET"])
-                .add_filter("FIFF", &["fif", "FIF"])
-                .add_filter("GDF", &["gdf", "GDF"])
-                .add_filter("XDF", &["xdf", "XDF"])
-                .add_filter("All Files", &["*"])
-                .pick_file(),
+            Dialog::Open => self.open_dialog().pick_file(),
             Dialog::Save(suggested) => save(files, "Save Annotations", &suggested),
             Dialog::Export(suggested) => save(files, "Export Shown Annotations", &suggested),
             Dialog::Load => files

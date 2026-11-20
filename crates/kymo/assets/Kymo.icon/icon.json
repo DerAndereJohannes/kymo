@@ -3,8 +3,16 @@
     {
       "layers": [
         {
-          "image-name": "stylus.svg",
-          "name": "stylus"
+          "name": "stylus",
+          "image-name-specializations": [
+            {
+              "value": "stylus-light.svg"
+            },
+            {
+              "appearance": "dark",
+              "value": "stylus.svg"
+            }
+          ]
         },
         {
           "image-name": "trace.svg",
@@ -23,8 +31,16 @@
     {
       "layers": [
         {
-          "image-name": "lid.svg",
-          "name": "lid"
+          "name": "lid",
+          "image-name-specializations": [
+            {
+              "value": "lid-light.svg"
+            },
+            {
+              "appearance": "dark",
+              "value": "lid.svg"
+            }
+          ]
         },
         {
           "image-name": "body.svg",
