@@ -89,7 +89,7 @@ Releases are made from `main` by pushing a tag; `.github/workflows/release.yml` 
    git push origin main vX.Y.Z
    ```
 
-   The workflow checks that the tag matches the version and that the changelog has an entry for it, runs the tests, builds the macOS disk image (signed and notarized), the Windows installer and archive and the Linux archives, and creates a draft release with them, `SHA256SUMS` and the changelog's entry as its notes.
+   The workflow checks that the tag matches the version and that the changelog has an entry for it, runs the tests, builds the macOS disk image (signed and notarized), the Windows installer and archive and the Linux archives, and creates a draft release with them and the changelog's entry as its notes (GitHub shows each asset's SHA-256).
 4. Review the draft on the [Releases](https://github.com/cbrnr/kymo/releases) page and publish it.
 5. The AUR package follows: [aur-pkgbuild-updater](https://github.com/cbrnr/aur-pkgbuild-updater) opens a pull request with the new version within a few hours; merge it to push the update to the AUR.
 6. Add a new `## [UNRELEASED]` heading at the top of `CHANGELOG.md` for the next changes.

@@ -3,9 +3,9 @@ name: Release
 # On a pushed tag `vX.Y.Z`: checks that the tag is `v` and the workspace version and that
 # CHANGELOG.md has an entry for it (before anything is built), runs the tests (ci.yml),
 # builds every asset (binaries.yml, signing the macOS app with the repository's secrets) and
-# creates a draft release with them, a SHA256SUMS file and the changelog's entry as its
-# notes. A version with a hyphen (`0.1.0-rc.1`) makes a pre-release. The draft is reviewed
-# and published by hand (see "Releasing" in CONTRIBUTING.md).
+# creates a draft release with them and the changelog's entry as its notes (GitHub shows
+# each asset's SHA-256). A version with a hyphen (`0.1.0-rc.1`) makes a pre-release. The
+# draft is reviewed and published by hand (see "Releasing" in CONTRIBUTING.md).
 
 on:
   push:
@@ -100,7 +100,6 @@ jobs:
             diff <(echo "$expected") <(echo "$actual") || true
             exit 1
           fi
-          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
           prerelease=()
           case "$GITHUB_REF_NAME" in
             *-*) prerelease=(--prerelease) ;;
