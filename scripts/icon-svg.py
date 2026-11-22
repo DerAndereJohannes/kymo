@@ -13,7 +13,7 @@ OUT = Path(__file__).resolve().parent.parent / "crates/kymo/assets/kymo.svg"
 TILE_RADIUS = 230
 MARGIN = 48
 # The channels: left and right ends, columns, the lines' width.
-X0, X1, COLUMNS, WIDTH = 168, 856, 40, 13
+X0, X1, COLUMNS, WIDTH = 168, 856, 32, 10
 SAMPLES = 8000
 DIM = "#B3AAFF"
 BRIGHT = "#4636D6"
