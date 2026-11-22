@@ -92,7 +92,7 @@ jobs:
           # Exactly the assets binaries.yml builds, each as a file of its own.
           version=${GITHUB_REF_NAME#v}
           expected=$(printf '%s\n' "Kymo-$version-macos-arm64.dmg" \
-            "Kymo-$version-windows-x86_64-setup.exe" \
+            "Kymo-$version-windows-x86_64.exe" \
             "kymo-$version-linux-x86_64.tar.gz" "kymo-$version-linux-arm64.tar.gz" | sort)
           actual=$(cd dist && ls | sort)
           if [ "$actual" != "$expected" ]; then

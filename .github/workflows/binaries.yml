@@ -6,7 +6,7 @@ name: Binaries
 #
 # - macOS: `Kymo-<version>-macos-arm64.dmg`, a disk image with Kymo.app (signed with the
 #   Developer ID, notarized and stapled, as is the image) and a link to /Applications;
-# - Windows: `Kymo-<version>-windows-x86_64-setup.exe`, an installer (Inno Setup; per user by
+# - Windows: `Kymo-<version>-windows-x86_64.exe`, an installer (Inno Setup; per user by
 #   default, Start menu, Open With, PATH if chosen; unsigned);
 # - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the binary, the license, the desktop
 #   entry, icons and file types (`share/`) and `install.sh`, which installs them for the user.
@@ -195,9 +195,9 @@ jobs:
           $numeric = $env:VERSION.Split('-')[0]
           & $iscc /Qp "/DVersion=$env:VERSION" "/DNumericVersion=$numeric" `
             "/DBinary=$PWD\target\$env:TARGET\release\kymo.exe" `
-            "/DOutput=Kymo-$env:STEM-setup" "/O$PWD" packaging\windows\kymo.iss
+            "/DOutput=Kymo-$env:STEM" "/O$PWD" packaging\windows\kymo.iss
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          "file=Kymo-$env:STEM-setup.exe" >> $env:GITHUB_OUTPUT
+          "file=Kymo-$env:STEM.exe" >> $env:GITHUB_OUTPUT
         id: installer
       # Installs for the current user with Kymo on PATH, as a user would, checks what it put
       # in place, uninstalls, and checks that it is gone.

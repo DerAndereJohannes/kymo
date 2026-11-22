@@ -104,7 +104,7 @@ Kymo runs on Macs with Apple silicon and macOS 11 or later. Open `Kymo-<version>
 
 ### Windows
 
-Kymo runs on 64-bit Windows 10 and 11. Run `Kymo-<version>-windows-x86_64-setup.exe`. By default, Kymo is installed for the current user only, which needs no administrator rights. Optionally, the installer creates a desktop shortcut and adds Kymo to `PATH`. Kymo appears under **Open With** for the recordings it reads, without becoming their default app.
+Kymo runs on 64-bit Windows 10 and 11. Run `Kymo-<version>-windows-x86_64.exe`. By default, Kymo is installed for the current user only, which needs no administrator rights. Optionally, the installer creates a desktop shortcut and adds Kymo to `PATH`. Kymo appears under **Open With** for the recordings it reads, without becoming their default app.
 
 The installer is not signed yet, so Microsoft Defender SmartScreen may warn about it the first time. Click **More info**, then **Run anyway**.
 

@@ -1,7 +1,7 @@
 ; Kymo's installer for Windows (Inno Setup 6), built by .github/workflows/binaries.yml:
 ;
 ;   iscc /DVersion=0.1.0 /DNumericVersion=0.1.0 /DBinary=path\to\kymo.exe
-;        /DOutput=Kymo-0.1.0-windows-x86_64-setup packaging\windows\kymo.iss
+;        /DOutput=Kymo-0.1.0-windows-x86_64 packaging\windows\kymo.iss
 ;
 ; It installs for the current user by default (to %LOCALAPPDATA%\Programs\Kymo, without
 ; administrator rights), or for all users if chosen; adds a Start menu entry, a desktop
@@ -20,7 +20,7 @@
   #define Binary "..\..\target\release\kymo.exe"
 #endif
 #ifndef Output
-  #define Output "Kymo-" + Version + "-windows-x86_64-setup"
+  #define Output "Kymo-" + Version + "-windows-x86_64"
 #endif
 
 [Setup]
