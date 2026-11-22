@@ -55,7 +55,7 @@ CloseApplications=yes
 
 [Tasks]
 Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: addtopath; Description: "Add Kymo to PATH, to start it with ""kymo"" in a terminal"; GroupDescription: "Terminal:"; Flags: unchecked
+Name: addtopath; Description: "Add Kymo to PATH to start it with ""kymo"" in a terminal"; GroupDescription: "Terminal:"; Flags: unchecked
 
 [Files]
 Source: "{#Binary}"; DestDir: "{app}"; DestName: "kymo.exe"; Flags: ignoreversion
