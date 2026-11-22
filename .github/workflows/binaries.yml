@@ -147,6 +147,8 @@ jobs:
               install -Dm644 "crates/kymo/assets/png/kymo-$size.png" \
                 "$name/share/icons/hicolor/${size}x${size}/apps/kymo.png"
             done
+            install -Dm644 crates/kymo/assets/kymo.svg \
+              "$name/share/icons/hicolor/scalable/apps/kymo.svg"
           fi
           echo "dir=$name" >> "$GITHUB_OUTPUT"
           # tar keeps the executable bit, which upload-artifact's own zip would drop.
@@ -175,6 +177,7 @@ jobs:
           "$HOME/.local/bin/kymo" --version
           grep -qx "Exec=$HOME/.local/bin/kymo %f" "$HOME/.local/share/applications/kymo.desktop"
           test -f "$HOME/.local/share/icons/hicolor/256x256/apps/kymo.png"
+          test -f "$HOME/.local/share/icons/hicolor/scalable/apps/kymo.svg"
           # update-mime-database turned the definitions into types, each with its globs.
           for type in edf bdf brainvision-header bvrf-header eeglab fiff gdf xdf; do
             test -f "$HOME/.local/share/mime/application/x-$type.xml"

@@ -51,5 +51,7 @@ package() {
         install -Dm644 "crates/kymo/assets/png/kymo-$size.png" \
             "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/kymo.png"
     done
+    install -Dm644 crates/kymo/assets/kymo.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/kymo.svg"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

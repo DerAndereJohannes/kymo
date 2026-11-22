@@ -9,7 +9,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 
-files="applications/kymo.desktop mime/packages/kymo.xml"
+files="applications/kymo.desktop mime/packages/kymo.xml icons/hicolor/scalable/apps/kymo.svg"
 for size in 16 24 32 48 64 128 256 512; do
     files="$files icons/hicolor/${size}x${size}/apps/kymo.png"
 done
