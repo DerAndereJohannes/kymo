@@ -5,10 +5,10 @@
 # - the PNG sizes in crates/kymo/assets/png (scripts/icon-png.swift), for the window and for
 #   Windows and Linux, and kymo.ico from them for Windows;
 # - then macOS's: the layers of Kymo.icon, an Icon Composer document in which macOS draws the
-#   tile itself, white in light mode and black in dark mode, with dark-mode colors for the
-#   channels (scripts/icon-layers.py); and from it kymo-macos-256.png, a bare binary's Dock
-#   icon. Kymo.app gets Kymo.icon itself, compiled by bundle.sh, which adapts to light, dark,
-#   tinted and clear mode.
+#   tile itself, light gray in light mode and the system's dark gray in dark mode, with
+#   dark-mode colors for the channels (scripts/icon-layers.py); and from it
+#   kymo-macos-256.png, a bare binary's Dock icon. Kymo.app gets Kymo.icon itself, compiled
+#   by bundle.sh, which adapts to light, dark, tinted and clear mode.
 #
 # Needs macOS, and Icon Composer (its ictool) for the Dock icon. Run it after changing the
 # icon and commit what it writes.

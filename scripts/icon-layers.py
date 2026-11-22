@@ -1,7 +1,7 @@
 """Writes Kymo.icon's layers from kymo.svg, the icon for every platform: each of its top-level
 groups but the tile becomes one layer on Icon Composer's 1024 grid, where macOS draws the tile
-itself (white in light mode, black in dark mode, as icon.json says). Dark mode is macOS's
-alone: each layer also gets a dark variant with the colors below. Used by icons.sh:
+itself (light gray in light mode, the system's dark gray in dark mode, as icon.json says).
+Dark mode is macOS's alone: each layer also gets a dark variant with the colors below. Used by icons.sh:
 `python3 scripts/icon-layers.py kymo.svg Kymo.icon/Assets`."""
 
 import copy

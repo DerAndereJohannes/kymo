@@ -1,5 +1,5 @@
 """Writes crates/kymo/assets/kymo.svg, Kymo's icon for every platform, from the design below:
-three channels on a white rounded square, each drawn as Kymo draws a zoomed-out trace, one
+three channels on a light gray rounded square, each drawn as Kymo draws a zoomed-out trace, one
 vertical line per column from the minimum to the maximum of the samples in it. The middle
 channel is the bright one, with a burst. Run scripts/icons.sh afterwards.
 `python3 scripts/icon-svg.py`."""
@@ -62,10 +62,10 @@ parts = [
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-MARGIN} {-MARGIN} {side} {side}">',
     "<!-- Kymo's icon, written by scripts/icon-svg.py. Each top-level group is a layer on Icon",
     "     Composer's 1024 grid, back to front; scripts/icons.sh writes the channels into",
-    "     Kymo.icon, where macOS draws the tile itself, white or black. -->",
+    "     Kymo.icon, where macOS draws the tile itself. -->",
     '<g id="tile">',
     '<defs><linearGradient id="tile-fill" x1="0" y1="0" x2="0" y2="1">'
-    '<stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F0EFF6"/>'
+    '<stop offset="0" stop-color="#F3F3F5"/><stop offset="1" stop-color="#D9D9DC"/>'
     "</linearGradient></defs>",
     f'<rect x="0" y="0" width="1024" height="1024" rx="{TILE_RADIUS}" fill="url(#tile-fill)" '
     'stroke="#000000" stroke-opacity="0.08" stroke-width="6"/>',
