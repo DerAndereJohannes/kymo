@@ -7,8 +7,7 @@ name: Binaries
 # - macOS: `Kymo-<version>-macos-arm64.dmg`, a disk image with Kymo.app (signed with the
 #   Developer ID, notarized and stapled, as is the image) and a link to /Applications;
 # - Windows: `Kymo-<version>-windows-x86_64-setup.exe`, an installer (Inno Setup; per user by
-#   default, Start menu, Open With, PATH if chosen; unsigned), and
-#   `kymo-<version>-windows-x86_64.zip`, the portable binary and the license;
+#   default, Start menu, Open With, PATH if chosen; unsigned);
 # - Linux: `kymo-<version>-linux-<x86_64|arm64>.tar.gz`, the binary, the license, the desktop
 #   entry, icons and file types (`share/`) and `install.sh`, which installs them for the user.
 
@@ -135,30 +134,25 @@ jobs:
             echo "file=Kymo-$stem.dmg" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Windows' asset is the installer, built and uploaded by the steps below.
+          if [ "$RUNNER_OS" = Windows ]; then exit 0; fi
           name="kymo-$stem"
           mkdir "$name"
           cp "$binary" LICENSE "$name/"
-          if [ "$RUNNER_OS" = Linux ]; then
-            # The desktop entry, icons and file types, and the script that installs them.
-            cp packaging/linux/install.sh "$name/"
-            install -Dm644 packaging/linux/kymo.desktop "$name/share/applications/kymo.desktop"
-            install -Dm644 packaging/linux/kymo.xml "$name/share/mime/packages/kymo.xml"
-            for size in 16 24 32 48 64 128 256 512; do
-              install -Dm644 "crates/kymo/assets/png/kymo-$size.png" \
-                "$name/share/icons/hicolor/${size}x${size}/apps/kymo.png"
-            done
-            install -Dm644 crates/kymo/assets/kymo.svg \
-              "$name/share/icons/hicolor/scalable/apps/kymo.svg"
-          fi
+          # The desktop entry, icons and file types, and the script that installs them.
+          cp packaging/linux/install.sh "$name/"
+          install -Dm644 packaging/linux/kymo.desktop "$name/share/applications/kymo.desktop"
+          install -Dm644 packaging/linux/kymo.xml "$name/share/mime/packages/kymo.xml"
+          for size in 16 24 32 48 64 128 256 512; do
+            install -Dm644 "crates/kymo/assets/png/kymo-$size.png" \
+              "$name/share/icons/hicolor/${size}x${size}/apps/kymo.png"
+          done
+          install -Dm644 crates/kymo/assets/kymo.svg \
+            "$name/share/icons/hicolor/scalable/apps/kymo.svg"
           echo "dir=$name" >> "$GITHUB_OUTPUT"
           # tar keeps the executable bit, which upload-artifact's own zip would drop.
-          if [ "$RUNNER_OS" = Windows ]; then
-            7z a "$name.zip" "$name"
-            echo "file=$name.zip" >> "$GITHUB_OUTPUT"
-          else
-            tar czf "$name.tar.gz" "$name"
-            echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
-          fi
+          tar czf "$name.tar.gz" "$name"
+          echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
       # The desktop entry is valid, and install.sh installs it, the icons and the file types
       # into a home of its own and removes them again.
       - name: Check the desktop files
@@ -342,8 +336,10 @@ jobs:
       - name: Remove the keychain
         if: runner.os == 'macOS' && always()
         run: security delete-keychain "$RUNNER_TEMP/build.keychain" || true
-      # Unarchived, the artifact is named after the file (`name` would be ignored).
+      # Unarchived, the artifact is named after the file (`name` would be ignored). Windows'
+      # installer is uploaded above.
       - uses: actions/upload-artifact@v7
+        if: runner.os != 'Windows'
         with:
           path: ${{ steps.package.outputs.file }}
           archive: false

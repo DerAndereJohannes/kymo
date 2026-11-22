@@ -110,8 +110,6 @@ The installer is not signed yet, so Microsoft Defender SmartScreen may warn abou
 
 Uninstall Kymo from **Settings → Apps**. The uninstaller asks whether to also remove Kymo's settings and its cache of recording overviews (they are kept unless you choose to remove them).
 
-If you prefer not to install anything, `kymo-<version>-windows-x86_64.zip` contains the executable, which runs from any folder.
-
 ### Linux
 
 On Arch Linux and its derivatives, install the [`kymo`](https://aur.archlinux.org/packages/kymo) package from the AUR, for example with `paru -S kymo`.
