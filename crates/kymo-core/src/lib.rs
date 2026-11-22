@@ -62,6 +62,13 @@ mod tests {
 
     #[test]
     fn version_matches_manifest() {
-        assert_eq!(version(), "0.1.0");
+        // The workspace's version, the first `version = "…"` line in its Cargo.toml.
+        let manifest = include_str!("../../../Cargo.toml");
+        let workspace = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("the workspace's Cargo.toml has a version");
+        assert_eq!(version(), workspace);
     }
 }
