@@ -43,10 +43,11 @@ jobs:
             exit 1
           fi
           cat notes.md
+      # As is, like the assets, as the release job downloads every artifact without unpacking.
       - uses: actions/upload-artifact@v7
         with:
-          name: notes
           path: notes.md
+          archive: false
           retention-days: 7
 
   test:
@@ -73,9 +74,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # As uploaded: unpacking would also unpack the Windows .zip, which is an asset itself.
       - uses: actions/download-artifact@v8
         with:
           path: downloads
+          skip-decompress: true
       - name: Create the draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,6 +89,17 @@ jobs:
           find downloads -type f ! -name notes.md -exec mv {} dist/ \;
           notes=$(find downloads -type f -name notes.md)
           ls -l dist
+          # Exactly the assets binaries.yml builds, each as a file of its own.
+          version=${GITHUB_REF_NAME#v}
+          expected=$(printf '%s\n' "Kymo-$version-macos-arm64.dmg" \
+            "Kymo-$version-windows-x86_64-setup.exe" "kymo-$version-windows-x86_64.zip" \
+            "kymo-$version-linux-x86_64.tar.gz" "kymo-$version-linux-arm64.tar.gz" | sort)
+          actual=$(cd dist && ls | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::The assets differ from those expected:"
+            diff <(echo "$expected") <(echo "$actual") || true
+            exit 1
+          fi
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
           prerelease=()
           case "$GITHUB_REF_NAME" in
