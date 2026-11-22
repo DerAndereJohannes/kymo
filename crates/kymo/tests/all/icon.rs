@@ -1,4 +1,4 @@
-//! The app's icon: the window's, and the PNGs rendered from the SVGs for the packages.
+//! The app's icon: the window's, and the PNGs rendered from `Kymo.icon` for the packages.
 
 use std::path::Path;
 
@@ -11,17 +11,25 @@ fn pixel(icon: &IconData, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[test]
-fn window_icon_is_a_rounded_tile() {
+fn window_icon_is_the_drum_without_a_tile() {
     let icon = kymo::app::icon();
     assert_eq!((icon.width, icon.height), (256, 256));
     assert_eq!(icon.rgba.len(), 256 * 256 * 4);
-    // The tile fills the image but for its rounded corners.
-    for (x, y) in [(2, 2), (253, 2), (2, 253), (253, 253)] {
-        assert_eq!(pixel(&icon, x, y)[3], 0, "corner ({x}, {y})");
+    // No tile behind it: the edges are transparent, corners and middles alike (but for a
+    // trace of the shadow's faintest edge).
+    for (x, y) in [
+        (2, 2),
+        (253, 2),
+        (2, 253),
+        (253, 253),
+        (128, 2),
+        (2, 128),
+        (253, 128),
+        (128, 253),
+    ] {
+        assert!(pixel(&icon, x, y)[3] < 8, "edge ({x}, {y})");
     }
-    for (x, y) in [(128, 2), (2, 128), (253, 128), (128, 253), (128, 128)] {
-        assert_eq!(pixel(&icon, x, y)[3], 255, "({x}, {y})");
-    }
+    assert_eq!(pixel(&icon, 128, 128)[3], 255);
 }
 
 #[test]
