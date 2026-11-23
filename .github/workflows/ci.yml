@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # No debug info: builds and links faster (Windows's PDBs most of all), and panics still
+  # name their file and line.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   fmt:

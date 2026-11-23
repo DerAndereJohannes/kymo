@@ -5,13 +5,14 @@
 //! Without a GPU adapter the tests pass with a message; set `KYMO_REQUIRE_GPU` to make
 //! them fail instead (CI does on Linux, with Mesa's software Vulkan driver).
 
-use std::sync::OnceLock;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Mutex, OnceLock};
 
 use crate::common::{
     Fixture, HATCH, Rng, Truth, channel, f32_rows, grid, i16_rows, i32_rows, view, walk,
 };
 use eframe::egui_wgpu::wgpu;
-use kymo::render::{EDGE_TOLERANCE, Frame, Scene, TraceRenderer};
+use kymo::render::{DEFAULT_GPU_BUDGET, EDGE_TOLERANCE, Frame, Scene, TraceRenderer};
 use kymo_core::tile::{
     Level, Query, TILE_LEN, TileCache, TileKey, level_for, max_level, query, tiles_for_view,
 };
@@ -22,6 +23,9 @@ use kymo_core::{ChannelId, Grid, SampleType, TimeTable, Timebase};
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Renderers given back, so their pipelines are built once per test thread at most:
+    /// software drivers (lavapipe, WARP) take long to compile them.
+    renderers: Mutex<Vec<TraceRenderer>>,
 }
 
 /// The test GPU, created once, with the limits eframe asks for.
@@ -46,7 +50,11 @@ fn gpu() -> Option<&'static Gpu> {
                     ..Default::default()
                 }))
                 .ok()?;
-            Some(Gpu { device, queue })
+            Some(Gpu {
+                device,
+                queue,
+                renderers: Mutex::default(),
+            })
         })
         .as_ref();
     if gpu.is_none() {
@@ -60,8 +68,21 @@ fn gpu() -> Option<&'static Gpu> {
 }
 
 impl Gpu {
-    fn renderer(&self) -> TraceRenderer {
-        TraceRenderer::new(&self.device, wgpu::TextureFormat::Rgba8Unorm, 1).unwrap()
+    /// A renderer as a new one starts: no tiles on the GPU and the default budget.
+    fn renderer(&self) -> Pooled<'_> {
+        let reused = self.renderers.lock().unwrap().pop();
+        let renderer = match reused {
+            Some(mut renderer) => {
+                renderer.clear();
+                renderer.set_budget(DEFAULT_GPU_BUDGET);
+                renderer
+            }
+            None => TraceRenderer::new(&self.device, wgpu::TextureFormat::Rgba8Unorm, 1).unwrap(),
+        };
+        Pooled {
+            gpu: self,
+            renderer: Some(renderer),
+        }
     }
 
     /// Renders `frame` into a cleared, transparent image.
@@ -147,6 +168,33 @@ impl Gpu {
             width,
             height,
             pixels,
+        }
+    }
+}
+
+/// A renderer from [`Gpu::renderer`], given back when dropped.
+struct Pooled<'a> {
+    gpu: &'a Gpu,
+    renderer: Option<TraceRenderer>,
+}
+
+impl Deref for Pooled<'_> {
+    type Target = TraceRenderer;
+    fn deref(&self) -> &TraceRenderer {
+        self.renderer.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for Pooled<'_> {
+    fn deref_mut(&mut self) -> &mut TraceRenderer {
+        self.renderer.as_mut().unwrap()
+    }
+}
+
+impl Drop for Pooled<'_> {
+    fn drop(&mut self) {
+        if let (Some(renderer), Ok(mut pool)) = (self.renderer.take(), self.gpu.renderers.lock()) {
+            pool.push(renderer);
         }
     }
 }
@@ -417,15 +465,13 @@ fn check_some(
 ) -> Image {
     let query = query(&fx.recording, &view(scene), cache);
     // Both ways, whatever the scene asks for: in whole pixels, and anti-aliased.
-    let render = |antialias| {
+    let mut renderer = gpu.renderer();
+    let mut render = |antialias| {
         let scene = Scene {
             antialias,
             ..scene.clone()
         };
-        gpu.render(
-            &mut gpu.renderer(),
-            &Frame::new(&fx.recording, &scene, &query),
-        )
+        gpu.render(&mut renderer, &Frame::new(&fx.recording, &scene, &query))
     };
     let whole = render(false);
     let smooth = render(true);

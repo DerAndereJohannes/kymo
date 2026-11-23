@@ -332,6 +332,9 @@ fn readers_during_a_build_see_only_final_tiles() {
                             assert_eq!(Some(tile), want.tile(*key));
                         }
                     }
+                    // Leaves the builder a core: on a runner with few, readers spinning
+                    // flat out can starve it.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             });
         }
