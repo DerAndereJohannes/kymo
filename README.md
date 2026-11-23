@@ -144,11 +144,21 @@ kymo                        # choose a file in a dialog
 kymo --info recording.fif   # print a recording summary without opening a window
 ```
 
-On Windows, `kymo` works in a terminal if you chose **Add Kymo to PATH** during installation; on Linux, if `~/.local/bin` is on your `PATH` (the install script tells you if it isn't). On macOS, link the executable inside the app bundle to a folder on your `PATH`, for example:
+On Linux, `kymo` works in a terminal if `~/.local/bin` is on your `PATH` (the install script tells you if it isn't). On Windows, it works if you chose **Add Kymo to PATH** during installation; since Kymo is a windowed program there, the terminal doesn't wait for it, so text it prints (such as `kymo --info`) appears after the next prompt (press Enter to get a fresh one).
+
+On macOS, link the executable inside the app bundle to a folder on your `PATH`, for example `/usr/local/bin` (needs your password):
 
 ```sh
 sudo mkdir -p /usr/local/bin
 sudo ln -s /Applications/Kymo.app/Contents/MacOS/kymo /usr/local/bin/kymo
+```
+
+Or, without `sudo`, link it to `~/.local/bin` and add that folder to your `PATH`:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s /Applications/Kymo.app/Contents/MacOS/kymo ~/.local/bin/kymo
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile   # then open a new terminal
 ```
 
 ## Roadmap
