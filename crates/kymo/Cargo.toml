@@ -25,7 +25,10 @@ eframe.workspace = true
 jiff.workspace = true
 kymo-core.workspace = true
 rfd.workspace = true
+semver.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+ureq.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2.workspace = true

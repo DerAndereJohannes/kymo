@@ -29,5 +29,6 @@ pub mod shortcuts;
 pub mod stim_annotations;
 pub mod types;
 pub mod ui;
+pub mod update;
 pub mod view;
 pub mod viewer;

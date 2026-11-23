@@ -654,6 +654,7 @@ impl ViewState {
             | Action::Shortcuts
             | Action::RecordingInfo
             | Action::About
+            | Action::CheckForUpdates
             | Action::ToggleSidebar
             | Action::ToggleScaleBars
             | Action::ToggleAntialias

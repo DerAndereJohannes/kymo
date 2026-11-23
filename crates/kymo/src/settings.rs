@@ -30,6 +30,7 @@ const THEME_KEY: &str = "kymo.theme";
 const SYSTEM_FONT_KEY: &str = "kymo.system_font";
 const ANNOTATION_COLORS_KEY: &str = "kymo.annotation_colors";
 const CHANNEL_TYPES_KEY: &str = "kymo.channel_types";
+const CHECK_UPDATES_KEY: &str = "kymo.check_updates";
 
 /// The types kymo had before types were names, by MNE's names, whose settings were kept
 /// under a key each: `kymo.color.eeg`, `kymo.remove_dc.eeg`, `kymo.own_scale.ref_meg`.
@@ -121,6 +122,9 @@ pub struct Settings {
     /// Whether text is in the system's interface font rather than egui's (see
     /// [`crate::ui::fonts`]).
     pub system_font: bool,
+    /// Whether Kymo asks GitHub for a newer release at startup, at most once a day (see
+    /// [`crate::update`]).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -136,6 +140,7 @@ impl Default for Settings {
             auto_scale_on_open: true,
             theme: Theme::System,
             system_font: false,
+            check_updates: true,
         }
     }
 }
@@ -178,6 +183,9 @@ impl Settings {
             system_font: get(SYSTEM_FONT_KEY)
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(defaults.system_font),
+            check_updates: get(CHECK_UPDATES_KEY)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(defaults.check_updates),
         }
         .clamped()
     }
@@ -199,6 +207,7 @@ impl Settings {
         storage.set_string(AUTO_SCALE_KEY, self.auto_scale_on_open.to_string());
         storage.set_string(THEME_KEY, self.theme.key().to_owned());
         storage.set_string(SYSTEM_FONT_KEY, self.system_font.to_string());
+        storage.set_string(CHECK_UPDATES_KEY, self.check_updates.to_string());
     }
 
     /// Every setting within its range; NaN seconds become the default.
@@ -220,6 +229,7 @@ impl Settings {
             auto_scale_on_open: self.auto_scale_on_open,
             theme: self.theme,
             system_font: self.system_font,
+            check_updates: self.check_updates,
         }
     }
 

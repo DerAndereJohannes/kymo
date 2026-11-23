@@ -641,6 +641,7 @@ fn leaves_other_actions_to_the_app() {
         Action::Settings,
         Action::Shortcuts,
         Action::About,
+        Action::CheckForUpdates,
     ] {
         assert!(!view.apply(action), "{action:?}");
     }

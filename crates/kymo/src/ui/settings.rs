@@ -152,6 +152,14 @@ pub fn settings_window(
                              once; settings stay. Clear keeps the open recording's.",
                         );
                     }
+                    ui.label("Updates");
+                    ui.checkbox(&mut settings.check_updates, "Check at Startup");
+                    ui.end_row();
+                    hint(
+                        ui,
+                        "Once a day, ask GitHub whether a newer version of Kymo is out. Check \
+                         for Updates in the menu asks now.",
+                    );
                 });
                 });
             ui.add_space(6.0);
@@ -167,7 +175,7 @@ pub fn settings_window(
 const GAP: f32 = 12.0;
 
 /// The settings' row labels, in the first column.
-const LABELS: [&str; 9] = [
+const LABELS: [&str; 10] = [
     "Theme",
     "Font",
     "Channel Types",
@@ -177,6 +185,7 @@ const LABELS: [&str; 9] = [
     "Tile Cache",
     "GPU Memory",
     "Disk Cache",
+    "Updates",
 ];
 
 fn text_width(ctx: &egui::Context, text: &str) -> f32 {

@@ -2,7 +2,8 @@
 //! line, with the trace renderer on a real GPU where there is one.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::kinds::{KINDS, kind_index};
@@ -20,6 +21,7 @@ use kymo::types::TypeSettings;
 use kymo::ui::gpu::Gpu;
 use kymo::ui::palette::{annotation_color, trace_color};
 use kymo::ui::types::{ALL_TYPES, CHANGE_TYPE, FROM_FILE, NEW_TYPE, OTHER_TYPES};
+use kymo::update::{Release, Source, UpdateState};
 use kymo::viewer::Viewer;
 use kymo_core::ChannelKind;
 use kymo_testgen::{TempDir, TempFile};
@@ -47,6 +49,8 @@ fn options() -> Options {
         settings: Settings::default(),
         annotation_colors: Default::default(),
         recent: Default::default(),
+        updates: None,
+        update_state: Default::default(),
     }
 }
 
@@ -8603,4 +8607,148 @@ fn the_mark_widens_the_names_column() {
     assert!(harness.query_by_label(ALONE_LABEL).is_none());
     let bad_after = harness.get_by_label(&format!("{long} bad")).rect();
     assert!(bad_after.left() < bad.left() - 5.0, "{bad_after:?} {bad:?}");
+}
+
+/// The window opening `path` and started as `run` starts it, its update checks asking
+/// `source` (with `state` remembered) and `settings` set.
+fn started_window(
+    path: &Path,
+    source: Source,
+    state: UpdateState,
+    settings: Settings,
+) -> Harness<'static, KymoApp> {
+    let path = path.to_owned();
+    Harness::builder().with_size(SIZE).build_eframe(move |cc| {
+        let mut app = KymoApp::new(
+            &cc.egui_ctx,
+            Gpu::none("no GPU in this test"),
+            Options {
+                updates: Some(source),
+                update_state: state,
+                settings,
+                ..options()
+            },
+            Some(path),
+        );
+        app.start(&cc.egui_ctx);
+        app
+    })
+}
+
+/// A source whose latest release is `tag`, counting how often it is asked.
+fn release_source(tag: &'static str) -> (Source, Arc<AtomicUsize>) {
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counter = asked.clone();
+    let source = Source::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(Release::from_tag(tag))
+    });
+    (source, asked)
+}
+
+#[test]
+fn offers_a_newer_release_at_startup_until_it_is_skipped() {
+    let file = TempFile::preset("bdf+c-small");
+    let (source, asked) = release_source("v999.0.0");
+    let mut harness = started_window(
+        file.path(),
+        source.clone(),
+        UpdateState::default(),
+        Settings::default(),
+    );
+    step_until(&mut harness, "the offer", |app| {
+        app.update_offer().is_some()
+    });
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(harness.state().update_state().last_check.is_some());
+    harness.get_by_label("Update Available");
+    harness.get_by_label("Skip This Version").click();
+    harness.run_steps(2);
+    assert!(harness.state().update_offer().is_none());
+    let state = harness.state().update_state().clone();
+    assert_eq!(state.skipped, Some(semver::Version::new(999, 0, 0)));
+
+    // A day later, the skipped version isn't offered at startup, but is from the menu.
+    let state = UpdateState {
+        last_check: None,
+        ..state
+    };
+    let mut harness = started_window(file.path(), source, state, Settings::default());
+    step_until(&mut harness, "the check", |app| !app.checking_for_updates());
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert!(harness.state().update_offer().is_none());
+    let ctx = harness.ctx.clone();
+    harness.state_mut().perform(&ctx, Action::CheckForUpdates);
+    step_until(&mut harness, "the offer", |app| {
+        app.update_offer().is_some()
+    });
+    harness.get_by_label("Later").click();
+    harness.run_steps(2);
+    assert!(harness.state().update_offer().is_none());
+    assert!(harness.state().notice().is_none());
+}
+
+#[test]
+fn checks_at_startup_only_when_due_and_on() {
+    let file = TempFile::preset("bdf+c-small");
+    let (source, asked) = release_source("v999.0.0");
+    let recent = UpdateState {
+        last_check: Some(jiff::Timestamp::now()),
+        skipped: None,
+    };
+    let mut harness = started_window(file.path(), source.clone(), recent, Settings::default());
+    assert!(!harness.state().checking_for_updates());
+    let off = Settings {
+        check_updates: false,
+        ..Settings::default()
+    };
+    let mut other = started_window(file.path(), source, UpdateState::default(), off);
+    assert!(!other.state().checking_for_updates());
+    harness.run_steps(4);
+    other.run_steps(4);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert!(harness.state().update_offer().is_none());
+    assert!(other.state().update_offer().is_none());
+}
+
+#[test]
+fn check_for_updates_reports_every_answer() {
+    let file = TempFile::preset("bdf+c-small");
+    let off = Settings {
+        check_updates: false,
+        ..Settings::default()
+    };
+    let check = |source: Source| {
+        let mut harness = started_window(file.path(), source, UpdateState::default(), off.clone());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::CheckForUpdates);
+        step_until(&mut harness, "the check", |app| !app.checking_for_updates());
+        let notice = harness
+            .state()
+            .notice()
+            .map(|(t, s)| (t.to_owned(), s.to_owned()));
+        (notice, harness.state().update_state().last_check.is_some())
+    };
+    let version = kymo_core::version();
+    let (notice, checked) = check(Source::new(move || Ok(Release::from_tag(version))));
+    assert_eq!(
+        notice,
+        Some((
+            "Kymo Is Up to Date".to_owned(),
+            format!("Kymo {version} is the latest version.")
+        ))
+    );
+    assert!(checked);
+    // No release published yet.
+    let (notice, _) = check(Source::new(|| Ok(None)));
+    assert_eq!(notice.unwrap().0, "Kymo Is Up to Date");
+    let (notice, checked) = check(Source::new(|| Err(anyhow::anyhow!("cannot reach GitHub"))));
+    assert_eq!(
+        notice,
+        Some((
+            "Could Not Check for Updates".to_owned(),
+            "cannot reach GitHub".to_owned()
+        ))
+    );
+    assert!(!checked);
 }

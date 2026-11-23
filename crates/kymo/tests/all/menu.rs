@@ -78,7 +78,7 @@ fn follows_each_platforms_layout() {
     assert_eq!(mac[0].role, Role::App);
     assert_eq!(
         mac[0].actions().collect::<Vec<_>>(),
-        [Action::Settings, Action::Quit]
+        [Action::CheckForUpdates, Action::Settings, Action::Quit]
     );
     assert!(mac[0].items.contains(&Item::System(SystemItem::About)));
     assert_eq!(
@@ -109,6 +109,10 @@ fn follows_each_platforms_layout() {
     );
     assert!(windows[0].actions().any(|a| a == Action::Quit));
     assert!(menu_actions(Platform::Windows).contains(&Action::About));
+    assert_eq!(
+        windows[4].actions().collect::<Vec<_>>(),
+        [Action::Shortcuts, Action::CheckForUpdates, Action::About]
+    );
 }
 
 #[test]
@@ -295,6 +299,7 @@ fn grays_out_what_needs_a_recording() {
             Action::Quit,
             Action::Settings,
             Action::Shortcuts,
+            Action::CheckForUpdates,
             Action::ToggleDc,
             Action::ToggleScaleBars,
             Action::ToggleAntialias,

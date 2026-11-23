@@ -33,9 +33,13 @@ use crate::ui::info::info_window;
 use crate::ui::menus::{MenuState, about_window, egui_menu_bar, shortcuts_window};
 use crate::ui::settings::settings_window;
 use crate::ui::types::channel_types_window;
+use crate::update::{self, Check, Release, Source, UpdateState};
 use crate::viewer::Viewer;
 
 const APP_NAME: &str = "Kymo";
+
+/// The title of the notice that a check for updates failed.
+const UPDATE_FAILED: &str = "Could Not Check for Updates";
 
 /// The app's icon, for the window: the title bar and taskbar's on Windows and X11. Wayland
 /// takes it from the desktop entry instead; macOS gets [`window_icon`]'s.
@@ -82,6 +86,10 @@ pub struct Options {
     pub annotation_colors: AnnotationColors,
     /// The recordings opened last, for File → Open Recent, as remembered from earlier runs.
     pub recent: Recent,
+    /// Where Check for Updates asks; `None` checks nowhere (and says so when asked).
+    pub updates: Option<Source>,
+    /// When the startup check last ran and the version skipped, from earlier runs.
+    pub update_state: UpdateState,
 }
 
 /// Where the menu bar comes from.
@@ -95,7 +103,8 @@ pub enum Menus {
 
 impl Default for Options {
     /// Sidecars in the user's cache directory; native menus where the platform has them;
-    /// default settings, no annotation colors picked, no recent recordings.
+    /// default settings, no annotation colors picked, no recent recordings; no update
+    /// checks (`run` asks GitHub).
     fn default() -> Self {
         let platform = Platform::current();
         Options {
@@ -108,6 +117,8 @@ impl Default for Options {
             settings: Settings::default(),
             annotation_colors: AnnotationColors::new(),
             recent: Recent::default(),
+            updates: None,
+            update_state: UpdateState::default(),
         }
     }
 }
@@ -147,6 +158,11 @@ pub struct KymoApp {
     leaving: Option<Leave>,
     /// A message in a window: its title and text.
     notice: Option<(String, String)>,
+    /// The check for updates under way, and whether it was asked for from the menu (which
+    /// reports every answer).
+    update_check: Option<(Check, bool)>,
+    /// A newer release, offered in a window until it is answered.
+    update_offer: Option<Release>,
     /// The window may close: its unsaved changes were saved or given up.
     closing: bool,
     /// The system's app mode where winit can't tell it (Windows, Linux), which System
@@ -236,6 +252,8 @@ impl KymoApp {
             dialog_answers: None,
             leaving: None,
             notice: None,
+            update_check: None,
+            update_offer: None,
             closing: false,
             app_mode: AppMode::new(),
             theme_applied: None,
@@ -337,9 +355,141 @@ impl KymoApp {
     /// Applies the theme before the first frame, which the startup file dialog (opened
     /// while the second is built) leaves on screen: otherwise a forced theme, or the app
     /// mode's, would show as egui's default behind it. Call it once the app mode is known
-    /// and the native menu attached.
+    /// and the native menu attached. Starts the startup check for updates, if it is on and
+    /// due.
     pub fn start(&mut self, ctx: &egui::Context) {
         self.apply_theme(ctx);
+        if self.options.settings.check_updates
+            && self.options.update_state.due(jiff::Timestamp::now())
+        {
+            self.check_for_updates(ctx, false);
+        }
+    }
+
+    /// Starts a check for updates (one at a time). `manual` (from the menu) reports every
+    /// answer; a startup check only offers a newer release that wasn't skipped.
+    fn check_for_updates(&mut self, ctx: &egui::Context, manual: bool) {
+        if let Some((_, reported)) = &mut self.update_check {
+            *reported |= manual;
+            return;
+        }
+        let Some(source) = &self.options.updates else {
+            if manual {
+                self.notice = Some((
+                    UPDATE_FAILED.into(),
+                    "This copy of Kymo has nowhere to check.".into(),
+                ));
+            }
+            return;
+        };
+        let repaint = ctx.clone();
+        let check = Check::start(source, move || repaint.request_repaint());
+        self.update_check = Some((check, manual));
+    }
+
+    /// Picks up the answer of the check for updates, once it is there.
+    fn poll_update(&mut self) {
+        let Some((check, manual)) = &self.update_check else {
+            return;
+        };
+        let Some(result) = check.poll() else {
+            return;
+        };
+        let manual = *manual;
+        self.update_check = None;
+        if result.is_ok() {
+            self.options.update_state.last_check = Some(jiff::Timestamp::now());
+        }
+        match result {
+            Ok(Some(release))
+                if release.is_newer() && (manual || self.options.update_state.offers(&release)) =>
+            {
+                self.update_offer = Some(release);
+            }
+            Ok(_) if manual => {
+                self.notice = Some((
+                    "Kymo Is Up to Date".into(),
+                    format!("Kymo {} is the latest version.", update::current()),
+                ));
+            }
+            Err(error) if manual => {
+                self.notice = Some((UPDATE_FAILED.into(), error_text(&error)));
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a check for updates is under way.
+    pub fn checking_for_updates(&self) -> bool {
+        self.update_check.is_some()
+    }
+
+    /// The newer release offered, until the offer is answered.
+    pub fn update_offer(&self) -> Option<&Release> {
+        self.update_offer.as_ref()
+    }
+
+    /// When the startup check last ran and the version skipped.
+    pub fn update_state(&self) -> &UpdateState {
+        &self.options.update_state
+    }
+
+    /// Offers the newer release, if there is one, once no question or notice is shown:
+    /// Download opens its page in the browser, Skip This Version offers it no more at
+    /// startup, Later (or Esc) leaves it for the next check.
+    fn update_window(&mut self, ctx: &egui::Context) {
+        let Some(release) = &self.update_offer else {
+            return;
+        };
+        if self.leaving.is_some() || self.notice.is_some() {
+            return;
+        }
+        #[derive(Clone, Copy)]
+        enum Answer {
+            Download,
+            Skip,
+            Later,
+        }
+        let mut answer = None;
+        let modal = egui::Modal::new(egui::Id::unique("kymo update")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading("Update Available");
+            ui.label(format!(
+                "Kymo {} is available; you have {}. Download opens its page on GitHub.",
+                release.version,
+                update::current()
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Download").clicked() {
+                    answer = Some(Answer::Download);
+                }
+                if ui.button("Skip This Version").clicked() {
+                    answer = Some(Answer::Skip);
+                }
+                if ui.button("Later").clicked() {
+                    answer = Some(Answer::Later);
+                }
+            });
+        });
+        if answer.is_none() && modal.should_close() {
+            answer = Some(Answer::Later);
+        }
+        match answer {
+            Some(Answer::Download) => ctx.open_url(egui::OpenUrl::new_tab(release.url())),
+            Some(Answer::Skip) => {
+                self.options.update_state.skipped = Some(release.version.clone());
+            }
+            Some(Answer::Later) | None => {}
+        }
+        if answer.is_some() {
+            self.update_offer = None;
+        }
+    }
+
+    /// Whether a question, notice or update offer holds the window until it is answered.
+    fn asking(&self) -> bool {
+        self.leaving.is_some() || self.notice.is_some() || self.update_offer.is_some()
     }
 
     /// Applies the theme setting to egui, the title bar and the native menus, when it, the
@@ -502,6 +652,7 @@ impl KymoApp {
         }
         self.apply_theme(&ctx);
         self.poll_loading();
+        self.poll_update();
         // The window's close button, or Quit's own request: unsaved changes are asked about.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.closing
@@ -660,6 +811,7 @@ impl KymoApp {
         self.drop_hint(&ctx);
         self.unsaved_question(&ctx);
         self.notice_window(&ctx);
+        self.update_window(&ctx);
         let title = self.title();
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -729,6 +881,7 @@ impl KymoApp {
             Action::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Action::RecordingInfo => self.info_open = !self.info_open,
             Action::About => self.about_open = true,
+            Action::CheckForUpdates => self.check_for_updates(ctx, true),
             Action::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Action::ToggleDc => self.set_settings(Settings {
                 remove_dc: !self.options.settings.remove_dc,
@@ -765,8 +918,7 @@ impl KymoApp {
     /// The actions of this frame's key presses, unless a text field has the keyboard. Esc
     /// with a menu or popup open only closes it.
     fn key_actions(&self, ctx: &egui::Context) -> Vec<Action> {
-        // A question or a notice holds the window until it is answered.
-        if ctx.egui_wants_keyboard_input() || self.leaving.is_some() || self.notice.is_some() {
+        if ctx.egui_wants_keyboard_input() || self.asking() {
             return Vec::new();
         }
         // Esc in a text field: egui took the keyboard back before this frame's widgets.
@@ -912,25 +1064,25 @@ impl KymoApp {
     /// (by its name, `…_channels.tsv`) is loaded as Load Channels… does, an annotation file
     /// (by its extension, as Load Annotations… takes them) into the open recording,
     /// anything else opened as a recording, as if picked with Open…. Ignored while a
-    /// question or notice is shown.
+    /// question, notice or update offer is shown.
     fn take_dropped(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_owned()));
         let Some(path) = dropped else {
             return;
         };
-        if self.leaving.is_some() || self.notice.is_some() {
+        if self.asking() {
             return;
         }
         self.open_file(ctx, path);
     }
 
     /// Opens a file the system handed over (the first, if several) as a dropped one (see
-    /// [`take_dropped`](Self::take_dropped)). While a question or notice is shown, it waits.
+    /// [`take_dropped`](Self::take_dropped)). While a question, notice or update offer is shown, it waits.
     fn take_opened(&mut self, ctx: &egui::Context) {
         let Some(inbox) = &self.opened else {
             return;
         };
-        if self.leaving.is_some() || self.notice.is_some() || inbox.is_empty() {
+        if self.asking() || inbox.is_empty() {
             return;
         }
         let Some(path) = inbox.take().into_iter().next() else {
@@ -1369,10 +1521,11 @@ impl eframe::App for KymoApp {
         self.frame(ui);
     }
 
-    /// Keeps the settings, the annotation colors and the recent recordings for the next
-    /// run.
+    /// Keeps the settings, the annotation colors, the recent recordings and the update
+    /// checks' state for the next run.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.options.settings.save(storage);
+        self.options.update_state.save(storage);
         save_annotation_colors(&self.options.annotation_colors, storage);
         self.options.recent.save(storage);
     }
@@ -1551,6 +1704,8 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
             settings: Settings::load(cc.storage),
             annotation_colors: load_annotation_colors(cc.storage),
             recent: Recent::load(cc.storage),
+            updates: Some(Source::github()),
+            update_state: UpdateState::load(cc.storage),
             ..Options::default()
         };
         let native = options.menus == Menus::Native;

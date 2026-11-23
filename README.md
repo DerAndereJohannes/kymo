@@ -93,6 +93,7 @@ The following sections show keyboard shortcuts for macOS. On Windows and Linux, 
 - Kymo uses native menus and standard keyboard shortcuts on each platform; **Help → Keyboard Shortcuts** lists them all.
 - Settings are saved between sessions.
 - **Settings → Disk Cache** shows how much disk space the cached overviews take, and **Clear** removes them (they are rebuilt when a recording is opened again; settings stay).
+- At startup, at most once a day, Kymo asks GitHub whether a newer release is out and offers to open its download page. Turn this off in **Settings → Updates**; **Check for Updates…** (in the **Kymo** menu on macOS, the **Help** menu elsewhere) asks right away.
 
 ## Installation
 

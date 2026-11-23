@@ -187,6 +187,8 @@ fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool) -> Rep
                 settings,
                 annotation_colors: Default::default(),
                 recent: Default::default(),
+                updates: None,
+                update_state: Default::default(),
             };
             let app = KymoApp::new(&cc.egui_ctx, gpu, options, Some(path));
             Ok(Box::new(Bench::new(app, out, edit)))

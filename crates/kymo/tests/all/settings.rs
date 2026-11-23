@@ -8,6 +8,7 @@ use kymo::annotations::AnnotationColors;
 use kymo::settings::{DEFAULT_WINDOW_S, GPU_MEMORY_MB, Settings, TILE_CACHE_MB, Theme};
 use kymo::settings::{load_annotation_colors, save_annotation_colors};
 use kymo::types::TypeSettings;
+use kymo::update::UpdateState;
 use kymo_core::ChannelKind;
 use proptest::prelude::*;
 
@@ -99,6 +100,7 @@ fn saved_settings_read_back() {
         auto_scale_on_open: true,
         theme: Theme::Dark,
         system_font: true,
+        check_updates: false,
     };
     let mut storage = Memory::default();
     settings.save(&mut storage);
@@ -141,6 +143,7 @@ fn unreadable_values_are_defaults_and_others_kept() {
         auto_scale_on_open: true,
         theme: Theme::Light,
         system_font: true,
+        check_updates: false,
     };
     let defaults = Settings::default();
     let cases = [
@@ -214,6 +217,13 @@ fn unreadable_values_are_defaults_and_others_kept() {
                 ..saved.clone()
             },
         ),
+        (
+            "kymo.check_updates",
+            Settings {
+                check_updates: defaults.check_updates,
+                ..saved.clone()
+            },
+        ),
     ];
     for (key, want) in cases {
         let colors = ["#12345", "#12345g", "ff0080", "#+1+2+3", "#aé€"];
@@ -241,6 +251,7 @@ fn values_out_of_range_are_clamped() {
         auto_scale_on_open: false,
         theme: Theme::System,
         system_font: false,
+        check_updates: true,
     }
     .save(&mut storage);
     let loaded = Settings::load(Some(&storage));
@@ -503,4 +514,22 @@ proptest! {
         settings.save(&mut storage);
         prop_assert_eq!(Settings::load(Some(&storage)), settings);
     }
+}
+
+#[test]
+fn update_checks_are_remembered() {
+    let mut storage = Memory::default();
+    assert_eq!(UpdateState::load(Some(&storage)), UpdateState::default());
+    let state = UpdateState {
+        last_check: Some("2026-11-23T12:34:56Z".parse().unwrap()),
+        skipped: Some(semver::Version::parse("0.2.0-rc.1").unwrap()),
+    };
+    state.save(&mut storage);
+    assert_eq!(UpdateState::load(Some(&storage)), state);
+    storage.set_string("kymo.update_checked", "soon".into());
+    storage.set_string("kymo.update_skipped", "v0.2".into());
+    assert_eq!(UpdateState::load(Some(&storage)), UpdateState::default());
+    UpdateState::default().save(&mut storage);
+    assert!(!storage.0.contains_key("kymo.update_checked"));
+    assert!(!storage.0.contains_key("kymo.update_skipped"));
 }

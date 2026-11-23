@@ -137,6 +137,7 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
             role: Role::App,
             items: vec![
                 Item::System(SystemItem::About),
+                a(Action::CheckForUpdates),
                 Item::Separator,
                 a(Action::Settings),
                 Item::Separator,
@@ -252,7 +253,11 @@ pub fn menu_bar(platform: Platform) -> Vec<Menu> {
     }
     let mut help = vec![a(Action::Shortcuts)];
     if !mac {
-        help.extend([Item::Separator, a(Action::About)]);
+        help.extend([
+            Item::Separator,
+            a(Action::CheckForUpdates),
+            a(Action::About),
+        ]);
     }
     menus.push(Menu {
         title: "Help",

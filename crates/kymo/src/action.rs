@@ -29,6 +29,9 @@ pub enum Action {
     Shortcuts,
     /// An About window; macOS uses the system's About panel instead.
     About,
+    /// Asks GitHub for the latest release and tells whether it is newer (see
+    /// [`crate::update`]).
+    CheckForUpdates,
     /// A quarter window back or forward in time.
     PanLeft,
     PanRight,
@@ -95,7 +98,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 53] = [
+    pub const ALL: [Action; 54] = [
         Action::Open,
         Action::OpenRecent(0),
         Action::ClearRecent,
@@ -110,6 +113,7 @@ impl Action {
         Action::Settings,
         Action::Shortcuts,
         Action::About,
+        Action::CheckForUpdates,
         Action::PanLeft,
         Action::PanRight,
         Action::PageLeft,
@@ -169,6 +173,7 @@ impl Action {
             Action::Settings => "Settings…",
             Action::Shortcuts => "Keyboard Shortcuts",
             Action::About => "About Kymo",
+            Action::CheckForUpdates => "Check for Updates…",
             Action::PanLeft => "Back a Quarter Window",
             Action::PanRight => "Forward a Quarter Window",
             Action::PageLeft => "Back a Window",
@@ -278,6 +283,7 @@ impl Action {
                 | Action::Settings
                 | Action::Shortcuts
                 | Action::About
+                | Action::CheckForUpdates
                 | Action::ToggleDc
                 | Action::ToggleScaleBars
                 | Action::ToggleAntialias
