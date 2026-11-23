@@ -476,9 +476,10 @@ fn a_finished_build_stays_for_the_next_open() {
             .is_complete()
     );
 
-    // A second service reads the pyramid without building it again.
+    // A second service reads the pyramid without building it again, complete from the
+    // start.
     let run = start_on_file(&file, &dir, |_, _| {});
-    wait_until("build", || run.service.progress().complete);
+    assert!(run.service.progress().complete);
     let keys: Vec<TileKey> = all_keys(&rec)
         .into_iter()
         .filter(|k| k.level > Level::RAW)

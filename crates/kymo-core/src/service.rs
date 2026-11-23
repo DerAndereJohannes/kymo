@@ -204,14 +204,23 @@ impl TileService {
                 (None, pyramids, Some(storages))
             }
         };
+        // A complete sidecar has nothing left to build: complete from the start, not once
+        // the build thread gets to it.
+        let built = sidecar.as_ref().is_some_and(Sidecar::is_complete);
         let shared = Arc::new(Shared {
             cache: TileCache::new(options.cache_budget),
             recording,
             pyramids,
             sidecar,
-            queue: Mutex::default(),
+            queue: Mutex::new(Queue {
+                build_ended: built,
+                ..Queue::default()
+            }),
             work: Condvar::new(),
-            build: Mutex::default(),
+            build: Mutex::new(BuildEnd {
+                complete: built,
+                error: None,
+            }),
             stop: AtomicBool::new(false),
             notify: Box::new(notify),
             mean_decode_limit: options.mean_decode_limit,
