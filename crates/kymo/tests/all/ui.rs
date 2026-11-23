@@ -985,11 +985,11 @@ fn the_status_line_range_shows_the_window_and_opens_go_to_time() {
     assert_eq!(field, "12.5 s");
 }
 
-/// Remove DC is a setting, as the rule for settings has it: the chip and ⌘D change it,
-/// Settings shows it, and the recording opened next and the stored settings keep it.
+/// Remove DC is a setting, as the rule for settings has it: the chip, the View menu and ⌘D
+/// change it, and the recording opened next and the stored settings keep it.
 #[test]
 fn remove_dc_is_a_setting_kept_for_the_next_recording() {
-    use egui::accesskit::{Role, Toggled};
+    use egui::accesskit::Role;
     let file = TempFile::preset("bdf+c-small");
     let mut harness = window(file.path());
     ready(&mut harness);
@@ -1005,27 +1005,30 @@ fn remove_dc_is_a_setting_kept_for_the_next_recording() {
     harness.state_mut().open(&ctx, file.path().to_owned());
     ready(&mut harness);
     assert!(!viewer(&harness).view().dc_removed());
-    // Settings shows it beside the other trace settings, and turns it back on.
-    harness.key_press_modifiers(command(), Key::Comma);
-    harness.run_steps(2);
-    let checkbox = |h: &Harness<'_, KymoApp>, label: &str| {
-        let node = h.get_by_role_and_label(Role::CheckBox, label);
-        node.accesskit_node().toggled() == Some(Toggled::True)
-    };
-    assert!(!checkbox(&harness, "Remove DC"));
-    assert!(checkbox(&harness, "Scale Bars"));
-    harness
-        .get_by_role_and_label(Role::CheckBox, "Remove DC")
-        .click();
-    harness.run_steps(2);
+    // View → Remove DC shows it, and turns it back on.
+    assert!(!checked(&mut harness, "View", "Remove DC"));
+    choose(&mut harness, "View", "Remove DC");
     assert!(harness.state().settings().remove_dc);
     assert!(viewer(&harness).view().dc_removed());
-    // ⌘D changes the setting too, which the stored settings keep.
-    harness.key_press(Key::Escape);
-    harness.run_steps(2);
+    // ⌘D changes the setting too.
     harness.key_press_modifiers(command(), Key::D);
     harness.run_steps(2);
     assert!(!harness.state().settings().remove_dc);
+    // Settings doesn't repeat what the View menu sets, and Restore Defaults leaves it.
+    harness.key_press_modifiers(command(), Key::Comma);
+    harness.run_steps(2);
+    for label in ["Remove DC", "Scale Bars", "Anti-Aliased"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::CheckBox, label)
+                .is_none(),
+            "{label}"
+        );
+    }
+    harness.get_by_label("Restore Defaults").click();
+    harness.run_steps(2);
+    assert!(!harness.state().settings().remove_dc);
+    // The stored settings keep it.
     let mut storage = Memory::default();
     eframe::App::save(harness.state_mut(), &mut storage);
     assert!(!Settings::load(Some(&storage)).remove_dc);
@@ -3346,15 +3349,9 @@ fn the_system_font_setting_switches_the_fonts() {
 }
 
 #[test]
-fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
+fn anti_aliasing_follows_the_menu_and_shortcut() {
     let file = TempFile::preset("bdf+c-small");
-    // As tall as the app's window opens: with the Font row (macOS and Windows), Settings
-    // would cover the egui menu bar in a 700-point one. The app draws that menu bar only on
-    // Linux, which has no Font row.
-    let mut harness = window_from(
-        Harness::builder().with_size(egui::vec2(SIZE.x, 800.0)),
-        file.path(),
-    );
+    let mut harness = window(file.path());
     ready(&mut harness);
     // Off by default.
     assert!(!harness.state().settings().antialias);
@@ -3362,21 +3359,8 @@ fn anti_aliasing_follows_the_menu_settings_and_shortcut() {
     choose(&mut harness, "View", "Anti-Aliasing");
     assert!(harness.state().settings().antialias);
     assert!(checked(&mut harness, "View", "Anti-Aliasing"));
-
-    // The Settings checkbox shows and changes the same setting.
-    harness.key_press_modifiers(command(), Key::Comma);
-    harness.step();
-    let checkbox = harness.get_by_label("Anti-Aliased");
-    assert_eq!(
-        checkbox.accesskit_node().toggled(),
-        Some(egui::accesskit::Toggled::True)
-    );
-    checkbox.click();
-    harness.run_steps(2);
+    choose(&mut harness, "View", "Anti-Aliasing");
     assert!(!harness.state().settings().antialias);
-    assert!(!checked(&mut harness, "View", "Anti-Aliasing"));
-    harness.get_by_label("Close window").click();
-    harness.run_steps(2);
 
     // ⇧⌘A switches it too.
     harness.key_press_modifiers(command() | Modifiers::SHIFT, Key::A);
@@ -6066,7 +6050,6 @@ fn settings_put_appearance_first_and_memory_last() {
     let tops: Vec<f32> = [
         "Theme",
         "Channel Types",
-        "Traces",
         "Default Window",
         "Scale",
         "Tile Cache",
@@ -6408,8 +6391,8 @@ fn settings_labels_are_level_with_their_first_control() {
     };
     for (label, control) in [
         ("Theme", "System"),
-        ("Traces", "Anti-Aliased"),
         ("Scale", "Automatic on Opening"),
+        ("Updates", "Check at Startup"),
     ] {
         assert!(
             (center(label) - center(control)).abs() < 0.5,

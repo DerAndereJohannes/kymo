@@ -35,7 +35,7 @@ CHANGELOG.md         release notes in MNELAB's format; user-visible changes add 
 - Bucket boundaries are fixed in sample-index space (global tile grid), not relative to the view start.
 - The UI thread never blocks on disk or computation; missing tiles fall back to coarser ones.
 - Physical value = digital × gain + offset; EDF/BDF offsets can be huge.
-- DC removal is a setting (in Settings, remembered), on by default.
+- DC removal is a setting (View → Remove DC, remembered), on by default.
 - Default initial view: ~20 s from the start of the recording.
 
 ## Conventions

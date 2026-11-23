@@ -64,39 +64,14 @@ pub fn settings_window(
                         ui.label("Font");
                         ui.checkbox(&mut settings.system_font, "System Font");
                         ui.end_row();
-                        hint(ui, &format!("Show all text in {name}, the system's font."));
+                        hint(ui, &format!("Use the system font ({name}) for all text."));
                     }
                     let label = ui.label(CHANNEL_TYPES);
                     if ui.button(EDIT_TYPES).labelled_by(label.id).clicked() {
                         *channel_types = true;
                     }
                     ui.end_row();
-                    hint(
-                        ui,
-                        "Each type's color, whether Remove DC centers its traces and whether \
-                         its channels are scaled each on its own. A type's color in the \
-                         sidebar sets them too.",
-                    );
-                    ui.label("Traces");
-                    ui.checkbox(&mut settings.antialias, "Anti-Aliased");
-                    ui.end_row();
-                    hint(ui, "Smooth trace edges. Off draws traces in whole pixels.");
-                    ui.label("");
-                    ui.checkbox(&mut settings.remove_dc, "Remove DC");
-                    ui.end_row();
-                    hint(
-                        ui,
-                        "Center each trace on its mean over the window, for the channel types \
-                         with Remove DC (see Channel Types).",
-                    );
-                    ui.label("");
-                    ui.checkbox(&mut settings.scale_bars, "Scale Bars");
-                    ui.end_row();
-                    hint(
-                        ui,
-                        "A bar per channel type shows how much a row spans, one per channel \
-                         where each is scaled on its own.",
-                    );
+                    hint(ui, "Color, DC removal, and scaling of each channel type.");
                     row(
                         ui,
                         "Default Window",
@@ -110,15 +85,11 @@ pub fn settings_window(
                     ui.label("Scale");
                     ui.checkbox(&mut settings.auto_scale_on_open, "Automatic on Opening");
                     ui.end_row();
-                    hint(
-                        ui,
-                        "Fit each channel type (or channel) to the first window, as Auto Scale \
-                         does.",
-                    );
+                    hint(ui, "Fit the amplitudes to the first window of a recording.");
                     row(
                         ui,
                         "Tile Cache",
-                        "Memory for tiles in RAM. A smaller cache frees memory at once.",
+                        "Memory for recently viewed data.",
                         DragValue::new(&mut settings.tile_cache_mb)
                             .range(TILE_CACHE_MB)
                             .speed(8.0)
@@ -127,7 +98,7 @@ pub fn settings_window(
                     row(
                         ui,
                         "GPU Memory",
-                        "Memory for tiles on the graphics card.",
+                        "Graphics memory for recently viewed data.",
                         DragValue::new(&mut settings.gpu_memory_mb)
                             .range(GPU_MEMORY_MB)
                             .speed(8.0)
@@ -148,23 +119,24 @@ pub fn settings_window(
                         ui.end_row();
                         hint(
                             ui,
-                            "Pyramids of the recordings opened before, kept so they open at \
-                             once; settings stay. Clear keeps the open recording's.",
+                            "Overviews that make recordings open faster (settings are kept).",
                         );
                     }
                     ui.label("Updates");
                     ui.checkbox(&mut settings.check_updates, "Check at Startup");
                     ui.end_row();
-                    hint(
-                        ui,
-                        "Once a day, ask GitHub whether a newer version of Kymo is out. Check \
-                         for Updates in the menu asks now.",
-                    );
+                    hint(ui, "Look for a newer version on GitHub once a day.");
                 });
                 });
             ui.add_space(6.0);
             if ui.button("Restore Defaults").clicked() {
-                *settings = Settings::default();
+                // What the View menu sets stays as it is.
+                *settings = Settings {
+                    antialias: settings.antialias,
+                    scale_bars: settings.scale_bars,
+                    remove_dc: settings.remove_dc,
+                    ..Settings::default()
+                };
             }
         });
     *settings = settings.clone().clamped();
@@ -175,11 +147,10 @@ pub fn settings_window(
 const GAP: f32 = 12.0;
 
 /// The settings' row labels, in the first column.
-const LABELS: [&str; 10] = [
+const LABELS: [&str; 9] = [
     "Theme",
     "Font",
     "Channel Types",
-    "Traces",
     "Default Window",
     "Scale",
     "Tile Cache",
