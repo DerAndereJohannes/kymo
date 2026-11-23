@@ -180,8 +180,9 @@ fn content_width(ctx: &egui::Context) -> f32 {
     labels + GAP + VALUES_WIDTH
 }
 
-/// The values column's width: wider than the widest value, so the hints wrap less.
-const VALUES_WIDTH: f32 = 400.0;
+/// The values column's width: the longest hint (Disk Cache's, about 340 points in egui's
+/// font) on one line, with room for wider fonts.
+const VALUES_WIDTH: f32 = 360.0;
 
 /// A label, its value, and a hint below in the value's column.
 fn row(ui: &mut Ui, label: &str, hint: &str, value: DragValue<'_>) {
