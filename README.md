@@ -6,7 +6,7 @@ Kymo is a cross-platform, highly optimized, blazingly fast viewer for EEG and ME
 
 Kymo is named after the kymograph, a rotating drum used to record physiological signals in the 19th century.
 
-> Kymo is under active development, and its first release is in preparation. Until then, [build it from source](#building-from-source). It already runs as a standalone viewer on macOS, Windows, and Linux. Integration with [MNE-Python](https://mne.tools) and [MNELAB](https://github.com/cbrnr/mnelab) is planned (see the [roadmap](#roadmap)).
+> Kymo is under active development. It runs as a standalone viewer on macOS, Windows, and Linux; integration with [MNE-Python](https://mne.tools) and [MNELAB](https://github.com/cbrnr/mnelab) is planned (see the [roadmap](#roadmap)).
 
 ## Why Kymo?
 
