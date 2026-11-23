@@ -1,8 +1,9 @@
-//! Frame times, step latency and peak memory of the viewer on a recording. It drives the
-//! real window through kymo's public API and egui's input, as the keys and the trackpad do:
+//! Frame times, kymo's work in each frame, step latency and peak memory of the viewer on
+//! a recording. It drives the real window through kymo's public API and egui's input, as
+//! the keys and the trackpad do:
 //!
 //! ```text
-//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]
+//! cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit] [--measure]
 //! ```
 //!
 //! The window (1280×800, vsync off, drawing continuously) opens FILE at the default view
@@ -20,6 +21,12 @@
 //! - **glide:** [`GLIDE_FRAMES`] scrolls of 1/100 of the window to later times;
 //! - **pinch out, pinch in:** pinches of 2^(1/16) around the middle of the traces until the
 //!   whole recording shows, and as many back.
+//!
+//! With `--measure`, first a measurement, which stays on screen for everything after:
+//!
+//! - **measure:** with the whole recording shown (Fit, not timed), a ⇧-drag of
+//!   [`EDIT_FRAMES`] frames from the traces' left edge to near their right; then Default
+//!   Window (not timed) returns to the opening view, inside the measurement.
 //!
 //! With `--edit`, then annotation editing, one input per frame (for the target of 60 Hz
 //! with 10,000 annotations, `kymo-testgen edf+c-annotations`): annotation mode on,
@@ -71,24 +78,30 @@ fn main() {
         .collect();
     let fresh = args.iter().any(|a| a == "--fresh");
     let edit = args.iter().any(|a| a == "--edit");
+    let measure = args.iter().any(|a| a == "--measure");
     let settings = Settings {
         antialias: args.iter().any(|a| a == "--antialias"),
         ..Settings::default()
     };
     let files: Vec<PathBuf> = args
         .iter()
-        .filter(|a| !matches!(a.as_str(), "--fresh" | "--antialias" | "--edit"))
+        .filter(|a| {
+            !matches!(
+                a.as_str(),
+                "--fresh" | "--antialias" | "--edit" | "--measure"
+            )
+        })
         .map(PathBuf::from)
         .collect();
     let [path] = &files[..] else {
         if args.is_empty() {
             eprintln!(
-                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]`"
+                "skipping: run `cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit] [--measure]`"
             );
             return;
         }
         eprintln!(
-            "usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit]"
+            "usage: cargo bench -p kymo --bench frames -- FILE [--fresh] [--antialias] [--edit] [--measure]"
         );
         std::process::exit(2);
     };
@@ -114,7 +127,7 @@ fn main() {
         }
     };
 
-    let report = run(path, sidecar_dir, settings.clone(), edit);
+    let report = run(path, sidecar_dir, settings.clone(), edit, measure);
     if let Some(dir) = fresh_dir {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -163,7 +176,7 @@ fn build_sidecar(dir: &Path, path: &Path) -> bool {
 }
 
 /// Opens the window, runs the sequence and returns what it measured.
-fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool) -> Report {
+fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool, measure: bool) -> Report {
     let report = Rc::new(RefCell::new(Report::default()));
     let out = Rc::clone(&report);
     let path = path.to_owned();
@@ -191,7 +204,7 @@ fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool) -> Rep
                 update_state: Default::default(),
             };
             let app = KymoApp::new(&cc.egui_ctx, gpu, options, Some(path));
-            Ok(Box::new(Bench::new(app, out, edit)))
+            Ok(Box::new(Bench::new(app, out, edit, measure)))
         }),
     )
     .unwrap();
@@ -201,6 +214,11 @@ fn run(path: &Path, sidecar_dir: PathBuf, settings: Settings, edit: bool) -> Rep
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Opening,
+    /// Fit, before measuring (not timed).
+    MeasureFit,
+    Measure,
+    /// Default Window, after measuring (not timed).
+    MeasureBack,
     Pan,
     ZoomOut,
     ZoomIn,
@@ -218,7 +236,8 @@ enum Phase {
 }
 
 impl Phase {
-    const MEASURED: [Phase; 13] = [
+    const MEASURED: [Phase; 14] = [
+        Phase::Measure,
         Phase::Pan,
         Phase::ZoomOut,
         Phase::ZoomIn,
@@ -237,6 +256,9 @@ impl Phase {
     fn name(self) -> &'static str {
         match self {
             Phase::Opening => "opening",
+            Phase::MeasureFit => "fit",
+            Phase::Measure => "measure",
+            Phase::MeasureBack => "back",
             Phase::Pan => "pan",
             Phase::ZoomOut => "zoom out",
             Phase::ZoomIn => "zoom in",
@@ -259,6 +281,8 @@ impl Phase {
         !matches!(
             self,
             Phase::Opening
+                | Phase::MeasureFit
+                | Phase::MeasureBack
                 | Phase::Pan
                 | Phase::ZoomOut
                 | Phase::ZoomIn
@@ -269,7 +293,10 @@ impl Phase {
 
     fn after(self) -> Phase {
         match self {
-            Phase::Opening => Phase::Pan,
+            Phase::Opening => Phase::MeasureFit,
+            Phase::MeasureFit => Phase::Measure,
+            Phase::Measure => Phase::MeasureBack,
+            Phase::MeasureBack => Phase::Pan,
             Phase::Pan => Phase::ZoomOut,
             Phase::ZoomOut => Phase::ZoomIn,
             Phase::ZoomIn => Phase::PageDown,
@@ -332,6 +359,8 @@ struct Script {
     undo: usize,
     /// Whether annotation editing follows the view phases.
     edit: bool,
+    /// Whether a measurement comes before them.
+    measure: bool,
 }
 
 impl Script {
@@ -343,9 +372,19 @@ impl Script {
         let start = traces.left_center() + Vec2::new(0.3 * width, 0.0);
         let frames = EDIT_FRAMES as f32;
         let pinch = (1.0 / PINCHES_PER_DOUBLING).exp2();
+        // From just inside the left edge (clear of the sidebar's handle) to 98% of the width.
+        let inset = 12.0;
+        let measure_from = traces.left_center() + Vec2::new(inset, 0.0);
+        let measure_step = (0.98 * width - inset) / frames;
         loop {
             let input = match self.phase {
                 Phase::Opening => None,
+                Phase::MeasureFit | Phase::Measure | Phase::MeasureBack if !self.measure => None,
+                Phase::MeasureFit => (self.count == 0).then_some(Input::Key(Action::Fit)),
+                Phase::Measure => drag_step(self.count, measure_from, |c| c as f32 * measure_step),
+                Phase::MeasureBack => {
+                    (self.count == 0).then_some(Input::Key(Action::DefaultWindow))
+                }
                 Phase::Pan => (self.count < PAN_STEPS).then_some(Input::Key(Action::PanRight)),
                 Phase::ZoomOut => (!whole).then_some(Input::Key(Action::ZoomOut)),
                 Phase::ZoomIn => (self.count < self.undo).then_some(Input::Key(Action::ZoomIn)),
@@ -387,10 +426,13 @@ impl Script {
     }
 }
 
-/// Frame intervals and step latencies, in seconds, per phase.
+/// Frame intervals, kymo's work in them and step latencies, in seconds, per phase.
 #[derive(Default)]
 struct Report {
     frames: Vec<(Phase, f64)>,
+    /// The time each frame spent in kymo's own code, without egui's tessellation, the GPU
+    /// and presenting, which the window system and the display pace.
+    work: Vec<(Phase, f64)>,
     steps: Vec<(Phase, f64)>,
     /// Steps whose view wasn't complete within [`STEP_LIMIT`], and frames of the continuous
     /// phases drawn partly from coarser tiles.
@@ -398,6 +440,8 @@ struct Report {
     opening: Option<f64>,
     /// Annotations at the start and at the end, with `--edit`.
     annotations: Option<(usize, usize)>,
+    /// With `--measure`: whether the measurement was still there after the view phases.
+    measurement_kept: Option<bool>,
 }
 
 impl Report {
@@ -407,8 +451,19 @@ impl Report {
             None => println!("first view not complete after {} s", OPEN_LIMIT.as_secs()),
         }
         println!(
-            "{:<10} {:>6} {:>9} {:>9} {:>9}   {:>6} {:>9} {:>9} {:>9}   {:>10}",
-            "", "frames", "p50", "p99", "max", "steps", "p50", "p99", "max", "incomplete"
+            "{:<10} {:>6} {:>9} {:>9} {:>9}   {:>9} {:>9}   {:>6} {:>9} {:>9} {:>9}   {:>10}",
+            "",
+            "frames",
+            "p50",
+            "p99",
+            "max",
+            "work p99",
+            "max",
+            "steps",
+            "p50",
+            "p99",
+            "max",
+            "incomplete"
         );
         let rows = Phase::MEASURED
             .iter()
@@ -425,6 +480,7 @@ impl Report {
                     .collect()
             };
             let frames = Stats::of(pick(&self.frames));
+            let work = Stats::of(pick(&self.work));
             let steps = Stats::of(pick(&self.steps));
             let incomplete = self
                 .incomplete
@@ -432,22 +488,36 @@ impl Report {
                 .filter(|p| phases.contains(p))
                 .count();
             println!(
-                "{name:<10} {:>6} {:>9} {:>9} {:>9}   {:>6} {:>9} {:>9} {:>9}   {incomplete:>10}",
+                "{name:<10} {:>6} {:>9} {:>9} {:>9}   {:>9} {:>9}   {:>6} {:>9} {:>9} {:>9}   {incomplete:>10}",
                 frames.n,
                 ms(frames.p50),
                 ms(frames.p99),
                 ms(frames.max),
+                ms(work.p99),
+                ms(work.max),
                 steps.n,
                 ms(steps.p50),
                 ms(steps.p99),
                 ms(steps.max),
             );
         }
+        if let Some(kept) = self.measurement_kept {
+            println!(
+                "measurement: {}",
+                if kept {
+                    "on screen through the view phases"
+                } else {
+                    "GONE before the view phases ended"
+                }
+            );
+        }
         if let Some((start, end)) = self.annotations {
             println!("annotations: {start} at the start, {end} after editing");
         }
         println!(
-            "frames: from one frame's start to the next. steps: from the change to a complete \
+            "frames: from one frame's start to the next; work: kymo's part of a frame (its \
+             interface and the frame's tiles), without tessellating, the GPU and presenting. \
+             steps: from the change to a complete \
              view, up to {} s; incomplete: steps that weren't complete by then, and frames of \
              the continuous phases (glide, pinch) drawn partly from coarser tiles.",
             STEP_LIMIT.as_secs()
@@ -493,18 +563,20 @@ struct Bench {
     script: Script,
     report: Rc<RefCell<Report>>,
     started: Instant,
-    /// When the last frame started, and the phase of the step it drew.
-    last_frame: Option<(Instant, Option<Phase>)>,
+    /// When the last frame started, the phase of the step it drew and kymo's work in it.
+    last_frame: Option<(Instant, Option<Phase>, f64)>,
     /// The current step's phase and when it was taken.
     step: Option<(Phase, Instant)>,
     /// The middle of the traces, where the pointer is kept for scrolls and pinches.
     pointer: Option<Pos2>,
     /// A scroll, pinch or button for the next frame's input.
     event: Option<Event>,
+    /// Whether ⇧ is held, while measuring.
+    shift: bool,
 }
 
 impl Bench {
-    fn new(app: KymoApp, report: Rc<RefCell<Report>>, edit: bool) -> Bench {
+    fn new(app: KymoApp, report: Rc<RefCell<Report>>, edit: bool, measure: bool) -> Bench {
         Bench {
             app,
             script: Script {
@@ -512,6 +584,7 @@ impl Bench {
                 count: 0,
                 undo: 0,
                 edit,
+                measure,
             },
             report,
             started: Instant::now(),
@@ -519,6 +592,7 @@ impl Bench {
             step: None,
             pointer: None,
             event: None,
+            shift: false,
         }
     }
 
@@ -531,8 +605,23 @@ impl Bench {
             return;
         };
         self.pointer = Some(layout.traces.center());
-        match self.script.next(viewer.view(), layout.traces) {
+        let before = self.script.phase;
+        let next = self.script.next(viewer.view(), layout.traces);
+        // The view phases end at Pinch In; editing's first click would remove it.
+        if self.script.measure
+            && before == Phase::PinchIn
+            && next.is_none_or(|(phase, _)| phase != Phase::PinchIn)
+        {
+            self.report.borrow_mut().measurement_kept = Some(viewer.measurement().is_some());
+        }
+        match next {
             Some((phase, input)) => {
+                self.shift = phase == Phase::Measure;
+                let modifiers = if self.shift {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
                 match input {
                     Input::Key(action) => self.app.perform(ctx, action),
                     Input::Scroll(delta) => {
@@ -551,7 +640,7 @@ impl Bench {
                             pos,
                             button: egui::PointerButton::Primary,
                             pressed,
-                            modifiers: egui::Modifiers::NONE,
+                            modifiers,
                         });
                     }
                 }
@@ -588,15 +677,16 @@ impl eframe::App for Bench {
         }
         // The time since the last frame started went to drawing that frame: it counts
         // towards the step it drew (none while opening).
-        if let Some((last, Some(phase))) = self.last_frame {
-            self.report
-                .borrow_mut()
-                .frames
-                .push((phase, (now - last).as_secs_f64()));
+        if let Some((last, Some(phase), work)) = self.last_frame {
+            let mut report = self.report.borrow_mut();
+            report.frames.push((phase, (now - last).as_secs_f64()));
+            report.work.push((phase, work));
         }
-        self.last_frame = Some((now, self.step.map(|(phase, _)| phase)));
+        let phase = self.step.map(|(phase, _)| phase);
 
+        let started = Instant::now();
         self.app.frame(ui);
+        self.last_frame = Some((now, phase, started.elapsed().as_secs_f64()));
         ctx.request_repaint();
         if let Some(error) = self.app.error() {
             panic!("cannot open the recording: {error}");
@@ -642,6 +732,14 @@ impl eframe::App for Bench {
     /// Keeps the pointer over the traces, whatever the real one does, and adds the step's
     /// scroll or pinch.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // ⇧ as the step has it, after the window's own events: losing focus, which the
+        // window reports around every frame here, clears the modifiers.
+        let modifiers = if self.shift {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        raw_input.events.push(Event::ModifiersChanged(modifiers));
         if let Some(pointer) = self.pointer {
             raw_input
                 .events

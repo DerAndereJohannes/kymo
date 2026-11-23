@@ -1977,6 +1977,52 @@ fn a_channel_given_a_type_follows_it() {
     harness.get_by_label("Show ECG channels");
 }
 
+/// A changed channel type, DC removal or Scale Each Channel shows complete in the frame
+/// after the click: they act when drawing, so no tile is missing and nothing rebuilds.
+#[test]
+fn type_changes_show_complete_in_the_next_frame() {
+    let file = typed_preset();
+    let mut harness = window(file.path());
+    ready(&mut harness);
+    let ecg = kymo_core::ChannelId(3);
+    let complete = |h: &Harness<'_, KymoApp>, what: &str| {
+        let viewer = viewer(h);
+        assert!(viewer.complete(), "{what}: a tile was missing");
+        assert!(
+            !viewer.status().right.contains("Building"),
+            "{what}: the overview builds again"
+        );
+    };
+    complete(&harness, "the start");
+
+    // A menu item acts as the pointer is released: the frame after it is drawn changed.
+    channel_options(&mut harness, "ECG");
+    menu_path(&mut harness, &[CHANGE_TYPE]);
+    menu_item(&harness, "EEG").click();
+    harness.step();
+    harness.step();
+    assert_eq!(*viewer(&harness).view().kind_of(ecg), ChannelKind::EEG);
+    complete(&harness, "Change Type");
+
+    type_options(&mut harness, "EEG channels");
+    let before = viewer(&harness).view().dc_applies(ecg);
+    harness.get_by_label("Remove DC of EEG").click();
+    harness.step();
+    harness.step();
+    assert_ne!(viewer(&harness).view().dc_applies(ecg), before);
+    complete(&harness, "Remove DC");
+
+    let label = kymo::ui::types::own_scale_label(&ChannelKind::EEG);
+    let group = viewer(&harness).view().scale_group(ecg);
+    // The click on Remove DC closed the menu.
+    type_options(&mut harness, "EEG channels");
+    harness.get_by_label(&label).click();
+    harness.step();
+    harness.step();
+    assert_ne!(viewer(&harness).view().scale_group(ecg), group);
+    complete(&harness, "Scale Each Channel");
+}
+
 /// A click on a channel's name selects it, ⌘-click adds or takes one out, ⇧-click selects
 /// the rows from the last clicked; a selected row's menu acts on every selected channel
 /// (Other Types, filtered), a type's menu on its channels. Esc and a click below the rows
